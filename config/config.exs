@@ -7,6 +7,9 @@
 # General application configuration
 import Config
 
+config :sentinelix,
+  ecto_repos: [Sentinelix.Repo]
+
 # Configures the endpoint
 config :sentinelix, SentinelixWeb.Endpoint,
   url: [host: "localhost"],
@@ -15,7 +18,7 @@ config :sentinelix, SentinelixWeb.Endpoint,
     layout: false
   ],
   pubsub_server: Sentinelix.PubSub,
-  live_view: [signing_salt: "vH2gzl8M"]
+  live_view: [signing_salt: "sdX5KMtR"]
 
 # Configures the mailer
 #

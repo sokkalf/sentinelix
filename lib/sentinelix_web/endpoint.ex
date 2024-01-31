@@ -7,7 +7,7 @@ defmodule SentinelixWeb.Endpoint do
   @session_options [
     store: :cookie,
     key: "_sentinelix_key",
-    signing_salt: "/MO0mVJy",
+    signing_salt: "kRX3GPAB",
     same_site: "Lax"
   ]
 
@@ -29,6 +29,7 @@ defmodule SentinelixWeb.Endpoint do
     socket "/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket
     plug Phoenix.LiveReloader
     plug Phoenix.CodeReloader
+    plug Phoenix.Ecto.CheckRepoStatus, otp_app: :sentinelix
   end
 
   plug Phoenix.LiveDashboard.RequestLogger,

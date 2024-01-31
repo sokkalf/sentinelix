@@ -10,6 +10,8 @@ defmodule Sentinelix.Application do
     children = [
       # Start the Telemetry supervisor
       SentinelixWeb.Telemetry,
+      # Start the Ecto repository
+      Sentinelix.Repo,
       # Start the PubSub system
       {Phoenix.PubSub, name: Sentinelix.PubSub},
       # Start Finch
