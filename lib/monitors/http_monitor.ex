@@ -92,6 +92,9 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             remaining_retries: state.remaining_retries - 1
           }}
         else
+          if state.status == :pending do
+            Logger.info("UP Alert goes here")
+          end
           {:noreply, %HTTPMonitor{
             state | status: :ok,
             last_checked: DateTime.utc_now(),
@@ -112,6 +115,9 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             remaining_retries: state.remaining_retries - 1
           }}
         else
+          if state.status == :pending do
+            Logger.info("DOWN Alert goes here")
+          end
           {:noreply, %HTTPMonitor{
             state | status: :error,
             last_checked: DateTime.utc_now(),
