@@ -1,16 +1,18 @@
 defmodule Sentinelix.Monitors.HTTPMonitor do
   use GenServer
   require Logger
-  require HTTPoison
-  require Jason
-  require Finch
-  require Telemetry.Metrics
 
   alias Sentinelix.Monitors.HTTPMonitor
 
   @moduledoc """
   HTTP Monitor
   """
+
+  defstruct [:name, :url, :status, :interval, :retries,
+             :last_checked, :last_status, :last_error,
+             :verify_ssl, :follow_redirects, :check_certificate,
+             :expiry_warn_after, :expiry_critical_after,
+             :remaining_retries]
 
   @doc """
   Starts the HTTP Monitor
@@ -21,12 +23,97 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   end
 
   def init(opts) do
-    Logger.info("Starting HTTP Monitor")
-    {:ok, opts}
+    url = Keyword.get(opts, :url, nil)
+    interval = Keyword.get(opts, :interval, 60)
+    retries = Keyword.get(opts, :retries, 3)
+    verify_ssl = Keyword.get(opts, :verify_ssl, true)
+    follow_redirects = Keyword.get(opts, :follow_redirects, false)
+    check_certificate = Keyword.get(opts, :check_certificate, false)
+    expiry_warn_after = Keyword.get(opts, :expiry_warn_after, 30)
+    expiry_critical_after = Keyword.get(opts, :expiry_critical_after, 7)
+
+    if url == nil do
+      {:stop, {:error, "No URL specified"}}
+    else
+      Logger.info("Starting HTTP Monitor")
+      tick(interval)
+      {:ok, %HTTPMonitor{
+        name: Keyword.get(opts, :name, __MODULE__),
+        url: url,
+        status: :pending,
+        interval: interval,
+        retries: retries,
+        last_checked: nil,
+        last_status: nil,
+        last_error: nil,
+        verify_ssl: verify_ssl,
+        follow_redirects: follow_redirects,
+        check_certificate: check_certificate,
+        expiry_warn_after: expiry_warn_after,
+        expiry_critical_after: expiry_critical_after,
+        remaining_retries: retries
+      }}
+    end
   end
 
-  def check_http(url, opts \\ []) do
-    case HTTPoison.get(url) do
+  def handle_info(:tick, state) do
+    Logger.info("Checking HTTP Monitor")
+    case check_http(state.url, [
+      verify_ssl: state.verify_ssl,
+      follow_redirects: state.follow_redirects,
+      check_certificate: state.check_certificate,
+      expiry_warn_after: state.expiry_warn_after,
+      expiry_critical_after: state.expiry_critical_after
+    ]) do
+      {:ok, response} ->
+        Logger.info("HTTP Monitor OK")
+        tick(state.interval)
+        if (state.remaining_retries > 1) and (state.status == :pending) do
+          {:noreply, %HTTPMonitor{
+            state | status: :pending,
+            last_checked: DateTime.utc_now(),
+            last_status: response.status_code,
+            last_error: nil,
+            remaining_retries: state.remaining_retries - 1
+          }}
+        else
+          {:noreply, %HTTPMonitor{
+            state | status: :ok,
+            last_checked: DateTime.utc_now(),
+            last_status: response.status_code,
+            last_error: nil,
+            remaining_retries: state.retries
+          }}
+        end
+      {:error, error} ->
+        Logger.error("HTTP Monitor Error: #{inspect(error)}")
+        tick(state.interval)
+        if (state.remaining_retries > 1) and (state.status == :pending) do
+          {:noreply, %HTTPMonitor{
+            state | status: :pending,
+            last_checked: DateTime.utc_now(),
+            last_status: nil,
+            last_error: error,
+            remaining_retries: state.remaining_retries - 1
+          }}
+        else
+          {:noreply, %HTTPMonitor{
+            state | status: :error,
+            last_checked: DateTime.utc_now(),
+            last_status: nil,
+            last_error: error,
+            remaining_retries: state.retries
+          }}
+        end
+    end
+  end
+
+  def handle_call(:status, _from, state) do
+    {:reply, state, state}
+  end
+
+  defp check_http(url, opts \\ []) do
+    case HTTPoison.get(url, [{"User-Agent", "Sentinelix HTTP Monitor"}]) do
       {:ok, response} ->
         case response.status_code do
           x when x in 200..299 ->
@@ -60,4 +147,6 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
         {:error, error}
     end
   end
+
+  defp tick(interval), do: Process.send_after(self(), :tick, :timer.seconds(interval))
 end
