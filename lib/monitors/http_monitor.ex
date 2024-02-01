@@ -32,28 +32,43 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     expiry_warn_after = Keyword.get(opts, :expiry_warn_after, 30)
     expiry_critical_after = Keyword.get(opts, :expiry_critical_after, 7)
 
-    if url == nil do
-      {:stop, {:error, "No URL specified"}}
-    else
-      Logger.info("Starting HTTP Monitor")
-      tick(interval)
-      {:ok, %HTTPMonitor{
-        name: Keyword.get(opts, :name, __MODULE__),
-        url: url,
-        status: :pending,
-        interval: interval,
-        retries: retries,
-        last_checked: nil,
-        last_status: nil,
-        last_error: nil,
-        verify_ssl: verify_ssl,
-        follow_redirects: follow_redirects,
-        check_certificate: check_certificate,
-        expiry_warn_after: expiry_warn_after,
-        expiry_critical_after: expiry_critical_after,
-        remaining_retries: retries
-      }}
+    verify_url = fn url ->
+      cond do
+        url == nil ->
+          {:error, "No URL specified"}
+        not is_binary(url) ->
+          {:error, "URL must be a string"}
+        URI.parse(url) ->
+          {:ok, url}
+      end
     end
+
+    with {:ok, url} <- verify_url.(url),
+         {:cert_check, true} <- {:cert_check, check_certificate != verify_ssl} do
+            Logger.info("Starting HTTP Monitor")
+            tick(interval)
+            {:ok, %HTTPMonitor{
+              name: Keyword.get(opts, :name, __MODULE__),
+              url: url,
+              status: :pending,
+              interval: interval,
+              retries: retries,
+              last_checked: nil,
+              last_status: nil,
+              last_error: nil,
+              verify_ssl: verify_ssl,
+              follow_redirects: follow_redirects,
+              check_certificate: check_certificate,
+              expiry_warn_after: expiry_warn_after,
+              expiry_critical_after: expiry_critical_after,
+              remaining_retries: retries
+            }}
+      else
+        {:error, error} ->
+          {:stop, {:error, error}}
+        {:cert_check, false} ->
+          {:stop, {:error, "Certificate check requires SSL verification"}}
+      end
   end
 
   def handle_info(:tick, state) do
