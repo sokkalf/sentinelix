@@ -83,7 +83,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
       {:ok, response} ->
         Logger.info("HTTP Monitor OK")
         tick(state.interval)
-        if (state.remaining_retries > 1) and (state.status == :pending) do
+        if (state.remaining_retries > 1) and (state.status != :ok) do
           {:noreply, %HTTPMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
@@ -103,7 +103,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
       {:error, error} ->
         Logger.error("HTTP Monitor Error: #{inspect(error)}")
         tick(state.interval)
-        if (state.remaining_retries > 1) and (state.status == :pending) do
+        if (state.remaining_retries > 1) and (state.status != :error) do
           {:noreply, %HTTPMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
