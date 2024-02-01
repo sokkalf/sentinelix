@@ -113,7 +113,11 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   end
 
   defp check_http(url, opts \\ []) do
-    case HTTPoison.get(url, [{"User-Agent", "Sentinelix HTTP Monitor"}]) do
+    verify_ssl = case Keyword.get(opts, :verify_ssl, true) do
+      true -> :verify_peer
+      false -> :verify_none
+    end
+    case HTTPoison.get(url, [{"User-Agent", "Sentinelix HTTP Monitor"}], [ssl: [verify: verify_ssl]]) do
       {:ok, response} ->
         case response.status_code do
           x when x in 200..299 ->
