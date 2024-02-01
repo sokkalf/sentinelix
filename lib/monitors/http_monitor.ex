@@ -134,6 +134,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     end
     case HTTPoison.get(url, [{"User-Agent", "Sentinelix HTTP Monitor"}], [ssl: [verify: verify_ssl]]) do
       {:ok, response} ->
+        normalized_headers = Enum.map(response.headers, fn {k, v} -> {String.downcase(k), v} end)
         case response.status_code do
           x when x in 200..299 ->
             {:ok, response}
@@ -144,7 +145,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
               if redirects > 10 do
                 {:error, "Too many redirects"}
               else
-                case List.keyfind(response.headers, "location", 0) do
+                case List.keyfind(normalized_headers, "location", 0) do
                   {"location", url} ->
                     Keyword.put(opts, :redirects, redirects + 1)
                     check_http(url, opts)
