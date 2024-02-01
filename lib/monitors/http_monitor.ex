@@ -127,7 +127,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     {:reply, state, state}
   end
 
-  defp check_http(url, opts \\ []) do
+  defp check_http(url, opts) do
     verify_ssl = case Keyword.get(opts, :verify_ssl, true) do
       true -> :verify_peer
       false -> :verify_none
