@@ -18,8 +18,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   Starts the HTTP Monitor
   """
   def start_link(opts \\ []) do
-    name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    GenServer.start_link(__MODULE__, opts)
   end
 
   def init(opts) do
@@ -31,6 +30,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     check_certificate = Keyword.get(opts, :check_certificate, false)
     expiry_warn_after = Keyword.get(opts, :expiry_warn_after, 30)
     expiry_critical_after = Keyword.get(opts, :expiry_critical_after, 7)
+    name = Keyword.get(opts, :name, nil)
 
     verify_url = fn url ->
       cond do
@@ -43,12 +43,13 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
       end
     end
 
-    with {:ok, url} <- verify_url.(url),
+    with {:name, true} <- {:name, !is_nil(name) && is_binary(name)},
+         {:ok, url} <- verify_url.(url),
          {:cert_check, true} <- {:cert_check, check_certificate != verify_ssl} do
             Logger.info("Starting HTTP Monitor")
             tick(interval)
             {:ok, %HTTPMonitor{
-              name: Keyword.get(opts, :name, __MODULE__),
+              name: name,
               url: url,
               status: :pending,
               interval: interval,
@@ -68,6 +69,8 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           {:stop, {:error, error}}
         {:cert_check, false} ->
           {:stop, {:error, "Certificate check requires SSL verification"}}
+        {:name, false} ->
+          {:stop, {:error, "Name must be a string"}}
       end
   end
 
