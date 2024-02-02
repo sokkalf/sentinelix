@@ -109,7 +109,7 @@ defmodule Sentinelix.Monitors.SSLMonitor do
           }}
         end
       {:warning, warning} ->
-        Logger.error("SSL Monitor warning: #{inspect(warning)}")
+        Logger.warning("SSL Monitor warning: #{inspect(warning)}")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :warning) do
           {:noreply, %SSLMonitor{
