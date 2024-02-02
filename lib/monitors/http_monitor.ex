@@ -10,9 +10,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
 
   defstruct [:name, :url, :status, :interval, :retries,
              :last_checked, :last_status, :last_error,
-             :verify_ssl, :follow_redirects, :check_certificate,
-             :expiry_warn_after, :expiry_critical_after,
-             :remaining_retries]
+             :verify_ssl, :follow_redirects, :remaining_retries]
 
   @doc """
   Starts the HTTP Monitor
@@ -27,9 +25,6 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     retries = Keyword.get(opts, :retries, 3)
     verify_ssl = Keyword.get(opts, :verify_ssl, true)
     follow_redirects = Keyword.get(opts, :follow_redirects, false)
-    check_certificate = Keyword.get(opts, :check_certificate, false)
-    expiry_warn_after = Keyword.get(opts, :expiry_warn_after, 30)
-    expiry_critical_after = Keyword.get(opts, :expiry_critical_after, 7)
     name = Keyword.get(opts, :name, nil)
 
     verify_url = fn url ->
@@ -44,8 +39,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     end
 
     with {:name, true} <- {:name, !is_nil(name) && is_binary(name)},
-         {:ok, url} <- verify_url.(url),
-         {:cert_check, true} <- {:cert_check, check_certificate != verify_ssl} do
+         {:ok, url} <- verify_url.(url) do
             Logger.info("Starting HTTP Monitor")
             tick(interval)
             {:ok, %HTTPMonitor{
@@ -59,16 +53,11 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
               last_error: nil,
               verify_ssl: verify_ssl,
               follow_redirects: follow_redirects,
-              check_certificate: check_certificate,
-              expiry_warn_after: expiry_warn_after,
-              expiry_critical_after: expiry_critical_after,
               remaining_retries: retries
             }}
       else
         {:error, error} ->
           {:stop, {:error, error}}
-        {:cert_check, false} ->
-          {:stop, {:error, "Certificate check requires SSL verification"}}
         {:name, false} ->
           {:stop, {:error, "Name must be a string"}}
       end
