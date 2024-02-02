@@ -136,6 +136,46 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     {:reply, state, state}
   end
 
+  defp check_ssl_expiry(url) do
+    # Borrowed from:
+    # https://elixirforum.com/t/get-ssl-expiry-date-from-an-http-request-using-mint-finch-mojito/35055/3
+    uri = URI.parse(url)
+
+    sslopts = [
+        verify: :verify_peer,
+        cacerts: :public_key.cacerts_get(),
+        versions: [:"tlsv1.2"]
+    ]
+
+    cert =
+      with {:ok, sock} <- :ssl.connect(uri.host, uri.port, sslopts),
+           {:ok, der} <- :ssl.peercert(sock) do
+        :public_key.pkix_decode_cert(der, :plain)
+      end
+
+    validity =
+      cert
+      |> elem(1)
+      |> elem(5)
+
+    case validity do
+      {:Validity, {:utcTime, valid_from}, {:utcTime, valid_to}} ->
+        {:ok, from_cert_time(valid_from), from_cert_time(valid_to)}
+
+      smth ->
+        {:error, smth}
+    end
+  end
+
+  defp from_cert_time(cert_time_charlist) do
+    case to_string(cert_time_charlist) do
+      <<year::binary-2, month::binary-2, day::binary-2, hour::binary-2, minute::binary-2, second::binary-2, tz::binary>> ->
+        DateTime.from_iso8601("20#{year}-#{month}-#{day}T#{hour}:#{minute}:#{second}#{tz}")
+      _ ->
+        {:error, "Invalid time format"}
+    end
+  end
+
   defp check_http(url, opts) do
     verify_ssl = case Keyword.get(opts, :verify_ssl, true) do
       true -> :verify_peer
