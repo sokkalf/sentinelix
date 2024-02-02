@@ -134,6 +134,11 @@ defmodule Sentinelix.Monitors.SSLMonitor do
     end
   end
 
+  def handle_info({:ssl_closed, _}, state) do
+    Logger.debug("SSL Monitor: SSL connection closed")
+    {:noreply, state}
+  end
+
   def handle_call(:status, _from, state) do
     {:reply, state, state}
   end
@@ -174,7 +179,8 @@ defmodule Sentinelix.Monitors.SSLMonitor do
 
     cert =
       with {:ok, sock} <- :ssl.connect(to_charlist(uri.host), uri.port, sslopts),
-           {:ok, der} <- :ssl.peercert(sock) do
+           {:ok, der} <- :ssl.peercert(sock),
+           :ok <- :ssl.close(sock) do
         :public_key.pkix_decode_cert(der, :plain)
       end
 
