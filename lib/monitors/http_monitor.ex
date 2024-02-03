@@ -9,7 +9,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   """
 
   defstruct [:name, :url, :status, :interval, :retries,
-             :last_checked, :last_status, :last_error,
+             :last_checked, :last_status, :last_response,
              :verify_ssl, :follow_redirects, :remaining_retries,
              :last_response_time, :last_status_code]
 
@@ -52,7 +52,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
               last_checked: nil,
               last_status: nil,
               last_status_code: nil,
-              last_error: nil,
+              last_response: nil,
               verify_ssl: verify_ssl,
               follow_redirects: follow_redirects,
               remaining_retries: retries
@@ -80,9 +80,9 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             last_checked: DateTime.utc_now(),
             last_status: state.status,
             last_status_code: response.status_code,
-            last_error: nil,
             remaining_retries: state.remaining_retries - 1,
-            last_response_time: response_time
+            last_response_time: response_time,
+            last_response: response.body
           }}
         else
           if state.status == :pending do
@@ -93,15 +93,19 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             last_checked: DateTime.utc_now(),
             last_status: state.status,
             last_status_code: response.status_code,
-            last_error: nil,
             remaining_retries: state.retries,
-            last_response_time: response_time
+            last_response_time: response_time,
+            last_response: response.body
           }}
         end
       {:error, response, response_time} ->
         status_code = case response do
           %HTTPoison.Response{status_code: status_code} -> status_code
           _ -> nil
+        end
+        body = case response do
+          %HTTPoison.Response{body: body} -> body
+          _ -> response
         end
         Logger.error("HTTP Monitor Error: #{inspect(response)}")
         tick(state.interval)
@@ -111,9 +115,9 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             last_checked: DateTime.utc_now(),
             last_status: state.status,
             last_status_code: status_code,
-            last_error: response,
             remaining_retries: state.remaining_retries - 1,
-            last_response_time: response_time
+            last_response_time: response_time,
+            last_response: body
           }}
         else
           if state.status == :pending do
@@ -123,10 +127,10 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             state | status: :error,
             last_checked: DateTime.utc_now(),
             last_status: state.status,
-            last_error: response,
             last_status_code: status_code,
             remaining_retries: state.retries,
-            last_response_time: response_time
+            last_response_time: response_time,
+            last_response: body
           }}
         end
     end
