@@ -11,7 +11,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   defstruct [:name, :url, :status, :interval, :retries,
              :last_checked, :last_status, :last_error,
              :verify_ssl, :follow_redirects, :remaining_retries,
-             :last_response_time]
+             :last_response_time, :last_status_code]
 
   @doc """
   Starts the HTTP Monitor
@@ -51,6 +51,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
               retries: retries,
               last_checked: nil,
               last_status: nil,
+              last_status_code: nil,
               last_error: nil,
               verify_ssl: verify_ssl,
               follow_redirects: follow_redirects,
@@ -77,7 +78,8 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           {:noreply, %HTTPMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
-            last_status: response.status_code,
+            last_status: state.status,
+            last_status_code: response.status_code,
             last_error: nil,
             remaining_retries: state.remaining_retries - 1,
             last_response_time: response_time
@@ -89,21 +91,27 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           {:noreply, %HTTPMonitor{
             state | status: :ok,
             last_checked: DateTime.utc_now(),
-            last_status: response.status_code,
+            last_status: state.status,
+            last_status_code: response.status_code,
             last_error: nil,
             remaining_retries: state.retries,
             last_response_time: response_time
           }}
         end
-      {:error, error, response_time} ->
-        Logger.error("HTTP Monitor Error: #{inspect(error)}")
+      {:error, response, response_time} ->
+        status_code = case response do
+          %HTTPoison.Response{status_code: status_code} -> status_code
+          _ -> nil
+        end
+        Logger.error("HTTP Monitor Error: #{inspect(response)}")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :error) do
           {:noreply, %HTTPMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
-            last_status: nil,
-            last_error: error,
+            last_status: state.status,
+            last_status_code: status_code,
+            last_error: response,
             remaining_retries: state.remaining_retries - 1,
             last_response_time: response_time
           }}
@@ -114,8 +122,9 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           {:noreply, %HTTPMonitor{
             state | status: :error,
             last_checked: DateTime.utc_now(),
-            last_status: nil,
-            last_error: error,
+            last_status: state.status,
+            last_error: response,
+            last_status_code: status_code,
             remaining_retries: state.retries,
             last_response_time: response_time
           }}
