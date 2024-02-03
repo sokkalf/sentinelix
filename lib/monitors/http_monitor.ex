@@ -10,7 +10,8 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
 
   defstruct [:name, :url, :status, :interval, :retries,
              :last_checked, :last_status, :last_error,
-             :verify_ssl, :follow_redirects, :remaining_retries]
+             :verify_ssl, :follow_redirects, :remaining_retries,
+             :last_response_time]
 
   @doc """
   Starts the HTTP Monitor
@@ -69,7 +70,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
       verify_ssl: state.verify_ssl,
       follow_redirects: state.follow_redirects
     ]) do
-      {:ok, response} ->
+      {:ok, response, response_time} ->
         Logger.info("HTTP Monitor OK")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :ok) do
@@ -78,7 +79,8 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             last_checked: DateTime.utc_now(),
             last_status: response.status_code,
             last_error: nil,
-            remaining_retries: state.remaining_retries - 1
+            remaining_retries: state.remaining_retries - 1,
+            last_response_time: response_time
           }}
         else
           if state.status == :pending do
@@ -89,10 +91,11 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             last_checked: DateTime.utc_now(),
             last_status: response.status_code,
             last_error: nil,
-            remaining_retries: state.retries
+            remaining_retries: state.retries,
+            last_response_time: response_time
           }}
         end
-      {:error, error} ->
+      {:error, error, response_time} ->
         Logger.error("HTTP Monitor Error: #{inspect(error)}")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :error) do
@@ -101,7 +104,8 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             last_checked: DateTime.utc_now(),
             last_status: nil,
             last_error: error,
-            remaining_retries: state.remaining_retries - 1
+            remaining_retries: state.remaining_retries - 1,
+            last_response_time: response_time
           }}
         else
           if state.status == :pending do
@@ -112,7 +116,8 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             last_checked: DateTime.utc_now(),
             last_status: nil,
             last_error: error,
-            remaining_retries: state.retries
+            remaining_retries: state.retries,
+            last_response_time: response_time
           }}
         end
     end
@@ -127,39 +132,42 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
       true -> :verify_peer
       false -> :verify_none
     end
-    case HTTPoison.get(url, [{"User-Agent", "Sentinelix HTTP Monitor"}], [ssl: [verify: verify_ssl]]) do
+    {response_time, httpoison_result} = :timer.tc(fn ->
+      HTTPoison.get(url, [{"User-Agent", "Sentinelix HTTP Monitor"}], [ssl: [verify: verify_ssl]])
+    end)
+    case httpoison_result do
       {:ok, response} ->
         normalized_headers = Enum.map(response.headers, fn {k, v} -> {String.downcase(k), v} end)
         case response.status_code do
           x when x in 200..299 ->
-            {:ok, response}
+            {:ok, response, response_time}
           x when x in 300..399 ->
             follow_redirects = Keyword.get(opts, :follow_redirects, false)
             if follow_redirects do
               redirects = Keyword.get(opts, :redirects, 0)
               if redirects > 10 do
-                {:error, "Too many redirects"}
+                {:error, "Too many redirects", response_time}
               else
                 case List.keyfind(normalized_headers, "location", 0) do
                   {"location", url} ->
                     Keyword.put(opts, :redirects, redirects + 1)
                     check_http(url, opts)
                   _ ->
-                    {:error, "No location header"}
+                    {:error, "No location header", response_time}
                 end
               end
             else
-              {:error, response}
+              {:error, response, response_time}
             end
           x when x in 400..499 ->
-            {:error, response}
+            {:error, response, response_time}
           x when x in 500..599 ->
-            {:error, response}
+            {:error, response, response_time}
           _ ->
-            {:error, response}
+            {:error, response, response_time}
         end
       {:error, error} ->
-        {:error, error}
+        {:error, error, response_time}
     end
   end
 
