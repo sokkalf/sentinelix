@@ -78,20 +78,20 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           {:noreply, %HTTPMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
-            last_status: state.status,
+            last_status: state.last_status,
             last_status_code: response.status_code,
             remaining_retries: state.remaining_retries - 1,
             last_response_time: response_time,
             last_response: response.body
           }}
         else
-          if state.status == :pending do
+          if state.last_status == :error do
             Logger.info("UP Alert goes here")
           end
           {:noreply, %HTTPMonitor{
             state | status: :ok,
             last_checked: DateTime.utc_now(),
-            last_status: state.status,
+            last_status: :ok,
             last_status_code: response.status_code,
             remaining_retries: state.retries,
             last_response_time: response_time,
@@ -113,20 +113,20 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           {:noreply, %HTTPMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
-            last_status: state.status,
+            last_status: state.last_status,
             last_status_code: status_code,
             remaining_retries: state.remaining_retries - 1,
             last_response_time: response_time,
             last_response: body
           }}
         else
-          if state.status == :pending do
+          if state.last_status == :ok do
             Logger.info("DOWN Alert goes here")
           end
           {:noreply, %HTTPMonitor{
             state | status: :error,
             last_checked: DateTime.utc_now(),
-            last_status: state.status,
+            last_status: :error,
             last_status_code: status_code,
             remaining_retries: state.retries,
             last_response_time: response_time,
