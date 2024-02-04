@@ -2,6 +2,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   use GenServer
   require Logger
 
+  alias Phoenix.PubSub
   alias Sentinelix.Monitors.HTTPMonitor
 
   @moduledoc """
@@ -86,7 +87,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           }}
         else
           if state.last_status == :error do
-            Logger.info("UP Alert goes here")
+            alert(:ok, state)
           end
           {:noreply, %HTTPMonitor{
             state | status: :ok,
@@ -121,7 +122,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           }}
         else
           if state.last_status == :ok do
-            Logger.info("DOWN Alert goes here")
+            alert(:error, state)
           end
           {:noreply, %HTTPMonitor{
             state | status: :error,
@@ -138,6 +139,14 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
 
   def handle_call(:status, _from, state) do
     {:reply, state, state}
+  end
+
+  defp alert(status, state) do
+    PubSub.broadcast(Sentinelix.PubSub, "HTTPMonitor_#{state.name}", {status, state})
+    case status do
+      :ok -> Logger.info("UP Alert goes here")
+      :error -> Logger.info("DOWN Alert goes here")
+    end
   end
 
   defp check_http(url, opts) do
