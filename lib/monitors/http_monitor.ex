@@ -12,7 +12,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   defstruct [:name, :url, :status, :interval, :retries,
              :last_checked, :last_status, :last_response,
              :verify_ssl, :follow_redirects, :remaining_retries,
-             :last_response_time, :last_status_code]
+             :last_response_time, :last_status_code, :keyword]
 
   @doc """
   Starts the HTTP Monitor
@@ -27,6 +27,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     retries = Keyword.get(opts, :retries, 3)
     verify_ssl = Keyword.get(opts, :verify_ssl, true)
     follow_redirects = Keyword.get(opts, :follow_redirects, false)
+    keyword = Keyword.get(opts, :keyword, nil)
     name = Keyword.get(opts, :name, nil)
 
     verify_url = fn url ->
