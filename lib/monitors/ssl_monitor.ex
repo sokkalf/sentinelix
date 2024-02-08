@@ -182,12 +182,17 @@ defmodule Sentinelix.Monitors.SSLMonitor do
            {:ok, der} <- :ssl.peercert(sock),
            :ok <- :ssl.close(sock) do
         :public_key.pkix_decode_cert(der, :plain)
+      else
+        {:error, reason} -> {:error, reason}
       end
 
-    validity =
-      cert
-      |> elem(1)
-      |> elem(5)
+    validity = case cert do
+      {:error, reason} -> {:error, reason}
+      cert ->
+        cert
+        |> elem(1)
+        |> elem(5)
+    end
 
     case validity do
       {:Validity, {:utcTime, valid_from}, {:utcTime, valid_to}} ->
