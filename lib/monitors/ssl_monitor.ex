@@ -178,7 +178,7 @@ defmodule Sentinelix.Monitors.SSLMonitor do
     ]
 
     cert =
-      with {:ok, sock} <- :ssl.connect(to_charlist(uri.host), uri.port, sslopts),
+      with {:ok, sock} <- :ssl.connect(to_charlist(uri.host), uri.port, sslopts, 30_000),
            {:ok, der} <- :ssl.peercert(sock),
            :ok <- :ssl.close(sock) do
         :public_key.pkix_decode_cert(der, :plain)
