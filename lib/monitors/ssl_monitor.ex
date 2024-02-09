@@ -197,7 +197,8 @@ defmodule Sentinelix.Monitors.SSLMonitor do
     case validity do
       {:Validity, {:utcTime, valid_from}, {:utcTime, valid_to}} ->
         {:ok, from_cert_time(valid_from), from_cert_time(valid_to)}
-
+      {:error, reason} ->
+        {:error, reason}
       smth ->
         {:error, smth}
     end
