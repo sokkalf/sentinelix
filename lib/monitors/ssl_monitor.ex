@@ -172,7 +172,7 @@ defmodule Sentinelix.Monitors.SSLMonitor do
     uri = URI.parse(url)
 
     sslopts = [
-        verify: :verify_peer,
+        verify: :verify_none,
         cacerts: :public_key.cacerts_get(),
         versions: [:"tlsv1.2"]
     ]
