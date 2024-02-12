@@ -1,8 +1,8 @@
-defmodule Sentinelix.Monitors.SSLMonitor do
+defmodule Sentinelix.Monitors.CertMonitor do
   use GenServer
   require Logger
 
-  alias Sentinelix.Monitors.SSLMonitor
+  alias Sentinelix.Monitors.CertMonitor
 
   @moduledoc """
   SSL Monitor
@@ -41,9 +41,9 @@ defmodule Sentinelix.Monitors.SSLMonitor do
 
     with {:name, true} <- {:name, !is_nil(name) && is_binary(name)},
          {:ok, url} <- verify_url.(url) do
-            Logger.info("Starting SSL Monitor")
+            Logger.info("Starting Cert Monitor")
             tick(interval)
-            {:ok, %SSLMonitor{
+            {:ok, %CertMonitor{
               name: name,
               url: url,
               status: :pending,
@@ -63,10 +63,10 @@ defmodule Sentinelix.Monitors.SSLMonitor do
     Logger.info("Checking SSL certificate for #{state.url}")
     case check_ssl_expiry(state) do
       {:ok, response} ->
-        Logger.info("SSL Monitor OK")
+        Logger.info("Cert Monitor OK")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :ok) do
-          {:noreply, %SSLMonitor{
+          {:noreply, %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
             last_status: response,
@@ -77,7 +77,7 @@ defmodule Sentinelix.Monitors.SSLMonitor do
           if state.status == :pending do
             Logger.info("UP Alert goes here")
           end
-          {:noreply, %SSLMonitor{
+          {:noreply, %CertMonitor{
             state | status: :ok,
             last_checked: DateTime.utc_now(),
             last_status: response,
@@ -86,10 +86,10 @@ defmodule Sentinelix.Monitors.SSLMonitor do
           }}
         end
       {:critical, error} ->
-        Logger.error("SSL Monitor critical: #{inspect(error)}")
+        Logger.error("Cert Monitor critical: #{inspect(error)}")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :error) do
-          {:noreply, %SSLMonitor{
+          {:noreply, %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
             last_status: error,
@@ -100,7 +100,7 @@ defmodule Sentinelix.Monitors.SSLMonitor do
           if state.status == :pending do
             Logger.info("DOWN Alert goes here")
           end
-          {:noreply, %SSLMonitor{
+          {:noreply, %CertMonitor{
             state | status: :error,
             last_checked: DateTime.utc_now(),
             last_status: error,
@@ -109,10 +109,10 @@ defmodule Sentinelix.Monitors.SSLMonitor do
           }}
         end
       {:warning, warning} ->
-        Logger.warning("SSL Monitor warning: #{inspect(warning)}")
+        Logger.warning("Cert Monitor warning: #{inspect(warning)}")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :warning) do
-          {:noreply, %SSLMonitor{
+          {:noreply, %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
             last_status: warning,
@@ -123,7 +123,7 @@ defmodule Sentinelix.Monitors.SSLMonitor do
           if state.status == :pending do
             Logger.info("DOWN Alert goes here")
           end
-          {:noreply, %SSLMonitor{
+          {:noreply, %CertMonitor{
             state | status: :warning,
             last_checked: DateTime.utc_now(),
             last_status: warning,
@@ -135,7 +135,7 @@ defmodule Sentinelix.Monitors.SSLMonitor do
   end
 
   def handle_info({:ssl_closed, _}, state) do
-    Logger.debug("SSL Monitor: SSL connection closed")
+    Logger.debug("Cert Monitor: SSL connection closed")
     {:noreply, state}
   end
 
