@@ -121,7 +121,7 @@ defmodule Sentinelix.Monitors.CertMonitor do
           }}
         else
           if state.status == :pending do
-            Logger.info("DOWN Alert goes here")
+            Logger.info("WARN Alert goes here")
           end
           {:noreply, %CertMonitor{
             state | status: :warning,
