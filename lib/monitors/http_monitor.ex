@@ -80,7 +80,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
           {:noreply, %HTTPMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
-            last_status: state.last_status,
+            last_status: state.last_status || :pending,
             last_status_code: response.status_code,
             remaining_retries: state.remaining_retries - 1,
             last_response_time: response_time,

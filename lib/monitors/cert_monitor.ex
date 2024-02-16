@@ -2,6 +2,7 @@ defmodule Sentinelix.Monitors.CertMonitor do
   use GenServer
   require Logger
 
+  alias Phoenix.PubSub
   alias Sentinelix.Monitors.CertMonitor
 
   @moduledoc """
@@ -11,7 +12,7 @@ defmodule Sentinelix.Monitors.CertMonitor do
   defstruct [:name, :url, :status, :interval, :retries,
              :last_checked, :last_status, :last_error,
              :expiry_warn_after, :expiry_critical_after,
-             :remaining_retries]
+             :remaining_retries, :last_response]
 
   @doc """
   Starts the SSL Monitor
@@ -69,19 +70,21 @@ defmodule Sentinelix.Monitors.CertMonitor do
           {:noreply, %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
-            last_status: response,
+            last_status: state.last_status || :pending,
             last_error: nil,
+            last_response: response,
             remaining_retries: state.remaining_retries - 1
           }}
         else
-          if state.status == :pending do
-            Logger.info("UP Alert goes here")
+          if state.last_status == :error or state.last_status == :warning do
+            alert(:ok, state)
           end
           {:noreply, %CertMonitor{
             state | status: :ok,
             last_checked: DateTime.utc_now(),
-            last_status: response,
+            last_status: :ok,
             last_error: nil,
+            last_response: response,
             remaining_retries: state.retries
           }}
         end
@@ -92,19 +95,21 @@ defmodule Sentinelix.Monitors.CertMonitor do
           {:noreply, %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
-            last_status: error,
+            last_status: state.last_status,
             last_error: error,
+            last_response: error,
             remaining_retries: state.remaining_retries - 1
           }}
         else
-          if state.status == :pending do
-            Logger.info("DOWN Alert goes here")
+          if state.last_status == :ok or state.last_status == :warning do
+            alert(:error, state)
           end
           {:noreply, %CertMonitor{
             state | status: :error,
             last_checked: DateTime.utc_now(),
-            last_status: error,
+            last_status: :error,
             last_error: error,
+            last_response: error,
             remaining_retries: state.retries
           }}
         end
@@ -115,19 +120,21 @@ defmodule Sentinelix.Monitors.CertMonitor do
           {:noreply, %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
-            last_status: warning,
+            last_status: state.last_status,
             last_error: warning,
+            last_response: warning,
             remaining_retries: state.remaining_retries - 1
           }}
         else
-          if state.status == :pending do
-            Logger.info("WARN Alert goes here")
+          if state.last_status == :error or state.last_status == :ok do
+            alert(:warning, state)
           end
           {:noreply, %CertMonitor{
             state | status: :warning,
             last_checked: DateTime.utc_now(),
-            last_status: warning,
+            last_status: :warning,
             last_error: warning,
+            last_response: warning,
             remaining_retries: state.retries
           }}
         end
@@ -141,6 +148,15 @@ defmodule Sentinelix.Monitors.CertMonitor do
 
   def handle_call(:status, _from, state) do
     {:reply, state, state}
+  end
+
+  defp alert(status, state) do
+    PubSub.broadcast(Sentinelix.PubSub, "CertMonitor_#{state.name}", {status, state})
+    case status do
+      :ok -> Logger.info("UP Alert goes here")
+      :error -> Logger.info("DOWN Alert goes here")
+      :warning -> Logger.info("WARN Alert goes here")
+    end
   end
 
   defp check_ssl_expiry(state) do
