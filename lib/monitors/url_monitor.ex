@@ -34,6 +34,10 @@ defmodule Sentinelix.Monitors.URLMonitor do
     end
   end
 
+  def handle_call(:get_state, from, state) do
+    {:reply, state, state}
+  end
+
   defp start_monitors(name, url) do
     children = case URI.parse(url).scheme do
       "https" ->
