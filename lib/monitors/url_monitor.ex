@@ -35,7 +35,11 @@ defmodule Sentinelix.Monitors.URLMonitor do
   end
 
   def handle_call(:get_state, _from, state) do
-    {:reply, state, state}
+    children = Supervisor.which_children(state)
+    pids = Enum.map(children, fn {_, pid, _, _} -> pid end)
+    status = Enum.map(pids, fn pid -> GenServer.call(pid, :status) end)
+
+    {:reply, status, state}
   end
 
   defp start_monitors(name, url) do
