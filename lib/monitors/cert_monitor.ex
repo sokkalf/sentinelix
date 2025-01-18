@@ -1,4 +1,6 @@
 defmodule Sentinelix.Monitors.CertMonitor do
+  @behaviour Sentinelix.Monitor
+
   use GenServer
   require Logger
 
@@ -17,10 +19,20 @@ defmodule Sentinelix.Monitors.CertMonitor do
   @doc """
   Starts the SSL Monitor
   """
+  @impl true
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
   end
 
+  @doc """
+  Returns the current status of the monitor.
+  """
+  @impl Sentinelix.Monitor
+  def status(pid) do
+    GenServer.call(pid, :status)
+  end
+
+  @impl true
   def init(opts) do
     url = Keyword.get(opts, :url, nil)
     interval = Keyword.get(opts, :interval, 60)
@@ -60,6 +72,7 @@ defmodule Sentinelix.Monitors.CertMonitor do
     end
   end
 
+  @impl true
   def handle_info(:tick, state) do
     Logger.info("Checking SSL certificate for #{state.url}")
     case check_ssl_expiry(state) do
@@ -146,6 +159,7 @@ defmodule Sentinelix.Monitors.CertMonitor do
     {:noreply, state}
   end
 
+  @impl true
   def handle_call(:status, _from, state) do
     {:reply, state, state}
   end
