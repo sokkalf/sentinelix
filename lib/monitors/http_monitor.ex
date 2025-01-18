@@ -42,7 +42,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     retries = Keyword.get(opts, :retries, 3)
     verify_ssl = Keyword.get(opts, :verify_ssl, true)
     follow_redirects = Keyword.get(opts, :follow_redirects, false)
-    keyword = Keyword.get(opts, :keyword, nil)
+    _keyword = Keyword.get(opts, :keyword, nil)
     name = Keyword.get(opts, :name, nil)
 
     verify_url = fn url ->
