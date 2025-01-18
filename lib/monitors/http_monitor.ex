@@ -1,4 +1,6 @@
 defmodule Sentinelix.Monitors.HTTPMonitor do
+  @behaviour Sentinelix.Monitor
+
   use GenServer
   require Logger
 
@@ -17,10 +19,23 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   @doc """
   Starts the HTTP Monitor
   """
+  @impl Sentinelix.Monitor
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
   end
 
+  @doc """
+  Returns the current status of the monitor.
+  """
+  @impl Sentinelix.Monitor
+  def status(pid) do
+    GenServer.call(pid, :status)
+  end
+
+  @doc """
+  Initializes the HTTP Monitor
+  """
+  @impl true
   def init(opts) do
     url = Keyword.get(opts, :url, nil)
     interval = Keyword.get(opts, :interval, 60)
@@ -67,6 +82,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
       end
   end
 
+  @impl true
   def handle_info(:tick, state) do
     Logger.info("Checking HTTP Monitor")
     case check_http(state.url, [
@@ -138,6 +154,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
     end
   end
 
+  @impl true
   def handle_call(:status, _from, state) do
     {:reply, state, state}
   end
