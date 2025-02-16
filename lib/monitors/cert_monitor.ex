@@ -56,7 +56,7 @@ defmodule Sentinelix.Monitors.CertMonitor do
          {:ok, url} <- verify_url.(url) do
             Logger.info("Starting Cert Monitor")
             tick(interval)
-            {:ok, %CertMonitor{
+            mon = %CertMonitor{
               name: name,
               url: url,
               status: :pending,
@@ -68,7 +68,9 @@ defmodule Sentinelix.Monitors.CertMonitor do
               expiry_warn_after: expiry_warn_after,
               expiry_critical_after: expiry_critical_after,
               remaining_retries: retries
-            }}
+            }
+            PubSub.broadcast(Sentinelix.PubSub, "CertMonitor_#{name}", {:started, mon})
+            {:ok, mon}
     end
   end
 
@@ -80,76 +82,88 @@ defmodule Sentinelix.Monitors.CertMonitor do
         Logger.info("Cert Monitor OK")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :ok) do
-          {:noreply, %CertMonitor{
+          mon = %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
             last_status: state.last_status || :pending,
             last_error: nil,
             last_response: response,
             remaining_retries: state.remaining_retries - 1
-          }}
+          }
+          PubSub.broadcast(Sentinelix.PubSub, "CertMonitor_#{state.name}", {:checked, mon})
+          {:noreply, mon}
         else
           if state.last_status == :error or state.last_status == :warning do
             alert(:ok, state)
           end
-          {:noreply, %CertMonitor{
+          mon = %CertMonitor{
             state | status: :ok,
             last_checked: DateTime.utc_now(),
             last_status: :ok,
             last_error: nil,
             last_response: response,
             remaining_retries: state.retries
-          }}
+          }
+          PubSub.broadcast(Sentinelix.PubSub, "CertMonitor_#{state.name}", {:checked, mon})
+          {:noreply, mon}
         end
       {:critical, error} ->
         Logger.error("Cert Monitor critical: #{inspect(error)}")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :error) do
-          {:noreply, %CertMonitor{
+          mon = %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
             last_status: state.last_status,
             last_error: error,
             last_response: error,
             remaining_retries: state.remaining_retries - 1
-          }}
+          }
+          PubSub.broadcast(Sentinelix.PubSub, "CertMonitor_#{state.name}", {:checked, mon})
+          {:noreply, mon}
         else
           if state.last_status == :ok or state.last_status == :warning do
             alert(:error, state)
           end
-          {:noreply, %CertMonitor{
+          mon = %CertMonitor{
             state | status: :error,
             last_checked: DateTime.utc_now(),
             last_status: :error,
             last_error: error,
             last_response: error,
             remaining_retries: state.retries
-          }}
+          }
+          PubSub.broadcast(Sentinelix.PubSub, "CertMonitor_#{state.name}", {:checked, mon})
+          {:noreply, mon}
         end
       {:warning, warning} ->
         Logger.warning("Cert Monitor warning: #{inspect(warning)}")
         tick(state.interval)
         if (state.remaining_retries > 1) and (state.status != :warning) do
-          {:noreply, %CertMonitor{
+          mon = %CertMonitor{
             state | status: :pending,
             last_checked: DateTime.utc_now(),
             last_status: state.last_status,
             last_error: warning,
             last_response: warning,
             remaining_retries: state.remaining_retries - 1
-          }}
+          }
+          PubSub.broadcast(Sentinelix.PubSub, "CertMonitor_#{state.name}", {:checked, mon})
+          {:noreply, mon}
         else
           if state.last_status == :error or state.last_status == :ok do
             alert(:warning, state)
           end
-          {:noreply, %CertMonitor{
+          mon = %CertMonitor{
             state | status: :warning,
             last_checked: DateTime.utc_now(),
             last_status: :warning,
             last_error: warning,
             last_response: warning,
             remaining_retries: state.retries
-          }}
+          }
+          PubSub.broadcast(Sentinelix.PubSub, "CertMonitor_#{state.name}", {:checked, mon})
+          {:noreply, mon}
         end
     end
   end

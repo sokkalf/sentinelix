@@ -42,9 +42,15 @@ defmodule Sentinelix.Monitors.URLMonitor do
     {:reply, status, state}
   end
 
+  def handle_info(msg, state) do
+    Logger.info("Received message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
   defp start_monitors(name, url) do
     children = case URI.parse(url).scheme do
       "https" ->
+        Logger.info("Subscribing to CertMonitor_#{name} and HTTPMonitor_#{name}")
         PubSub.subscribe(Sentinelix.PubSub, "HTTPMonitor_" <> name)
         PubSub.subscribe(Sentinelix.PubSub, "CertMonitor_" <> name)
         [{Sentinelix.Monitors.CertMonitor, name: name, url: url, interval: 60}, {Sentinelix.Monitors.HTTPMonitor, name: name, url: url, interval: 60}]
