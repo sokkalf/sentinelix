@@ -42,8 +42,39 @@ defmodule Sentinelix.Monitors.URLMonitor do
     {:reply, status, state}
   end
 
-  def handle_info(msg, state) do
-    Logger.info("Received message: #{inspect(msg)}")
+  def handle_info({monitor_state, %Sentinelix.Monitors.HTTPMonitor{} = monitor}, state) do
+    Logger.info("Received monitor state from HTTP monitor: #{inspect(monitor_state)}")
+    mon = %Sentinelix.Monitor{
+      type: "http",
+      name: monitor.name,
+      url: monitor.url,
+      status: monitor_state,
+      interval: monitor.interval,
+      retries: monitor.retries,
+      last_checked: monitor.last_checked,
+      last_status: monitor.last_status,
+      last_error: "HTTP status: #{monitor.last_status_code}",
+      last_response_time: monitor.last_response_time,
+    }
+    PubSub.broadcast(Sentinelix.PubSub, "MonitorUpdate", {monitor.name <> " (HTTP)", mon})
+    {:noreply, state}
+  end
+
+  def handle_info({monitor_state, %Sentinelix.Monitors.CertMonitor{} = monitor}, state) do
+    Logger.info("Received monitor state from Cert monitor: #{inspect(monitor_state)}")
+    mon = %Sentinelix.Monitor{
+      type: "cert",
+      name: monitor.name,
+      url: monitor.url,
+      status: monitor_state,
+      interval: monitor.interval,
+      retries: monitor.retries,
+      last_checked: monitor.last_checked,
+      last_status: monitor.last_status,
+      last_error: monitor.last_error,
+      last_response_time: nil,
+    }
+    PubSub.broadcast(Sentinelix.PubSub, "MonitorUpdate", {monitor.name <> " (Certificate)", mon})
     {:noreply, state}
   end
 

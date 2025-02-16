@@ -17,7 +17,7 @@ defmodule SentinelixWeb.Router do
   scope "/", SentinelixWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", Live.Dashboard
   end
 
   # Other scopes may use custom stacks.
