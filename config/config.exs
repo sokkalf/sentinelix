@@ -12,6 +12,7 @@ config :sentinelix,
 
 # Configures the endpoint
 config :sentinelix, SentinelixWeb.Endpoint,
+  adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],
   render_errors: [
     formats: [html: SentinelixWeb.ErrorHTML, json: SentinelixWeb.ErrorJSON],
