@@ -56,7 +56,7 @@ defmodule Sentinelix.Monitors.URLMonitor do
       last_error: "HTTP status: #{monitor.last_status_code}",
       last_response_time: monitor.last_response_time,
     }
-    PubSub.broadcast(Sentinelix.PubSub, "MonitorUpdate", {monitor.name <> " (HTTP)", mon})
+    PubSub.broadcast(Sentinelix.PubSub, "MonitorUpdate", {monitor.name, mon.type, mon})
     {:noreply, state}
   end
 
@@ -74,7 +74,7 @@ defmodule Sentinelix.Monitors.URLMonitor do
       last_error: monitor.last_error,
       last_response_time: nil,
     }
-    PubSub.broadcast(Sentinelix.PubSub, "MonitorUpdate", {monitor.name <> " (Certificate)", mon})
+    PubSub.broadcast(Sentinelix.PubSub, "MonitorUpdate", {monitor.name, mon.type, mon})
     {:noreply, state}
   end
 

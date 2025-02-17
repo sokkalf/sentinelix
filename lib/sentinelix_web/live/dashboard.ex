@@ -7,9 +7,9 @@ defmodule SentinelixWeb.Live.Dashboard do
   def render(assigns) do
     ~H"""
     <div class="bg-gray-100">
-      <%= for {name, monitor} <- @monitors do %>
+      <%= for {{name, type}, monitor} <- @monitors do %>
         <div class="p-4 bg-white shadow-md rounded-lg mb-4">
-          <h2 class="text-lg font-bold"><%= name %></h2>
+          <h2 class="text-lg font-bold"><%= name %> (<%= type %>)</h2>
           <p class="text-sm text-gray-600">Status: <%= monitor.status %></p>
           <p class="text-sm text-gray-600">Last checked: <%= monitor.last_checked %></p>
           <p class="text-sm text-gray-600">Last status: <%= monitor.last_status %></p>
@@ -21,9 +21,9 @@ defmodule SentinelixWeb.Live.Dashboard do
     """
   end
 
-  def handle_info({monitor_name, monitor_data}, socket) do
+  def handle_info({monitor_name, monitor_type, monitor_data}, socket) do
     Logger.debug("Received monitor data")
-    socket = assign(socket, monitors: Map.put(socket.assigns.monitors, monitor_name, monitor_data))
+    socket = assign(socket, monitors: Map.put(socket.assigns.monitors, {monitor_name, monitor_type}, monitor_data))
     {:noreply, socket}
   end
 
