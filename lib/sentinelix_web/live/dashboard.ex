@@ -7,7 +7,8 @@ defmodule SentinelixWeb.Live.Dashboard do
   def render(assigns) do
     ~H"""
     <div class="bg-gray-100">
-      <%= for {{name, type}, monitor} <- @monitors do %>
+      <%= for {name, type} <- @monitors do %>
+        <% monitor = SentinelixWeb.Services.MonitorService.get_monitor_data(name, type, 1) |> hd %>
         <div class="p-4 bg-white shadow-md rounded-lg mb-4">
           <h2 class="text-lg font-bold"><%= name %> (<%= type %>)</h2>
           <p class="text-sm text-gray-600">Status: <%= monitor.status %></p>
@@ -25,15 +26,17 @@ defmodule SentinelixWeb.Live.Dashboard do
     """
   end
 
-  def handle_info({monitor_name, monitor_type, monitor_data}, socket) do
+  def handle_info(:updated, socket) do
+    monitors = SentinelixWeb.Services.MonitorService.list_all_monitors()
+    IO.inspect(monitors)
     Logger.debug("Received monitor data")
-    socket = assign(socket, monitors: Map.put(socket.assigns.monitors, {monitor_name, monitor_type}, monitor_data))
+    socket = assign(socket, monitors: monitors)
     {:noreply, socket}
   end
 
   def mount(_params, _session, socket) do
-    PubSub.subscribe(Sentinelix.PubSub, "MonitorUpdate")
-
+      PubSub.subscribe(Sentinelix.PubSub, "WebUpdate")
+      monitors = SentinelixWeb.Services.MonitorService.list_all_monitors()
       chart = %{
       title: %{text: "π", left: "center", top: "center"},
       series: [
@@ -49,7 +52,6 @@ defmodule SentinelixWeb.Live.Dashboard do
       ]
     }
 
-    monitors = %{}
     {:ok, assign(socket, monitors: monitors, chart: chart)}
   end
 end

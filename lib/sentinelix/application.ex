@@ -17,9 +17,10 @@ defmodule Sentinelix.Application do
       # Start Finch
       {Finch, name: Sentinelix.Finch},
       # Start the Endpoint (http/https)
-      SentinelixWeb.Endpoint
+      SentinelixWeb.Endpoint,
       # Start a worker by calling: Sentinelix.Worker.start_link(arg)
       # {Sentinelix.Worker, arg}
+      {SentinelixWeb.Services.MonitorService, []}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
