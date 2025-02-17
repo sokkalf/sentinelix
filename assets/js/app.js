@@ -21,9 +21,22 @@ import "phoenix_html"
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import topbar from "../vendor/topbar"
+import Hooks from "./hooks";
+
+/*hooks.Chart = {
+  mounted() {
+    selector = "#" + this.el.id
+    this.chart = echarts.init(this.el.querySelector(selector + "-chart"))
+    option = JSON.parse(this.el.querySelector(selector + "-data").textContent)
+    this.chart.setOption(option)
+  }
+}*/
 
 let csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
-let liveSocket = new LiveSocket("/live", Socket, {params: {_csrf_token: csrfToken}})
+let liveSocket = new LiveSocket("/live", Socket, {
+	params: {_csrf_token: csrfToken},
+	hooks: Hooks
+})
 
 // Show progress bar on live navigation and form submits
 topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
@@ -38,4 +51,3 @@ liveSocket.connect()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session
 // >> liveSocket.disableLatencySim()
 window.liveSocket = liveSocket
-

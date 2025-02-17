@@ -17,6 +17,10 @@ defmodule SentinelixWeb.Live.Dashboard do
           <p class="text-sm text-gray-600">Last response time: <%= monitor.last_response_time %></p>
         </div>
       <% end %>
+      <div id="pie" phx-hook="Chart">
+        <div id="pie-chart" style="width: 400px; height: 400px;" phx-update="ignore"></div>
+        <div id="pie-data" hidden><%= Jason.encode!(@chart) %></div>
+    </div>
     </div>
     """
   end
@@ -30,7 +34,22 @@ defmodule SentinelixWeb.Live.Dashboard do
   def mount(_params, _session, socket) do
     PubSub.subscribe(Sentinelix.PubSub, "MonitorUpdate")
 
+      chart = %{
+      title: %{text: "π", left: "center", top: "center"},
+      series: [
+        %{
+          type: "pie",
+          data: [
+            %{name: "A", value: 20},
+            %{name: "B", value: 50},
+            %{name: "C", value: 100}
+          ],
+          radius: ["40%", "70%"]
+        }
+      ]
+    }
+
     monitors = %{}
-    {:ok, assign(socket, monitors: monitors)}
+    {:ok, assign(socket, monitors: monitors, chart: chart)}
   end
 end
