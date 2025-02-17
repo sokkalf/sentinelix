@@ -8,7 +8,7 @@ defmodule SentinelixWeb.Live.Dashboard do
     ~H"""
     <div class="bg-gray-100">
       <%= for {name, type} <- @monitors do %>
-        <% monitor = SentinelixWeb.Services.MonitorService.get_monitor_data(name, type, 1) |> hd %>
+        <% monitor = SentinelixWeb.Services.MonitorService.get_monitor_data(name, type, 1) |> Enum.reverse() |> hd %>
         <div class="p-4 bg-white shadow-md rounded-lg mb-4">
           <h2 class="text-lg font-bold"><%= name %> (<%= type %>)</h2>
           <p class="text-sm text-gray-600">Status: <%= monitor.status %></p>
