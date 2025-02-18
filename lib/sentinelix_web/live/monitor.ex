@@ -61,6 +61,9 @@ defmodule SentinelixWeb.Live.Monitor do
       yAxis: %{
         type: "value"
       },
+      tooltip: %{
+        trigger: "axis"
+      },
       series: [
         %{
           data: monitors["http"] |> Enum.reject(fn x -> x.last_checked == nil end) |> Enum.map(&(&1.last_response_time)),
