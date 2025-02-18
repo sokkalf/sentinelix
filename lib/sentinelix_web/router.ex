@@ -18,6 +18,7 @@ defmodule SentinelixWeb.Router do
     pipe_through :browser
 
     live "/", Live.Dashboard
+    live "/monitor/:name", Live.Monitor
   end
 
   # Other scopes may use custom stacks.

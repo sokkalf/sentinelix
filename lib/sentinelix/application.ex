@@ -20,7 +20,8 @@ defmodule Sentinelix.Application do
       SentinelixWeb.Endpoint,
       # Start a worker by calling: Sentinelix.Worker.start_link(arg)
       # {Sentinelix.Worker, arg}
-      {SentinelixWeb.Services.MonitorService, []}
+      {SentinelixWeb.Services.MonitorService, []},
+      Supervisor.child_spec({Cachex, name: :monitor_cache}, id: :monitor_cache),
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

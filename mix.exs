@@ -51,7 +51,8 @@ defmodule Sentinelix.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 0.20"},
       {:jason, "~> 1.2"},
-      {:httpoison, "~> 2.0"}
+      {:httpoison, "~> 2.0"},
+      {:cachex, "~> 4.0"}
     ]
   end
 
