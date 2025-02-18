@@ -53,14 +53,17 @@ defmodule SentinelixWeb.Live.Monitor do
       xAxis: %{
         type: "category",
         boundaryGap: false,
-        data: monitors["http"] |> Enum.map(&(&1.last_checked))
+        data: monitors["http"] |> Enum.reject(fn x -> x.last_checked == nil end)
+        |> Enum.map(fn x ->
+          Calendar.strftime(x.last_checked, "%H:%M")
+        end)
       },
       yAxis: %{
         type: "value"
       },
       series: [
         %{
-          data: monitors["http"] |> Enum.map(&(&1.last_response_time)),
+          data: monitors["http"] |> Enum.reject(fn x -> x.last_checked == nil end) |> Enum.map(&(&1.last_response_time)),
           type: "line",
           areaStyle: %{}
         }
