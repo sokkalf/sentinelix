@@ -59,14 +59,20 @@ defmodule SentinelixWeb.Live.Monitor do
         end)
       },
       yAxis: %{
-        type: "value"
+        type: "value",
+        axisLabel: %{
+          formatter: "{value} ms"
+        }
       },
       tooltip: %{
         trigger: "axis"
       },
       series: [
         %{
-          data: monitors["http"] |> Enum.reject(fn x -> x.last_checked == nil end) |> Enum.map(&(&1.last_response_time)),
+          data: monitors["http"] |> Enum.reject(fn x -> x.last_checked == nil end)
+          |> Enum.map(fn x ->
+            x.last_response_time / 1000
+          end),
           type: "line",
           areaStyle: %{}
         }
