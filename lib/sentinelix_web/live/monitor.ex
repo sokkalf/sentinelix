@@ -11,8 +11,8 @@ defmodule SentinelixWeb.Live.Monitor do
       <div class="p-4 bg-white shadow-md rounded-lg mb-4">
         <h2 class="text-lg font-bold">{@name} (http)</h2>
       </div>
-      <div id="area-simple" phx-hook="Chart">
-        <div id="area-simple-chart" style="width: 1024px; height: 400px;" phx-update="ignore"></div>
+      <div id="area-simple" phx-hook="Chart" class="w-[850px]">
+        <div id="area-simple-chart" style="height: 400px;" phx-update="ignore"></div>
         <div id="area-simple-data" hidden>{Jason.encode!(@chart)}</div>
       </div>
     </div>
