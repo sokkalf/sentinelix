@@ -20,40 +20,23 @@ defmodule SentinelixWeb.Live.Monitor do
   end
 
   def handle_info(:updated, socket) do
-    monitors = SentinelixWeb.Services.MonitorService.list_all_monitors()
-    IO.inspect(monitors)
+    monitors = update_data(socket.assigns.name)
     Logger.debug("Received monitor data")
-    #socket = assign(socket, monitors: monitors)
+    chart = chart_data(Map.get(monitors, "http"))
+    socket = assign(socket, monitors: monitors, chart: chart)
     {:noreply, socket}
   end
 
-  def mount(params, _session, socket) do
-    types = Cachex.get(:monitor_cache, params["name"])
+  def chart_data(nil), do: %{}
+  def chart_data(monitor) do
+    monitor = monitor
+    |> Enum.reject(fn x -> x.last_checked == nil end)
 
-    monitors =
-      case types do
-        {:ok, nil} ->
-          %{}
-
-        {:ok, types} ->
-          Enum.reduce(types, %{}, fn type, acc ->
-            Map.put(
-              acc,
-              type,
-              SentinelixWeb.Services.MonitorService.get_monitor_data(params["name"], type, 50)
-              |> Enum.reverse()
-            )
-          end)
-      end
-
-    IO.inspect(monitors)
-    PubSub.subscribe(Sentinelix.PubSub, "WebUpdate")
-
-    chart = %{
+    %{
       xAxis: %{
         type: "category",
         boundaryGap: false,
-        data: monitors["http"] |> Enum.reject(fn x -> x.last_checked == nil end)
+        data: monitor
         |> Enum.map(fn x ->
           Calendar.strftime(x.last_checked, "%H:%M")
         end)
@@ -69,7 +52,7 @@ defmodule SentinelixWeb.Live.Monitor do
       },
       series: [
         %{
-          data: monitors["http"] |> Enum.reject(fn x -> x.last_checked == nil end)
+          data: monitor
           |> Enum.map(fn x ->
             x.last_response_time / 1000
           end),
@@ -78,6 +61,32 @@ defmodule SentinelixWeb.Live.Monitor do
         }
       ]
     }
+  end
+
+  def update_data(name) do
+    types = Cachex.get(:monitor_cache, name)
+
+    case types do
+      {:ok, nil} ->
+        %{}
+
+      {:ok, types} ->
+        Enum.reduce(types, %{}, fn type, acc ->
+          Map.put(
+            acc,
+            type,
+            SentinelixWeb.Services.MonitorService.get_monitor_data(name, type, 50)
+            |> Enum.reverse()
+          )
+        end)
+    end
+  end
+
+  def mount(params, _session, socket) do
+    PubSub.subscribe(Sentinelix.PubSub, "WebUpdate")
+
+    monitors = update_data(params["name"])
+    chart = chart_data(Map.get(monitors, "http"))
 
     {:ok, assign(socket, name: params["name"], monitors: monitors, chart: chart)}
   end
