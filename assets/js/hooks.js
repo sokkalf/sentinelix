@@ -4,7 +4,7 @@ let Hooks = {};
 Hooks.Chart = {
 	mounted() {
 		selector = "#" + this.el.id
-		this.chart = echarts.init(this.el.querySelector(selector + "-chart"))
+		this.chart = echarts.init(this.el.querySelector(selector + "-chart"), 'dark')
 		option = JSON.parse(this.el.querySelector(selector + "-data").textContent)
 		this.chart.setOption(option)
 	},
