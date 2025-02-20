@@ -58,6 +58,9 @@ defmodule SentinelixWeb.Live.Monitor do
       xAxis: %{
         type: "category",
         boundaryGap: false,
+        splitLine: %{
+          show: true
+        },
         data: monitor
         |> Enum.map(fn x ->
           Calendar.strftime(x.last_checked, "%H:%M")
@@ -72,6 +75,20 @@ defmodule SentinelixWeb.Live.Monitor do
       tooltip: %{
         trigger: "axis"
       },
+      color: %{
+        type: "linear",
+        x: 0,
+        y: 0,
+        x2: 0,
+        y2: 1,
+          colorStops: [
+            %{offset: 0, color: "rgba(255, 0, 0, 0.8)"},  # color at the top
+            %{offset: 1, color: "rgba(255, 0, 0, 0.2)"}     # color at the bottom (transparent)
+          ]
+      },
+      grid: %{
+        show: true,
+      },
       series: [
         %{
           data: monitor
@@ -79,6 +96,10 @@ defmodule SentinelixWeb.Live.Monitor do
             x.last_response_time / 1000
           end),
           type: "line",
+          showSymbol: false,
+          lineStyle: %{
+            width: 3
+          },
           areaStyle: %{}
         }
       ]
