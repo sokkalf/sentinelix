@@ -52,6 +52,7 @@ defmodule SentinelixWeb.Live.Monitor do
     {:noreply, socket}
   end
 
+  def get_last_status(nil), do: %{}
   def get_last_status(monitor) do
     monitor
     |> Enum.reverse()
