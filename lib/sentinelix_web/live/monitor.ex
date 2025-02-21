@@ -14,6 +14,7 @@ defmodule SentinelixWeb.Live.Monitor do
           <p class="text-sm text-gray-600">Status: {@last_status_http.last_status}</p>
           <p class="text-sm text-gray-600">Last checked: {@last_status_http.last_checked}</p>
           <p class="text-sm text-gray-600">Response: {@last_status_http.last_error}</p>
+          <p class="text-sm text-gray-600">Average response time: {avg_response_time(@monitors["http"])} ms</p>
         </div>
         <div class="p-4 bg-white shadow-md rounded-lg mb-4">
           <%= if Map.get(@monitors, "cert") != nil do %>
@@ -31,6 +32,14 @@ defmodule SentinelixWeb.Live.Monitor do
       </div>
     </div>
     """
+  end
+
+  defp avg_response_time(monitor) do
+    monitor
+    |> Enum.reject(fn x -> x.last_response_time == nil end)
+    |> Enum.reduce(0, fn x, acc -> x.last_response_time + acc end)
+    |> div(length(monitor))
+    |> div(1000)
   end
 
   def handle_info(:updated, socket) do
