@@ -193,15 +193,16 @@ defmodule Sentinelix.Monitors.CertMonitor do
     case get_ssl_expiry(state.url) do
       {:ok, _valid_from, valid_to} ->
         now = DateTime.utc_now()
-        case DateTime.diff(valid_to, now) do
-          diff when diff > expiry_warn_after * 24 * 60 * 60 ->
-            {:ok, "Certificate is valid until #{valid_to}"}
-          diff when diff <= expiry_warn_after * 24 * 60 * 60 and diff > expiry_critical_after * 24 * 60 * 60 ->
-            {:warning, "Certificate is valid until #{valid_to}"}
-          diff when diff <= expiry_critical_after * 24 * 60 * 60 ->
-            {:critical, "Certificate is valid until #{valid_to}"}
+        diff = DateTime.diff(valid_to, now, :day)
+        case diff do
+          diff when diff > expiry_warn_after ->
+            {:ok, "Certificate is valid until #{valid_to} (#{diff} days)"}
+          diff when diff <= expiry_warn_after and diff > expiry_critical_after ->
+            {:warning, "Certificate is valid until #{valid_to} (#{diff} days)"}
+          diff when diff <= expiry_critical_after ->
+            {:critical, "Certificate is valid until #{valid_to} (#{diff} days)"}
           diff when diff < 0 ->
-            {:critical, "Certificate has expired"}
+            {:critical, "Certificate has expired #{abs(diff)} days ago"}
           _ ->
             {:critical, "Error checking certificate: unknown"}
         end
