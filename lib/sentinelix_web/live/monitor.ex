@@ -83,7 +83,14 @@ defmodule SentinelixWeb.Live.Monitor do
         }
       },
       tooltip: %{
-        trigger: "axis"
+        trigger: "axis",
+        formatter: "{b0}: {c0} ms",
+        axisPointer: %{
+          type: "cross",
+          label: %{
+            backgroundColor: "#6a7985"
+          }
+        }
       },
       color: %{
         type: "linear",
