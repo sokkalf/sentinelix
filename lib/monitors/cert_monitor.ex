@@ -219,7 +219,7 @@ defmodule Sentinelix.Monitors.CertMonitor do
     sslopts = [
         verify: :verify_none,
         cacerts: :public_key.cacerts_get(),
-        versions: [:"tlsv1.2"]
+        versions: [:"tlsv1.2", :"tlsv1.3"]
     ]
 
     cert =
