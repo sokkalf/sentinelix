@@ -5,7 +5,7 @@ defmodule SentinelixWeb.Live.Dashboard do
 
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash}>
+    <Layouts.app flash={@flash} current_scope={@current_scope}>
       <div class="bg-gray-100">
         <%= for {name, type} <- @monitors do %>
           <% monitor =

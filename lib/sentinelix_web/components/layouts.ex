@@ -42,7 +42,18 @@ defmodule SentinelixWeb.Layouts do
           <span class="text-lg font-semibold">Sentinelix</span>
         </.link>
       </div>
-      <div class="flex-none">
+      <div class="flex flex-none items-center gap-4">
+        <div :if={@current_scope && @current_scope.user} class="flex items-center gap-3 text-sm">
+          <span id="current-user" class="opacity-75">
+            {Sentinelix.Accounts.User.display_name(@current_scope.user)}
+          </span>
+          <.link href={~p"/admin/dashboard"} title="System dashboard" class="link-hover">
+            <.icon name="hero-cpu-chip" class="size-5" />
+          </.link>
+          <.link href={~p"/logout"} method="delete" id="logout-link" class="link link-hover">
+            Log out
+          </.link>
+        </div>
         <.theme_toggle />
       </div>
     </header>

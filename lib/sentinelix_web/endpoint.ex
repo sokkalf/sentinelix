@@ -1,14 +1,19 @@
 defmodule SentinelixWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :sentinelix
 
-  # The session will be stored in the cookie and signed,
-  # this means its contents can be read but not tampered with.
-  # Set :encryption_salt if you would also like to encrypt it.
+  # The session is stored in a signed and encrypted cookie. It only holds a
+  # random session token; the token row in `users_tokens` is what makes the
+  # session valid (see SentinelixWeb.UserAuth), so sessions can be revoked.
+  # `same_site: "Lax"` is required for the OIDC callback (a top-level GET
+  # navigation from the IdP) to receive the cookie. `max_age` matches the
+  # session token validity in Sentinelix.Accounts.UserToken.
   @session_options [
     store: :cookie,
     key: "_sentinelix_key",
     signing_salt: "kRX3GPAB",
-    same_site: "Lax"
+    encryption_salt: "6N8iz0V0",
+    same_site: "Lax",
+    max_age: 14 * 24 * 60 * 60
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
