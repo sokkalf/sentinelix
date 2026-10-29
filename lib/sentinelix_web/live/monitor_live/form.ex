@@ -254,6 +254,34 @@ defmodule SentinelixWeb.MonitorLive.Form do
     """
   end
 
+  defp settings_field(%{name: :json_path} = assigns) do
+    ~H"""
+    <div>
+      <.input
+        field={@field}
+        type="text"
+        label="JSON path (optional)"
+        placeholder="data.items.0.status"
+        phx-debounce="300"
+      />
+      <p class="-mt-1 mb-2 text-xs text-base-content/60">
+        When set, the value at this path of a JSON response must equal the keyword.
+      </p>
+    </div>
+    """
+  end
+
+  defp settings_field(%{name: :push_grace_seconds} = assigns) do
+    ~H"""
+    <div>
+      <.input field={@field} type="number" label="Grace period (seconds)" min="0" max="86400" />
+      <p class="-mt-1 mb-2 text-xs text-base-content/60">
+        Extra time after the interval before a missing push marks the monitor down.
+      </p>
+    </div>
+    """
+  end
+
   defp settings_field(%{name: name} = assigns)
        when name in [:follow_redirects, :verify_tls, :invert_keyword, :case_sensitive] do
     ~H"""

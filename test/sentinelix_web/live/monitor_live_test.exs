@@ -157,6 +157,9 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
       assert view |> element("#push-url-value") |> render() =~
                "/api/push/#{monitor.settings.push_token}"
+
+      assert has_element?(view, "#push-curl", "curl")
+      refute has_element?(view, "#check-now")
     end
 
     test "redirects for unknown monitors", %{conn: conn} do
@@ -207,12 +210,12 @@ defmodule SentinelixWeb.MonitorLiveTest do
       {:ok, view, _html} = live(conn, ~p"/monitors/new")
 
       for {type, fields} <- [
-            keyword: ~w(url keyword invert_keyword case_sensitive),
+            keyword: ~w(url keyword invert_keyword case_sensitive json_path),
             tcp: ~w(host port),
             ping: ~w(host),
             dns: ~w(host dns_record_type dns_resolver expected_value),
             cert: ~w(host port cert_warn_days cert_critical_days),
-            push: ~w(push_token),
+            push: ~w(push_token push_grace_seconds),
             http: ~w(url method headers body accepted_status_codes follow_redirects)
           ] do
         view |> form("#monitor-form", monitor: %{type: type}) |> render_change()

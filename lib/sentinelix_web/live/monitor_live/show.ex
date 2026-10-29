@@ -70,6 +70,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
         <div class="flex flex-wrap gap-2">
           <button
+            :if={@monitor.type != :push}
             id="check-now"
             type="button"
             phx-click="check_now"
@@ -110,7 +111,9 @@ defmodule SentinelixWeb.MonitorLive.Show do
       >
         <div class="text-sm font-medium">Push URL</div>
         <p class="text-xs text-base-content/60">
-          Send a request to this URL at least every {format_duration(@monitor.interval_seconds)}.
+          Send a GET or POST request to this URL at least every {format_duration(
+            @monitor.interval_seconds
+          )}.
           Optional query parameters: <code>status=up|down</code>, <code>msg=...</code>, <code>ping=ms</code>.
         </p>
         <div class="join mt-2 w-full">
@@ -131,6 +134,14 @@ defmodule SentinelixWeb.MonitorLive.Show do
             <.icon name="hero-clipboard-document" class="size-4" /> Copy
           </button>
         </div>
+        <pre
+          id="push-curl"
+          class="mt-2 overflow-x-auto rounded-field bg-base-200 p-2 text-xs"
+        ><code>curl -fsS "{push_url(@monitor.settings && @monitor.settings.push_token)}?status=up&amp;msg=OK"</code></pre>
+        <p class="mt-1 text-xs text-base-content/60">
+          Grace period: {format_duration(@monitor.settings.push_grace_seconds || 0)}.
+          A new token can be generated when editing the monitor.
+        </p>
       </div>
 
       <div class="rounded-box border border-base-300 bg-base-100 p-4">

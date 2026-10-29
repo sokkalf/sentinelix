@@ -59,7 +59,7 @@ defmodule SentinelixWeb.MonitorComponents do
   """
   @spec push_url(String.t() | nil) :: String.t() | nil
   def push_url(token) when is_binary(token) and token != "",
-    do: SentinelixWeb.Endpoint.url() <> "/api/push/" <> token
+    do: url(~p"/api/push/#{token}")
 
   def push_url(_token), do: nil
 
