@@ -11,7 +11,7 @@ defmodule SentinelixWeb.Services.MonitorService do
   ## ------------------------------------------------------------------
 
   # Start the GenServer under a supervisor
-  def start_link(opts \\ []) do
+  def start_link(_opts \\ []) do
     GenServer.start_link(__MODULE__, :ok, name: @name)
   end
 
@@ -79,10 +79,12 @@ defmodule SentinelixWeb.Services.MonitorService do
     key = {name, type}
     old_entries = Map.get(state, key, [])
 
-    registered_types = case Cachex.get(:monitor_cache, name) do
-      {:ok, nil} -> [type]
-      {:ok, types} -> [type | types] |> Enum.uniq()
-    end
+    registered_types =
+      case Cachex.get(:monitor_cache, name) do
+        {:ok, nil} -> [type]
+        {:ok, types} -> [type | types] |> Enum.uniq()
+      end
+
     Cachex.put(:monitor_cache, name, registered_types)
 
     # Prepend new data and truncate to @max_entries
