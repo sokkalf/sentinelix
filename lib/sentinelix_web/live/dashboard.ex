@@ -32,7 +32,6 @@ defmodule SentinelixWeb.Live.Dashboard do
 
   def handle_info(:updated, socket) do
     monitors = SentinelixWeb.Services.MonitorService.list_all_monitors()
-    IO.inspect(monitors)
     Logger.debug("Received monitor data")
     socket = assign(socket, monitors: monitors)
     {:noreply, socket}

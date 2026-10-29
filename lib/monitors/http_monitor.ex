@@ -244,8 +244,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
               else
                 case List.keyfind(normalized_headers, "location", 0) do
                   {"location", url} ->
-                    Keyword.put(opts, :redirects, redirects + 1)
-                    check_http(url, opts)
+                    check_http(url, Keyword.put(opts, :redirects, redirects + 1))
 
                   _ ->
                     {:error, "No location header", response_time}

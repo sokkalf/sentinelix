@@ -48,6 +48,7 @@ defmodule Sentinelix.MixProject do
       {:phoenix_live_reload, "~> 1.6", only: :dev},
       {:phoenix_live_view, "~> 1.2"},
       {:lazy_html, ">= 0.1.0", only: :test},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:phoenix_live_dashboard, "~> 0.9.1"},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.5", runtime: Mix.env() == :dev},
@@ -101,6 +102,7 @@ defmodule Sentinelix.MixProject do
         "compile --warnings-as-errors",
         "deps.unlock --unused",
         "format --check-formatted",
+        "credo --strict",
         "test"
       ]
     ]
