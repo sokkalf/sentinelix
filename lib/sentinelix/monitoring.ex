@@ -20,6 +20,17 @@ defmodule Sentinelix.Monitoring do
     * `{:monitor_updated, %Monitor{}}` and `{:monitor_deleted, %Monitor{}}`
     * `{:check_result, %CheckResult{}}`
     * `{:incident_opened, %Incident{}}` and `{:incident_resolved, %Incident{}}`
+    * the status events below
+
+  Topic `"status_changes"` (see `subscribe_status_changes/0`) – status events
+  of all monitors, broadcast by `Sentinelix.Monitoring.Worker`:
+
+    * `{:status_changed, %Monitor{}, old_status, new_status, %CheckResult{}}`
+      – the monitor's status (`:pending`, `:up` or `:down`) changed.
+    * `{:warning_raised, %Monitor{}, %CheckResult{}}` – the monitor is up
+      but a check reported a warning (e.g. a TLS certificate close to
+      expiry; the result's message says why).
+    * `{:warning_cleared, %Monitor{}, %CheckResult{}}` – the warning is gone.
   """
 
   import Ecto.Query, warn: false
@@ -30,6 +41,7 @@ defmodule Sentinelix.Monitoring do
 
   @pubsub Sentinelix.PubSub
   @monitors_topic "monitors"
+  @status_changes_topic "status_changes"
   @default_results_limit 50
 
   @type monitor_ref :: Monitor.t() | pos_integer()
@@ -40,6 +52,20 @@ defmodule Sentinelix.Monitoring do
   Subscribes the caller to monitor configuration changes (`"monitors"`).
   """
   def subscribe_monitors, do: PubSub.subscribe(@pubsub, @monitors_topic)
+
+  @doc """
+  Subscribes the caller to the status events of all monitors
+  (`"status_changes"`).
+  """
+  def subscribe_status_changes, do: PubSub.subscribe(@pubsub, @status_changes_topic)
+
+  @doc false
+  # Used by the monitoring worker: broadcasts a status event on the
+  # "status_changes" topic and the monitor's own topic.
+  def broadcast_status_event(monitor, event) do
+    broadcast(@status_changes_topic, event)
+    broadcast(monitor_topic(monitor), event)
+  end
 
   @doc """
   Subscribes the caller to events of a single monitor (`"monitor:<id>"`).
@@ -179,6 +205,25 @@ defmodule Sentinelix.Monitoring do
   def change_monitor(%Monitor{} = monitor, attrs \\ %{}) do
     Monitor.changeset(monitor, attrs)
   end
+
+  ## Engine
+
+  @doc """
+  Runs a check of a monitor right away (asynchronously; the result arrives
+  as `{:check_result, result}` on the monitor's topic).
+
+  Returns `{:error, :not_running}` when the monitor has no running worker
+  (it is disabled or its type has no check).
+  """
+  @spec check_now(monitor_ref()) :: :ok | {:error, :not_running}
+  defdelegate check_now(monitor), to: Sentinelix.Monitoring.Worker
+
+  @doc """
+  The runtime state of a monitor's worker (see
+  `Sentinelix.Monitoring.Worker.info/2`), or `nil` if it isn't running.
+  """
+  @spec worker_info(monitor_ref()) :: map() | nil
+  defdelegate worker_info(monitor), to: Sentinelix.Monitoring.Worker, as: :info
 
   ## Check results
 

@@ -54,6 +54,12 @@ jobs:
         run: mix deps.get
       - name: Check for unused dependencies
         run: mix deps.unlock --check-unused
+      # Retired Hex packages and known vulnerabilities (mix_audit's advisory
+      # database is fetched from GitHub).
+      - name: Audit dependencies
+        run: |
+          mix hex.audit
+          mix deps.audit
       # --force so a restored _build cannot hide a warning in unchanged code.
       - name: Compile
         run: mix compile --warnings-as-errors --force

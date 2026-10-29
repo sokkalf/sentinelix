@@ -59,7 +59,7 @@ defmodule SentinelixWeb.Router do
     live_session :require_authenticated_user,
       on_mount: [{SentinelixWeb.UserAuth, :require_authenticated}] do
       live "/", Live.Dashboard
-      live "/monitor/:name", Live.Monitor
+      live "/monitors/:id", Live.Monitor
     end
   end
 

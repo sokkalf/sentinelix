@@ -1,180 +1,98 @@
 defmodule SentinelixWeb.Live.Monitor do
+  @moduledoc """
+  Minimal monitor page: latest status and a response time chart.
+  (The full UI is a separate issue.)
+  """
+
   use SentinelixWeb, :live_view
-  alias Phoenix.PubSub
-  require Logger
+
+  alias Sentinelix.Monitoring
 
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <div class="bg-gray-100">
-        <div class="grid grid-cols-2">
-          <div class="p-4 bg-white shadow-md rounded-lg mb-4">
-            <h2 class="text-lg font-bold">{@name} (http)</h2>
-            <p class="text-sm text-gray-600">URL: {@last_status_http.url}</p>
-            <p class="text-sm text-gray-600">Status: {@last_status_http.last_status}</p>
-            <p class="text-sm text-gray-600">Last checked: {@last_status_http.last_checked}</p>
-            <p class="text-sm text-gray-600">Response: {@last_status_http.last_error}</p>
-            <p class="text-sm text-gray-600">
-              Average response time: {avg_response_time(@monitors["http"])} ms
-            </p>
-          </div>
-          <div class="p-4 bg-white shadow-md rounded-lg mb-4">
-            <%= if Map.get(@monitors, "cert") != nil do %>
-              <h2 class="text-lg font-bold">{@name} (cert)</h2>
-              <p class="text-sm text-gray-600">URL: {@last_status_cert.url}</p>
-              <p class="text-sm text-gray-600">Status: {@last_status_cert.last_status}</p>
-              <p class="text-sm text-gray-600">Last checked: {@last_status_cert.last_checked}</p>
-              <p class="text-sm text-gray-600">Response: {@last_status_cert.last_error}</p>
-            <% end %>
-          </div>
+      <div class="space-y-4">
+        <div class="card bg-base-200 p-4">
+          <h2 class="text-lg font-bold">{@monitor.name} ({@monitor.type})</h2>
+          <p class="text-sm">Target: {target(@monitor)}</p>
+          <%= if result = List.first(@results) do %>
+            <p class="text-sm">Status: {result.status}</p>
+            <p class="text-sm">Last checked: {result.checked_at}</p>
+            <p class="text-sm">Message: {result.message}</p>
+          <% else %>
+            <p class="text-sm">No checks yet.</p>
+          <% end %>
+          <p :if={avg = avg_response_time(@results)} class="text-sm">
+            Average response time: {avg} ms
+          </p>
         </div>
-        <div id="area-simple" phx-hook="Chart" class="w-[1000px]">
-          <div id="area-simple-chart" style="height: 400px;" phx-update="ignore"></div>
-          <div id="area-simple-data" hidden>{Jason.encode!(@chart)}</div>
+        <div id="response-time" phx-hook="Chart" class="w-full">
+          <div id="response-time-chart" style="height: 400px;" phx-update="ignore"></div>
+          <div id="response-time-data" hidden>{Jason.encode!(@chart)}</div>
         </div>
       </div>
     </Layouts.app>
     """
   end
 
-  defp avg_response_time(monitor) do
-    monitor
-    |> Enum.reject(fn x -> x.last_response_time == nil end)
-    |> Enum.reduce(0, fn x, acc -> x.last_response_time + acc end)
-    |> div(length(monitor))
-    |> div(1000)
+  def mount(%{"id" => id}, _session, socket) do
+    with {id, ""} <- Integer.parse(id),
+         %{} = monitor <- Monitoring.get_monitor(id) do
+      if connected?(socket), do: Monitoring.subscribe_monitor(monitor)
+      {:ok, socket |> assign(monitor: monitor) |> load_results()}
+    else
+      _ ->
+        {:ok, socket |> put_flash(:error, "Monitor not found") |> push_navigate(to: ~p"/")}
+    end
   end
 
-  def handle_info(:updated, socket) do
-    monitors = update_data(socket.assigns.name)
-    Logger.debug("Received monitor data")
-    chart = chart_data(Map.get(monitors, "http"))
-    last_status_http = get_last_status(Map.get(monitors, "http"))
-    last_status_cert = get_last_status(Map.get(monitors, "cert"))
+  def handle_info({:check_result, _result}, socket), do: {:noreply, load_results(socket)}
 
-    socket =
-      assign(socket,
-        monitors: monitors,
-        chart: chart,
-        last_status_http: last_status_http,
-        last_status_cert: last_status_cert
-      )
+  def handle_info({:monitor_updated, monitor}, socket),
+    do: {:noreply, assign(socket, monitor: monitor)}
 
-    {:noreply, socket}
+  def handle_info({:monitor_deleted, _monitor}, socket),
+    do: {:noreply, push_navigate(socket, to: ~p"/")}
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  defp load_results(socket) do
+    results = Monitoring.latest_results(socket.assigns.monitor, 50)
+    assign(socket, results: results, chart: chart_data(Enum.reverse(results)))
   end
 
-  def get_last_status(nil), do: %{}
+  defp target(%{settings: %{url: url}}) when is_binary(url), do: url
 
-  def get_last_status(monitor) do
-    monitor
-    |> Enum.reverse()
-    |> hd
+  defp target(%{settings: %{host: host, port: port}}) when is_binary(host) and is_integer(port),
+    do: "#{host}:#{port}"
+
+  defp target(%{settings: %{host: host}}) when is_binary(host), do: host
+  defp target(_monitor), do: "-"
+
+  defp avg_response_time(results) do
+    case Enum.reject(results, &is_nil(&1.response_time_ms)) do
+      [] -> nil
+      timed -> div(Enum.sum_by(timed, & &1.response_time_ms), length(timed))
+    end
   end
 
-  def chart_data(nil), do: %{}
-
-  def chart_data(monitor) do
-    monitor =
-      monitor
-      |> Enum.reject(fn x -> x.last_checked == nil end)
-
+  defp chart_data(results) do
     %{
       xAxis: %{
         type: "category",
         boundaryGap: false,
-        splitLine: %{
-          show: true
-        },
-        data:
-          monitor
-          |> Enum.map(fn x ->
-            Calendar.strftime(x.last_checked, "%H:%M")
-          end)
+        data: Enum.map(results, &Calendar.strftime(&1.checked_at, "%H:%M:%S"))
       },
-      yAxis: %{
-        type: "value",
-        axisLabel: %{
-          formatter: "{value} ms"
-        }
-      },
-      tooltip: %{
-        trigger: "axis",
-        formatter: "{b0}: {c0} ms",
-        axisPointer: %{
-          type: "cross",
-          label: %{
-            backgroundColor: "#6a7985"
-          }
-        }
-      },
-      color: %{
-        type: "linear",
-        x: 0,
-        y: 0,
-        x2: 0,
-        y2: 1,
-        colorStops: [
-          # color at the top
-          %{offset: 0, color: "rgba(255, 0, 0, 0.8)"},
-          # color at the bottom (transparent)
-          %{offset: 1, color: "rgba(255, 0, 0, 0.2)"}
-        ]
-      },
-      grid: %{
-        show: true
-      },
+      yAxis: %{type: "value", axisLabel: %{formatter: "{value} ms"}},
+      tooltip: %{trigger: "axis", formatter: "{b0}: {c0} ms"},
       series: [
         %{
-          data:
-            monitor
-            |> Enum.map(fn x ->
-              x.last_response_time / 1000
-            end),
+          data: Enum.map(results, & &1.response_time_ms),
           type: "line",
           showSymbol: false,
-          lineStyle: %{
-            width: 3
-          },
           areaStyle: %{}
         }
       ]
     }
-  end
-
-  def update_data(name) do
-    types = Cachex.get(:monitor_cache, name)
-
-    case types do
-      {:ok, nil} ->
-        %{}
-
-      {:ok, types} ->
-        Enum.reduce(types, %{}, fn type, acc ->
-          Map.put(
-            acc,
-            type,
-            SentinelixWeb.Services.MonitorService.get_monitor_data(name, type, 50)
-            |> Enum.reverse()
-          )
-        end)
-    end
-  end
-
-  def mount(params, _session, socket) do
-    PubSub.subscribe(Sentinelix.PubSub, "WebUpdate")
-
-    monitors = update_data(params["name"])
-    chart = chart_data(Map.get(monitors, "http"))
-    last_status_http = get_last_status(Map.get(monitors, "http"))
-    last_status_cert = get_last_status(Map.get(monitors, "cert"))
-
-    {:ok,
-     assign(socket,
-       name: params["name"],
-       monitors: monitors,
-       chart: chart,
-       last_status_http: last_status_http,
-       last_status_cert: last_status_cert
-     )}
   end
 end

@@ -22,8 +22,8 @@ defmodule Sentinelix.Application do
       ] ++
         OIDC.children() ++
         [
-          {SentinelixWeb.Services.MonitorService, []},
-          Supervisor.child_spec({Cachex, name: :monitor_cache}, id: :monitor_cache),
+          {Sentinelix.Monitoring.Supervisor,
+           Application.get_env(:sentinelix, Sentinelix.Monitoring.Supervisor, [])},
           # Start to serve requests, typically the last entry
           SentinelixWeb.Endpoint
         ]

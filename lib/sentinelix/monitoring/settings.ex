@@ -17,6 +17,8 @@ defmodule Sentinelix.Monitoring.Settings do
     2. Add any new fields to the embedded schema below.
     3. Add a `@type_fields` entry (field => default) and, if needed, a
        `validate_type/2` clause.
+    4. Implement `Sentinelix.Checks.Check` and register it in
+       `Sentinelix.Checks`.
   """
 
   use Ecto.Schema

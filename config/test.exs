@@ -35,6 +35,14 @@ config :sentinelix, SentinelixWeb.Endpoint,
   secret_key_base: "tFOtr5dYg62R2g0ET2znAliGrUQ+o1VTt0T49BxOijQjzlCELLsMaCJEnF77gI4y",
   server: false
 
+# Don't start monitor workers automatically: tests that need the engine
+# start an isolated one (see Sentinelix.Monitoring.SupervisorTest).
+config :sentinelix, Sentinelix.Monitoring.Supervisor, manager: false
+
+# Route HTTP checks through Req.Test stubs instead of the network.
+config :sentinelix, Sentinelix.Checks.HTTP,
+  req_options: [plug: {Req.Test, Sentinelix.Checks.HTTP}]
+
 # In test we don't send emails
 config :sentinelix, Sentinelix.Mailer, adapter: Swoosh.Adapters.Test
 
