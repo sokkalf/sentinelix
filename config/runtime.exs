@@ -110,6 +110,12 @@ if config_env() != :test do
     config :sentinelix, :local_auth_enabled, local_auth_enabled
   end
 
+  # Bearer token for GET /metrics (Prometheus). Unset: /metrics is disabled
+  # (404).
+  if metrics_token = env.("METRICS_TOKEN") do
+    config :sentinelix, :metrics_token, metrics_token
+  end
+
   config :sentinelix,
          :bootstrap_admin,
          reject_nil.(email: env.("ADMIN_EMAIL"), password: System.get_env("ADMIN_PASSWORD"))
