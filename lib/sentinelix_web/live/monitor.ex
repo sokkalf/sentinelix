@@ -5,7 +5,7 @@ defmodule SentinelixWeb.Live.Monitor do
 
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash}>
+    <Layouts.app flash={@flash} current_scope={@current_scope}>
       <div class="bg-gray-100">
         <div class="grid grid-cols-2">
           <div class="p-4 bg-white shadow-md rounded-lg mb-4">

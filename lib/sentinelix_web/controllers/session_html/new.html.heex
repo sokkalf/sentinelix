@@ -1,0 +1,60 @@
+<Layouts.app flash={@flash} current_scope={@current_scope}>
+  <div class="mx-auto max-w-sm space-y-6 py-8">
+    <div class="text-center">
+      <.header>
+        Sign in to Sentinelix
+      </.header>
+    </div>
+
+    <.button
+      :if={@oidc_enabled}
+      id="oidc-login"
+      href={~p"/auth/oidc"}
+      variant="primary"
+      class="btn btn-primary w-full"
+    >
+      <.icon name="hero-key" class="size-5" /> Sign in with {@provider_name}
+    </.button>
+
+    <div :if={@oidc_enabled and @local_enabled} class="divider text-sm">
+      or use a local account
+    </div>
+
+    <.form :if={@local_enabled} for={@form} id="local-login-form" action={~p"/login"}>
+      <.input
+        field={@form[:email]}
+        type="email"
+        label="Email"
+        autocomplete="username"
+        required
+      />
+      <.input
+        field={@form[:password]}
+        type="password"
+        label="Password"
+        autocomplete="current-password"
+        required
+      />
+      <.button variant={if @oidc_enabled, do: nil, else: "primary"} class="btn w-full">
+        Sign in
+      </.button>
+    </.form>
+
+    <div :if={@show_admin_hint} id="admin-hint" class="alert alert-info text-sm">
+      <.icon name="hero-information-circle" class="size-5" />
+      <span>
+        No local admin exists yet. Create one with <code>mix sentinelix.create_admin</code>
+        or set <code>ADMIN_EMAIL</code>
+        and <code>ADMIN_PASSWORD</code>
+        before starting Sentinelix.
+      </span>
+    </div>
+
+    <div :if={not @oidc_enabled and not @local_enabled} class="alert alert-warning text-sm">
+      <.icon name="hero-exclamation-triangle" class="size-5" />
+      <span>
+        No login method is enabled. Configure OpenID Connect (<code>OIDC_ISSUER</code>, <code>OIDC_CLIENT_ID</code>, ...) or set <code>LOCAL_AUTH_ENABLED=true</code>.
+      </span>
+    </div>
+  </div>
+</Layouts.app>

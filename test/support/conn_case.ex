@@ -35,4 +35,30 @@ defmodule SentinelixWeb.ConnCase do
     Sentinelix.DataCase.setup_sandbox(tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
+
+  @doc """
+  Setup helper that creates a local user and logs it in.
+
+      setup :register_and_log_in_user
+
+  It stores an updated connection, the user and its scope in the test context.
+  """
+  def register_and_log_in_user(%{conn: conn} = context) do
+    user = Sentinelix.AccountsFixtures.user_fixture(Map.get(context, :user_attrs, %{}))
+    scope = Sentinelix.Accounts.Scope.for_user(user)
+
+    %{conn: log_in_user(conn, user), user: user, scope: scope}
+  end
+
+  @doc """
+  Logs the given `user` into the `conn` by creating a session token.
+  """
+  def log_in_user(conn, user, opts \\ []) do
+    token = Sentinelix.Accounts.generate_user_session_token(user, opts)
+
+    conn
+    |> Phoenix.ConnTest.init_test_session(%{})
+    |> Plug.Conn.put_session(:user_token, token)
+    |> Plug.Conn.put_session(:live_socket_id, "users_sessions:#{Base.url_encode64(token)}")
+  end
 end

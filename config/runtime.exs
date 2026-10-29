@@ -43,6 +43,78 @@ if config_env() == :dev do
     ]
 end
 
+# ## Authentication
+#
+# OpenID Connect is the primary login (any compliant IdP). It is enabled when
+# OIDC_ISSUER and OIDC_CLIENT_ID are set:
+#
+#   OIDC_ISSUER            issuer URL; discovery is read from
+#                          <issuer>/.well-known/openid-configuration
+#   OIDC_CLIENT_ID         client id (confidential client)
+#   OIDC_CLIENT_SECRET     client secret (omit for a public client using PKCE)
+#   OIDC_SCOPES            default "openid profile email"
+#   OIDC_PROVIDER_NAME     button label, "Sign in with <name>" (default "SSO")
+#   OIDC_GROUPS_CLAIM      claim holding the user's groups (default "groups")
+#   OIDC_ALLOWED_GROUPS    comma separated; optional allow-lists - if none is
+#   OIDC_ALLOWED_EMAILS    set, every user the IdP authenticates may log in,
+#   OIDC_ALLOWED_DOMAINS   otherwise a user matching any of them may log in
+#   OIDC_ALLOW_INSECURE_HTTP  "true" to allow a plain http:// IdP (dev only)
+#
+# The redirect URI to register at the IdP is <endpoint url>/auth/oidc/callback,
+# and <endpoint url>/login as post-logout redirect URI.
+#
+# Local password login is a break-glass fallback:
+#
+#   LOCAL_AUTH_ENABLED     default: true when OIDC is not configured, else false
+#   ADMIN_EMAIL / ADMIN_PASSWORD  create this local admin on boot if it does
+#                          not exist (or use `mix sentinelix.create_admin`)
+#
+# Variables that are not set leave the configuration untouched, so the same
+# settings can also be put in config/dev.local.exs. Tests configure auth
+# explicitly and ignore these variables.
+if config_env() != :test do
+  env = fn name ->
+    case System.get_env(name) do
+      nil -> nil
+      value -> if String.trim(value) == "", do: nil, else: String.trim(value)
+    end
+  end
+
+  env_list = fn name, separators ->
+    if value = env.(name),
+      do: String.split(value, separators, trim: true) |> Enum.map(&String.trim/1)
+  end
+
+  env_bool = fn name ->
+    if value = env.(name), do: String.downcase(value) in ~w(1 true yes on)
+  end
+
+  reject_nil = fn opts -> Enum.reject(opts, fn {_key, value} -> is_nil(value) end) end
+
+  config :sentinelix,
+         :oidc,
+         reject_nil.(
+           issuer: env.("OIDC_ISSUER"),
+           client_id: env.("OIDC_CLIENT_ID"),
+           client_secret: env.("OIDC_CLIENT_SECRET"),
+           scopes: env_list.("OIDC_SCOPES", [",", " "]),
+           provider_name: env.("OIDC_PROVIDER_NAME"),
+           groups_claim: env.("OIDC_GROUPS_CLAIM"),
+           allowed_groups: env_list.("OIDC_ALLOWED_GROUPS", [","]),
+           allowed_emails: env_list.("OIDC_ALLOWED_EMAILS", [",", " "]),
+           allowed_domains: env_list.("OIDC_ALLOWED_DOMAINS", [",", " "]),
+           allow_insecure_http: env_bool.("OIDC_ALLOW_INSECURE_HTTP")
+         )
+
+  if (local_auth_enabled = env_bool.("LOCAL_AUTH_ENABLED")) != nil do
+    config :sentinelix, :local_auth_enabled, local_auth_enabled
+  end
+
+  config :sentinelix,
+         :bootstrap_admin,
+         reject_nil.(email: env.("ADMIN_EMAIL"), password: System.get_env("ADMIN_PASSWORD"))
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

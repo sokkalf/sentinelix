@@ -7,16 +7,23 @@ defmodule Sentinelix.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      SentinelixWeb.Telemetry,
-      Sentinelix.Repo,
-      {Phoenix.PubSub, name: Sentinelix.PubSub},
-      {Finch, name: Sentinelix.Finch},
-      {SentinelixWeb.Services.MonitorService, []},
-      Supervisor.child_spec({Cachex, name: :monitor_cache}, id: :monitor_cache),
-      # Start to serve requests, typically the last entry
-      SentinelixWeb.Endpoint
-    ]
+    # OIDC provider discovery/JWKS worker (only when OIDC is configured)
+    children =
+      [
+        SentinelixWeb.Telemetry,
+        Sentinelix.Repo,
+        # Creates the local admin from ADMIN_EMAIL/ADMIN_PASSWORD if needed
+        {Task, &Sentinelix.Accounts.ensure_bootstrap_admin/0},
+        {Phoenix.PubSub, name: Sentinelix.PubSub},
+        {Finch, name: Sentinelix.Finch}
+      ] ++
+        Sentinelix.Auth.OIDC.children() ++
+        [
+          {SentinelixWeb.Services.MonitorService, []},
+          Supervisor.child_spec({Cachex, name: :monitor_cache}, id: :monitor_cache),
+          # Start to serve requests, typically the last entry
+          SentinelixWeb.Endpoint
+        ]
 
     # See https://elixir.hexdocs.pm/Supervisor.html
     # for other strategies and supported options

@@ -11,6 +11,13 @@ config :sentinelix,
   ecto_repos: [Sentinelix.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+# Authentication defaults; see config/runtime.exs for the environment
+# variables (OIDC_*, LOCAL_AUTH_ENABLED, ADMIN_*) and Sentinelix.Auth.
+config :sentinelix, :oidc, []
+# nil = enabled only when OIDC is not configured
+config :sentinelix, :local_auth_enabled, nil
+config :sentinelix, :bootstrap_admin, []
+
 # Configure the endpoint
 config :sentinelix, SentinelixWeb.Endpoint,
   url: [host: "localhost"],
