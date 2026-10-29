@@ -119,6 +119,25 @@ if config_env() != :test do
   config :sentinelix,
          :bootstrap_admin,
          reject_nil.(email: env.("ADMIN_EMAIL"), password: System.get_env("ADMIN_PASSWORD"))
+
+  # ## Notifications
+  #
+  #   NOTIFICATIONS_EMAIL_FROM  sender of notification emails, e.g.
+  #                             "Sentinelix <alerts@example.com>" or a bare
+  #                             address (default sentinelix@localhost)
+  #
+  # Channel configs (tokens, webhook URLs) are encrypted in the database with
+  # a key derived from SECRET_KEY_BASE: changing it makes them unreadable.
+  if from = env.("NOTIFICATIONS_EMAIL_FROM") do
+    email_from =
+      case Regex.run(~r/^\s*(.*?)\s*<([^>]+)>\s*$/, from) do
+        [_, "", address] -> address
+        [_, name, address] -> {name, address}
+        nil -> from
+      end
+
+    config :sentinelix, Sentinelix.Notifications, email_from: email_from
+  end
 end
 
 if config_env() == :prod do
