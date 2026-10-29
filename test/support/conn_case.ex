@@ -17,6 +17,10 @@ defmodule SentinelixWeb.ConnCase do
 
   use ExUnit.CaseTemplate
 
+  alias Sentinelix.Accounts
+  alias Sentinelix.Accounts.Scope
+  alias Sentinelix.AccountsFixtures
+
   using do
     quote do
       # The default endpoint for testing
@@ -44,8 +48,8 @@ defmodule SentinelixWeb.ConnCase do
   It stores an updated connection, the user and its scope in the test context.
   """
   def register_and_log_in_user(%{conn: conn} = context) do
-    user = Sentinelix.AccountsFixtures.user_fixture(Map.get(context, :user_attrs, %{}))
-    scope = Sentinelix.Accounts.Scope.for_user(user)
+    user = AccountsFixtures.user_fixture(Map.get(context, :user_attrs, %{}))
+    scope = Scope.for_user(user)
 
     %{conn: log_in_user(conn, user), user: user, scope: scope}
   end
@@ -54,7 +58,7 @@ defmodule SentinelixWeb.ConnCase do
   Logs the given `user` into the `conn` by creating a session token.
   """
   def log_in_user(conn, user, opts \\ []) do
-    token = Sentinelix.Accounts.generate_user_session_token(user, opts)
+    token = Accounts.generate_user_session_token(user, opts)
 
     conn
     |> Phoenix.ConnTest.init_test_session(%{})

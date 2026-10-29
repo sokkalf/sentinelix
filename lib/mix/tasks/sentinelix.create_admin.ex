@@ -45,15 +45,18 @@ defmodule Mix.Tasks.Sentinelix.CreateAdmin do
         Mix.shell().info("Reset password of local admin #{user.email}")
 
       {:error, changeset} ->
-        errors =
-          Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-            Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-              opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-            end)
-          end)
-
-        Mix.raise("Could not create admin: #{inspect(errors)}")
+        Mix.raise("Could not create admin: #{inspect(format_errors(changeset))}")
     end
+  end
+
+  defp format_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Regex.replace(~r"%{(\w+)}", msg, &interpolate(&1, &2, opts))
+    end)
+  end
+
+  defp interpolate(_match, key, opts) do
+    opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
   end
 
   defp prompt(label), do: label |> Mix.shell().prompt() |> String.trim()

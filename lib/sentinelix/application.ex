@@ -5,6 +5,9 @@ defmodule Sentinelix.Application do
 
   use Application
 
+  alias Sentinelix.Accounts
+  alias Sentinelix.Auth.OIDC
+
   @impl true
   def start(_type, _args) do
     # OIDC provider discovery/JWKS worker (only when OIDC is configured)
@@ -13,11 +16,11 @@ defmodule Sentinelix.Application do
         SentinelixWeb.Telemetry,
         Sentinelix.Repo,
         # Creates the local admin from ADMIN_EMAIL/ADMIN_PASSWORD if needed
-        {Task, &Sentinelix.Accounts.ensure_bootstrap_admin/0},
+        {Task, &Accounts.ensure_bootstrap_admin/0},
         {Phoenix.PubSub, name: Sentinelix.PubSub},
         {Finch, name: Sentinelix.Finch}
       ] ++
-        Sentinelix.Auth.OIDC.children() ++
+        OIDC.children() ++
         [
           {SentinelixWeb.Services.MonitorService, []},
           Supervisor.child_spec({Cachex, name: :monitor_cache}, id: :monitor_cache),

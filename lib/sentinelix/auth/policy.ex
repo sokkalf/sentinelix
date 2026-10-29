@@ -27,18 +27,22 @@ defmodule Sentinelix.Auth.Policy do
     domains = normalize(config[:allowed_domains], &(&1 |> String.downcase() |> trim_at()))
 
     cond do
-      groups == [] and emails == [] and domains == [] ->
-        :ok
+      groups == [] and emails == [] and domains == [] -> :ok
+      group_allowed?(claims, groups, config[:groups_claim] || "groups") -> :ok
+      email_allowed?(claims, emails, domains) -> :ok
+      true -> {:error, :not_allowed}
+    end
+  end
 
-      groups != [] and
-          Enum.any?(groups(claims, config[:groups_claim] || "groups"), &(&1 in groups)) ->
-        :ok
+  defp group_allowed?(_claims, [], _claim_name), do: false
 
-      (email = verified_email(claims)) && (email in emails or email_domain(email) in domains) ->
-        :ok
+  defp group_allowed?(claims, allowed, claim_name),
+    do: Enum.any?(groups(claims, claim_name), &(&1 in allowed))
 
-      true ->
-        {:error, :not_allowed}
+  defp email_allowed?(claims, emails, domains) do
+    case verified_email(claims) do
+      nil -> false
+      email -> email in emails or email_domain(email) in domains
     end
   end
 

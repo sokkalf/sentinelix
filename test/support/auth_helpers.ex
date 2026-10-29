@@ -6,6 +6,7 @@ defmodule Sentinelix.Test.AuthHelpers do
 
   import ExUnit.Assertions
 
+  alias Sentinelix.Auth.OIDC
   alias Sentinelix.Test.FakeOIDCProvider
 
   @doc """
@@ -54,8 +55,8 @@ defmodule Sentinelix.Test.AuthHelpers do
       put_app_env(:local_auth_enabled, opts[:local_auth_enabled])
     end
 
-    ExUnit.Callbacks.start_supervised!(Sentinelix.Auth.OIDC)
-    wait_until(&Sentinelix.Auth.OIDC.ready?/0)
+    ExUnit.Callbacks.start_supervised!(OIDC)
+    wait_until(&OIDC.ready?/0)
 
     fake
   end

@@ -9,8 +9,8 @@ defmodule Sentinelix.Accounts do
   import Ecto.Query, warn: false
   require Logger
 
-  alias Sentinelix.Repo
   alias Sentinelix.Accounts.{User, UserToken}
+  alias Sentinelix.Repo
 
   ## Users
 
@@ -126,26 +126,27 @@ defmodule Sentinelix.Accounts do
     with email when is_binary(email) and email != "" <- config[:email],
          password when is_binary(password) and password != "" <- config[:password] do
       case get_local_user_by_email(email) do
-        nil ->
-          case create_local_user(%{email: email, password: password}) do
-            {:ok, user} ->
-              Logger.info("Created local admin user #{user.email}")
-              {:ok, :created, user}
-
-            {:error, changeset} ->
-              Logger.error(
-                "Could not create local admin user from ADMIN_EMAIL/ADMIN_PASSWORD: " <>
-                  inspect(errors_on(changeset))
-              )
-
-              {:error, changeset}
-          end
-
-        user ->
-          {:ok, :exists, user}
+        nil -> create_bootstrap_admin(email, password)
+        user -> {:ok, :exists, user}
       end
     else
       _ -> :skip
+    end
+  end
+
+  defp create_bootstrap_admin(email, password) do
+    case create_local_user(%{email: email, password: password}) do
+      {:ok, user} ->
+        Logger.info("Created local admin user #{user.email}")
+        {:ok, :created, user}
+
+      {:error, changeset} ->
+        Logger.error(
+          "Could not create local admin user from ADMIN_EMAIL/ADMIN_PASSWORD: " <>
+            inspect(errors_on(changeset))
+        )
+
+        {:error, changeset}
     end
   end
 
