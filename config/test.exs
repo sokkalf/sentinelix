@@ -39,6 +39,15 @@ config :sentinelix, SentinelixWeb.Endpoint,
 # start an isolated one (see Sentinelix.Monitoring.SupervisorTest).
 config :sentinelix, Sentinelix.Monitoring.Supervisor, manager: false
 
+# Don't dispatch notifications automatically: tests start their own
+# dispatcher (see Sentinelix.Notifications.DispatcherTest). Notification
+# HTTP requests go through Req.Test stubs, retries don't wait.
+config :sentinelix, Sentinelix.Notifications.Supervisor, dispatcher: false
+
+config :sentinelix, Sentinelix.Notifications,
+  req_options: [plug: {Req.Test, Sentinelix.Notifications}],
+  backoff_ms: 1
+
 # Route HTTP checks through Req.Test stubs instead of the network.
 config :sentinelix, Sentinelix.Checks.HTTP,
   req_options: [plug: {Req.Test, Sentinelix.Checks.HTTP}]

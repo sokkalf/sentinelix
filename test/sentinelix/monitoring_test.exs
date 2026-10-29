@@ -127,8 +127,10 @@ defmodule Sentinelix.MonitoringTest do
 
     test "does not broadcast on failure" do
       Monitoring.subscribe_monitors()
-      assert {:error, _} = Monitoring.create_monitor(%{})
-      refute_receive {:monitor_created, _}
+      # Other async tests create monitors too, so only look for this one.
+      name = "Invalid #{System.unique_integer([:positive])}"
+      assert {:error, _} = Monitoring.create_monitor(%{name: name})
+      refute_receive {:monitor_created, %{name: ^name}}
     end
   end
 

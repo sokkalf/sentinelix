@@ -70,6 +70,10 @@ defmodule SentinelixWeb.Router do
       on_mount: [{SentinelixWeb.UserAuth, :require_authenticated}] do
       live "/", Live.Dashboard
       live "/monitors/:id", Live.Monitor
+
+      live "/settings/notifications", Live.NotificationSettings, :index
+      live "/settings/notifications/new", Live.NotificationSettings, :new
+      live "/settings/notifications/:id/edit", Live.NotificationSettings, :edit
     end
   end
 

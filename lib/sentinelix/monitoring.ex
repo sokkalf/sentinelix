@@ -155,12 +155,21 @@ defmodule Sentinelix.Monitoring do
 
   @doc """
   Creates a monitor.
+
+  The notification channels marked as default are attached to it (see
+  `Sentinelix.Notifications.attach_default_channels/1`); use
+  `Sentinelix.Notifications.put_monitor_channels/2` afterwards to choose
+  different ones.
   """
   @spec create_monitor(map()) :: {:ok, Monitor.t()} | {:error, Ecto.Changeset.t()}
   def create_monitor(attrs \\ %{}) do
     %Monitor{}
     |> Monitor.changeset(attrs)
     |> Repo.insert()
+    |> tap(fn
+      {:ok, monitor} -> Sentinelix.Notifications.attach_default_channels(monitor)
+      _error -> :ok
+    end)
     |> broadcast_monitor_change(:monitor_created)
   end
 

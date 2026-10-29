@@ -22,6 +22,9 @@ defmodule Sentinelix.Application do
       ] ++
         OIDC.children() ++
         [
+          # Started before the engine so no status change goes unnoticed
+          {Sentinelix.Notifications.Supervisor,
+           Application.get_env(:sentinelix, Sentinelix.Notifications.Supervisor, [])},
           {Sentinelix.Monitoring.Supervisor,
            Application.get_env(:sentinelix, Sentinelix.Monitoring.Supervisor, [])},
           # Start to serve requests, typically the last entry
