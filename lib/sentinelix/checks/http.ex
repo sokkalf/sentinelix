@@ -45,22 +45,39 @@ defmodule Sentinelix.Checks.HTTP do
   def run(%Monitor{settings: settings} = monitor) do
     case request(monitor) do
       {:ok, %Req.Response{status: status}, elapsed_ms} ->
-        details = %{response_time_ms: elapsed_ms, status_code: status}
-
-        if Settings.accepted_status?(settings, status) do
-          {:up, Map.put(details, :message, status_line(status))}
-        else
-          message =
-            "Unexpected status #{status_line(status)} " <>
-              "(accepted: #{format_ranges(Settings.accepted_status_ranges(settings))})"
-
-          {:down, Map.put(details, :message, message)}
-        end
+        evaluate_status(settings, status, elapsed_ms)
 
       {:error, exception, elapsed_ms} ->
-        {:down, %{response_time_ms: elapsed_ms, message: error_message(exception)}}
+        error_result(exception, elapsed_ms)
     end
   end
+
+  @doc """
+  The check result for a response status: `:up` if it is accepted by the
+  settings, `:down` otherwise.
+  """
+  @spec evaluate_status(Settings.t(), non_neg_integer(), non_neg_integer()) ::
+          Sentinelix.Checks.Check.result()
+  def evaluate_status(%Settings{} = settings, status, elapsed_ms) do
+    details = %{response_time_ms: elapsed_ms, status_code: status}
+
+    if Settings.accepted_status?(settings, status) do
+      {:up, Map.put(details, :message, status_line(status))}
+    else
+      message =
+        "Unexpected status #{status_line(status)} " <>
+          "(accepted: #{format_ranges(Settings.accepted_status_ranges(settings))})"
+
+      {:down, Map.put(details, :message, message)}
+    end
+  end
+
+  @doc """
+  The `:down` check result for a failed request.
+  """
+  @spec error_result(Exception.t(), non_neg_integer()) :: Sentinelix.Checks.Check.result()
+  def error_result(exception, elapsed_ms),
+    do: {:down, %{response_time_ms: elapsed_ms, message: error_message(exception)}}
 
   @doc """
   Performs the HTTP request for a monitor.

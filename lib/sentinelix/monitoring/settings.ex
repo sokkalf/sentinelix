@@ -27,6 +27,7 @@ defmodule Sentinelix.Monitoring.Settings do
   @http_methods ~w(GET HEAD POST PUT PATCH DELETE OPTIONS)
   @dns_record_types ~w(A AAAA CNAME MX TXT NS)
   @max_redirects_limit 20
+  @max_push_grace_seconds 86_400
 
   @http_fields [
     url: nil,
@@ -42,12 +43,14 @@ defmodule Sentinelix.Monitoring.Settings do
   # field => default value, per type. A `nil` default means "no default".
   @type_fields %{
     http: @http_fields,
-    keyword: @http_fields ++ [keyword: nil, invert_keyword: false, case_sensitive: true],
+    keyword:
+      @http_fields ++
+        [keyword: nil, invert_keyword: false, case_sensitive: true, json_path: nil],
     tcp: [host: nil, port: nil],
     ping: [host: nil],
     dns: [host: nil, dns_record_type: "A", dns_resolver: nil, expected_value: nil],
     cert: [host: nil, port: 443, cert_warn_days: 30, cert_critical_days: 7],
-    push: [push_token: nil]
+    push: [push_token: nil, push_grace_seconds: 30]
   }
 
   @primary_key false
@@ -66,6 +69,9 @@ defmodule Sentinelix.Monitoring.Settings do
     field :keyword, :string
     field :invert_keyword, :boolean
     field :case_sensitive, :boolean
+    # Optional: compare the value at this dot-path of a JSON response body
+    # with `keyword` instead of searching the body for it.
+    field :json_path, :string
 
     # tcp / ping / dns / cert
     field :host, :string
@@ -82,6 +88,8 @@ defmodule Sentinelix.Monitoring.Settings do
 
     # push
     field :push_token, :string
+    # Extra time after the interval before a missing push counts as down.
+    field :push_grace_seconds, :integer
   end
 
   @type t :: %__MODULE__{}
@@ -124,17 +132,34 @@ defmodule Sentinelix.Monitoring.Settings do
   # Identifier-like fields where surrounding whitespace is never intended.
   # (Free-text fields such as `body` and `keyword` are kept verbatim.)
   # Blank accepted status code entries (e.g. empty form inputs) are dropped.
-  @trimmed_fields [:url, :method, :host, :dns_record_type, :dns_resolver, :push_token]
+  @trimmed_fields [
+    :url,
+    :method,
+    :host,
+    :dns_record_type,
+    :dns_resolver,
+    :json_path,
+    :push_token
+  ]
 
   defp trim_strings(changeset) do
     @trimmed_fields
     |> Enum.reduce(changeset, fn field, acc ->
-      update_change(acc, field, &(&1 && String.trim(&1)))
+      update_change(acc, field, &trim/1)
     end)
     |> update_change(:accepted_status_codes, fn
       nil -> nil
       codes -> codes |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
     end)
+  end
+
+  defp trim(nil), do: nil
+
+  defp trim(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
   end
 
   defp reset_fields(changeset, fields) do
@@ -201,11 +226,26 @@ defmodule Sentinelix.Monitoring.Settings do
     |> validate_format(:push_token, ~r/\A[A-Za-z0-9_-]+\z/,
       message: "may only contain letters, digits, - and _"
     )
+    |> validate_required([:push_grace_seconds])
+    |> validate_number(:push_grace_seconds,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: @max_push_grace_seconds
+    )
   end
 
   defp validate_type(changeset, _type), do: changeset
 
-  defp validate_keyword(changeset, :keyword), do: validate_required(changeset, [:keyword])
+  defp validate_keyword(changeset, :keyword) do
+    changeset
+    |> validate_required([:keyword])
+    |> validate_change(:json_path, fn field, path ->
+      case parse_json_path(path) do
+        {:ok, _segments} -> []
+        :error -> [{field, ~s(must be a dot-separated path like "data.items.0.status")}]
+      end
+    end)
+  end
+
   defp validate_keyword(changeset, _type), do: changeset
 
   defp validate_port(changeset) do
@@ -287,6 +327,23 @@ defmodule Sentinelix.Monitoring.Settings do
 
       if valid?, do: [], else: [{field, "contains an invalid header name or value"}]
     end)
+  end
+
+  @doc """
+  Parses a JSON dot-path (e.g. `"data.items.0.status"`, optionally prefixed
+  with `$.`) into its segments. Segments must not be empty; numeric segments
+  also index into arrays.
+
+      iex> parse_json_path("$.data.items.0")
+      {:ok, ["data", "items", "0"]}
+  """
+  @spec parse_json_path(String.t()) :: {:ok, [String.t()]} | :error
+  def parse_json_path(path) when is_binary(path) do
+    segments = path |> String.replace_prefix("$.", "") |> String.split(".")
+
+    if path != "" and Enum.all?(segments, &(&1 != "")),
+      do: {:ok, segments},
+      else: :error
   end
 
   @doc """

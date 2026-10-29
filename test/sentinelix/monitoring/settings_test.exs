@@ -105,6 +105,26 @@ defmodule Sentinelix.Monitoring.SettingsTest do
       assert settings.invert_keyword == false
       assert settings.case_sensitive == true
       assert settings.method == "GET"
+      assert settings.json_path == nil
+    end
+
+    test "validates the optional JSON path" do
+      base = %{url: "https://example.com", keyword: "UP"}
+
+      for path <- ["status", "$.data.items.0.status", "a-b.c_d"] do
+        assert valid?(:keyword, Map.put(base, :json_path, path)),
+               "expected #{inspect(path)} to be accepted"
+      end
+
+      for path <- [".status", "data..status", "status.", "$."] do
+        assert %{json_path: [_]} = settings_errors(:keyword, Map.put(base, :json_path, path)),
+               "expected #{inspect(path)} to be rejected"
+      end
+
+      assert apply_settings(:keyword, Map.put(base, :json_path, " status ")).json_path ==
+               "status"
+
+      assert apply_settings(:keyword, Map.put(base, :json_path, "  ")).json_path == nil
     end
   end
 
@@ -187,6 +207,13 @@ defmodule Sentinelix.Monitoring.SettingsTest do
       assert valid?(:push, %{push_token: "abcdefghijklmnop"})
       assert %{push_token: [_]} = settings_errors(:push, %{push_token: "short"})
       assert %{push_token: [_]} = settings_errors(:push, %{push_token: "has spaces in the token"})
+    end
+
+    test "defaults and validates the grace period" do
+      assert apply_settings(:push, %{}).push_grace_seconds == 30
+      assert apply_settings(:push, %{push_grace_seconds: 0}).push_grace_seconds == 0
+      assert %{push_grace_seconds: [_]} = settings_errors(:push, %{push_grace_seconds: -1})
+      assert %{push_grace_seconds: [_]} = settings_errors(:push, %{push_grace_seconds: 86_401})
     end
   end
 

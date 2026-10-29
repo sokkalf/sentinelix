@@ -36,7 +36,7 @@ defmodule Sentinelix.Monitoring do
   import Ecto.Query, warn: false
 
   alias Phoenix.PubSub
-  alias Sentinelix.Monitoring.{CheckResult, Incident, Monitor}
+  alias Sentinelix.Monitoring.{CheckResult, Incident, Monitor, Worker}
   alias Sentinelix.Repo
 
   @pubsub Sentinelix.PubSub
@@ -224,6 +224,74 @@ defmodule Sentinelix.Monitoring do
   """
   @spec worker_info(monitor_ref()) :: map() | nil
   defdelegate worker_info(monitor), to: Sentinelix.Monitoring.Worker, as: :info
+
+  @default_push_message "OK"
+  # Fits the `response_time_ms` integer column.
+  @max_push_ping 2_147_483_647
+
+  @doc """
+  Records a push (heartbeat) for the push monitor with the given token.
+
+  The push is handed to the monitor's worker, so it goes through the status
+  state machine like any check result (status changes, incidents, events).
+  Supported params (string keys, as received by the push endpoint):
+
+    * `"status"` – `"up"` (default) or `"down"`
+    * `"msg"` – a message (default `"OK"`)
+    * `"ping"` – a response time in milliseconds (optional; ignored if it
+      isn't a non-negative number)
+
+  Returns the stored check result (`nil` if it could not be stored), or
+
+    * `{:error, :not_found}` – no enabled push monitor has this token,
+    * `{:error, :invalid_status}` – `"status"` is neither `"up"` nor `"down"`,
+    * `{:error, :not_running}` – the monitor has no running worker.
+  """
+  @spec receive_push(String.t(), map()) ::
+          {:ok, CheckResult.t() | nil}
+          | {:error, :not_found | :invalid_status | :not_running}
+  def receive_push(token, params \\ %{}) when is_binary(token) and is_map(params) do
+    with %Monitor{enabled: true} = monitor <- get_monitor_by_push_token(token),
+         {:ok, status} <- push_status(params["status"]) do
+      details = %{
+        message: push_message(params["msg"]),
+        response_time_ms: push_ping(params["ping"])
+      }
+
+      case Worker.push(monitor, {status, details}) do
+        {:error, :not_passive} -> {:error, :not_running}
+        result -> result
+      end
+    else
+      {:error, :invalid_status} -> {:error, :invalid_status}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp push_status(status) when status in [nil, "", "up"], do: {:ok, :up}
+  defp push_status("down"), do: {:ok, :down}
+  defp push_status(_status), do: {:error, :invalid_status}
+
+  defp push_message(message) when is_binary(message) do
+    case String.trim(message) do
+      "" -> @default_push_message
+      message -> message
+    end
+  end
+
+  defp push_message(_message), do: @default_push_message
+
+  defp push_ping(ping) when is_binary(ping) do
+    case Float.parse(ping) do
+      {value, ""} when value >= 0 and value <= @max_push_ping -> round(value)
+      _ -> nil
+    end
+  end
+
+  defp push_ping(ping) when is_number(ping) and ping >= 0 and ping <= @max_push_ping,
+    do: round(ping)
+
+  defp push_ping(_ping), do: nil
 
   ## Check results
 
