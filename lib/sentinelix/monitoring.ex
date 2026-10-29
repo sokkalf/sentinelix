@@ -25,8 +25,8 @@ defmodule Sentinelix.Monitoring do
   import Ecto.Query, warn: false
 
   alias Phoenix.PubSub
-  alias Sentinelix.Repo
   alias Sentinelix.Monitoring.{CheckResult, Incident, Monitor}
+  alias Sentinelix.Repo
 
   @pubsub Sentinelix.PubSub
   @monitors_topic "monitors"
