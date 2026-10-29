@@ -21,7 +21,7 @@ defmodule Sentinelix.MixProject do
   def application do
     [
       mod: {Sentinelix.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: [:logger, :runtime_tools, :ssl, :public_key]
     ]
   end
 
@@ -75,9 +75,8 @@ defmodule Sentinelix.MixProject do
       {:bandit, "~> 1.8"},
       {:oidcc, "~> 3.9"},
       {:bcrypt_elixir, "~> 3.3"},
-      # httpoison and cachex are removed by the monitor engine rewrite (#5)
-      {:httpoison, "~> 2.2"},
-      {:cachex, "~> 4.1"}
+      {:req, "~> 0.7"},
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ]
   end
 
