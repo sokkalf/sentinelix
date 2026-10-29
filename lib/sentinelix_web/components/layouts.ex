@@ -47,6 +47,13 @@ defmodule SentinelixWeb.Layouts do
           <span id="current-user" class="opacity-75">
             {Sentinelix.Accounts.User.display_name(@current_scope.user)}
           </span>
+          <.link
+            navigate={~p"/settings/notifications"}
+            title="Notification settings"
+            class="link-hover"
+          >
+            <.icon name="hero-bell" class="size-5" />
+          </.link>
           <.link href={~p"/admin/dashboard"} title="System dashboard" class="link-hover">
             <.icon name="hero-cpu-chip" class="size-5" />
           </.link>

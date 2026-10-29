@@ -128,3 +128,24 @@ Besides these, `/metrics` exports check counts and durations
 (`sentinelix_checks_total`, `sentinelix_check_duration_milliseconds`,
 `sentinelix_monitor_status_changes_total`), Phoenix request and Ecto query
 metrics and BEAM VM metrics (`vm_*`).
+
+## Notifications
+
+Notification channels are managed at `/settings/notifications` (email,
+generic webhook, Slack, Discord, Telegram, ntfy, Gotify). A channel is sent
+to when a monitor it is attached to goes down, recovers, or raises/clears a
+warning (e.g. a TLS certificate close to expiry). Channels marked *default*
+are attached to new monitors automatically; the monitors of a channel can be
+chosen on its edit page. Failed sends are retried (3 attempts, exponential
+backoff).
+
+* Channel configs (tokens, webhook URLs) are encrypted in the database with a
+  key derived from `SECRET_KEY_BASE` and are never shown again in the UI
+  (leave a secret field blank to keep it). Changing `SECRET_KEY_BASE` makes
+  stored configs unreadable, so channels must then be set up again.
+* Email uses `Sentinelix.Mailer` (Swoosh); configure its adapter for
+  production. The sender is set with `NOTIFICATIONS_EMAIL_FROM`, e.g.
+  `Sentinelix <alerts@example.com>`.
+* The last notified state per monitor is persisted, so restarts (monitor
+  edits, deploys) don't re-send notifications for monitors that are already
+  down or warned about.
