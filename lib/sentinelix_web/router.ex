@@ -24,11 +24,14 @@ defmodule SentinelixWeb.Router do
   #   * public status pages (#10), e.g. `live "/status/:slug", StatusPageLive`
   #     (browser pipeline, in its own `live_session :public` without the
   #     `:require_authenticated` hook)
-  #   * push/heartbeat endpoint (#6), e.g. `get "/api/push/:token"` (api pipeline)
-  #
-  # scope "/", SentinelixWeb do
-  #   pipe_through :api
-  # end
+
+  # Push/heartbeat endpoint for push monitors (#6); the token is the credential.
+  scope "/api", SentinelixWeb do
+    pipe_through :api
+
+    get "/push/:token", PushController, :push
+    post "/push/:token", PushController, :push
+  end
 
   # Health check and Prometheus metrics: no pipeline at all (no session,
   # CSRF or content negotiation). /metrics checks its own bearer token

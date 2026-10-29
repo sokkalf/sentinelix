@@ -11,7 +11,12 @@ defmodule Sentinelix.Checks do
 
   @checks %{
     http: Checks.HTTP,
-    cert: Checks.Cert
+    keyword: Checks.Keyword,
+    tcp: Checks.TCP,
+    ping: Checks.Ping,
+    dns: Checks.DNS,
+    cert: Checks.Cert,
+    push: Checks.Push
   }
 
   @doc """

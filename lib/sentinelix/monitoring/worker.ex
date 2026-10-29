@@ -46,6 +46,24 @@ defmodule Sentinelix.Monitoring.Worker do
   result}` on the same topics. The warning state is not persisted, so a
   restarted worker raises an active warning again.
 
+  ## Passive checks (push monitors)
+
+  A check whose module implements `c:Sentinelix.Checks.Check.passive?/0`
+  returning `true` (see `Sentinelix.Checks.Push`) doesn't probe anything.
+  Results are delivered to the worker with `push/3` instead and go through
+  the same state machine (retries, incidents, events, maintenance) as the
+  results of active checks. The check itself only runs when no push arrived
+  in time:
+
+    * After start and after every push the check is scheduled
+      `interval_seconds` plus `push_grace_seconds` later; each push
+      reschedules it.
+    * When it runs, it reports `:down` (no push received). Further checks
+      follow the normal schedule (`retry_interval_seconds` while `:pending`,
+      `interval_seconds` otherwise) until the next push.
+    * `check_now/2` does nothing: there is nothing to probe, and a push
+      that is merely not overdue yet must not be reported as missing.
+
   ## Maintenance
 
   If the engine is configured with a `:maintenance` module, its
@@ -87,6 +105,7 @@ defmodule Sentinelix.Monitoring.Worker do
     :task_timer,
     :started_at,
     :next_check_at,
+    passive: false,
     status: :pending,
     retries: 0,
     warning: false
@@ -113,6 +132,28 @@ defmodule Sentinelix.Monitoring.Worker do
   end
 
   @doc """
+  Delivers the result of a passive check (e.g. a received push) to the
+  monitor's worker, which records and evaluates it like a check result.
+
+  Returns the stored check result (`nil` if it could not be stored). Returns
+  `{:error, :not_running}` if the monitor has no worker and
+  `{:error, :not_passive}` if its check is not passive.
+  """
+  @spec push(Monitor.t() | pos_integer(), Sentinelix.Checks.Check.result(), Engine.engine()) ::
+          {:ok, CheckResult.t() | nil} | {:error, :not_running | :not_passive}
+  def push(monitor, {status, details} = result, engine \\ Engine)
+      when status in [:up, :down] and is_map(details) do
+    case Engine.whereis(monitor, engine) do
+      nil -> {:error, :not_running}
+      pid -> GenServer.call(pid, {:push, result})
+    end
+  catch
+    # The worker stopped (e.g. the monitor was disabled) during the call.
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> {:error, :not_running}
+    :exit, {{:shutdown, _}, _} -> {:error, :not_running}
+  end
+
+  @doc """
   Returns the runtime state of a monitor's worker: `:status`, `:retries`,
   `:warning`, `:checking` (whether a check is running) and `:next_check_at`.
   """
@@ -128,10 +169,13 @@ defmodule Sentinelix.Monitoring.Worker do
 
   @impl true
   def init(opts) do
+    check = Keyword.fetch!(opts, :check)
+
     state = %__MODULE__{
       monitor: Keyword.fetch!(opts, :monitor),
-      check: Keyword.fetch!(opts, :check),
-      config: Keyword.fetch!(opts, :config)
+      check: check,
+      config: Keyword.fetch!(opts, :config),
+      passive: passive?(check)
     }
 
     # Finish recording a check that is being processed before shutting down.
@@ -149,10 +193,14 @@ defmodule Sentinelix.Monitoring.Worker do
       end
 
     state = %{state | status: status, incident: Monitoring.get_open_incident(monitor)}
-    {:noreply, start_check(state)}
+
+    if state.passive,
+      do: {:noreply, schedule_deadline(state)},
+      else: {:noreply, start_check(state)}
   end
 
   @impl true
+  def handle_cast(:check_now, %{passive: true} = state), do: {:noreply, state}
   def handle_cast(:check_now, state), do: {:noreply, start_check(state)}
 
   @impl true
@@ -166,6 +214,22 @@ defmodule Sentinelix.Monitoring.Worker do
     }
 
     {:reply, info, state}
+  end
+
+  def handle_call({:push, _result}, _from, %{passive: false} = state),
+    do: {:reply, {:error, :not_passive}, state}
+
+  def handle_call({:push, {result, details}}, _from, state) do
+    # A push supersedes a "no push received" check that is running right now.
+    state = cancel_check(state)
+    cancel_timer(state.timer)
+    emit_start(state)
+    state = %{state | timer: nil, started_at: System.monotonic_time()}
+
+    case finish(state, {result, Map.put_new(details, :response_time_ms, nil)}, nil) do
+      {:ok, state, check_result} -> {:reply, {:ok, check_result}, schedule_deadline(state)}
+      :stop -> {:stop, :normal, {:error, :not_running}, state}
+    end
   end
 
   @impl true
@@ -204,12 +268,7 @@ defmodule Sentinelix.Monitoring.Worker do
 
   defp start_check(%{monitor: monitor, check: check} = state) do
     cancel_timer(state.timer)
-
-    :telemetry.execute(
-      [:sentinelix, :check, :start],
-      %{system_time: System.system_time(), monotonic_time: System.monotonic_time()},
-      %{monitor_id: monitor.id, monitor_type: monitor.type}
-    )
+    emit_start(state)
 
     task =
       Task.Supervisor.async_nolink(state.config.task_supervisor, fn -> check.run(monitor) end)
@@ -226,6 +285,19 @@ defmodule Sentinelix.Monitoring.Worker do
     }
   end
 
+  defp cancel_check(%{task: nil} = state), do: state
+
+  defp cancel_check(%{task: task} = state) do
+    Task.Supervisor.terminate_child(state.config.task_supervisor, task.pid)
+    Process.demonitor(task.ref, [:flush])
+    cancel_timer(state.task_timer)
+    %{state | task: nil, task_timer: nil}
+  end
+
+  defp passive?(check) do
+    Code.ensure_loaded?(check) and function_exported?(check, :passive?, 0) and check.passive?()
+  end
+
   defp crash_reason({exception, stacktrace})
        when is_exception(exception) and is_list(stacktrace),
        do: Exception.format_banner(:error, exception)
@@ -238,10 +310,22 @@ defmodule Sentinelix.Monitoring.Worker do
   defp normalize(other),
     do: {:down, %{message: "Check returned an invalid result: #{inspect(other)}"}}
 
-  defp complete(state, {result, details}, error) do
+  defp complete(state, result, error) do
     cancel_timer(state.task_timer)
-    duration = System.monotonic_time() - state.started_at
     state = %{state | task: nil, task_timer: nil}
+
+    case finish(state, result, error) do
+      {:ok, state, _check_result} ->
+        {:noreply, schedule(state, System.monotonic_time() - state.started_at)}
+
+      :stop ->
+        {:stop, :normal, state}
+    end
+  end
+
+  # Records a check result, applies the state machine and emits telemetry.
+  defp finish(state, {result, details}, error) do
+    duration = System.monotonic_time() - state.started_at
 
     details =
       Map.put_new_lazy(details, :response_time_ms, fn ->
@@ -258,12 +342,12 @@ defmodule Sentinelix.Monitoring.Worker do
       end
 
     case recorded do
-      {:ok, state, status} ->
+      {:ok, state, status, check_result} ->
         emit_stop(state, duration, result, status, error, details)
-        {:noreply, schedule(state, duration)}
+        {:ok, state, check_result}
 
       :stop ->
-        {:stop, :normal, state}
+        :stop
     end
   end
 
@@ -285,12 +369,12 @@ defmodule Sentinelix.Monitoring.Worker do
 
     case Monitoring.record_result(state.monitor, attrs) do
       {:ok, result} ->
-        {:ok, then.(state, result), status}
+        {:ok, then.(state, result), status, result}
 
       {:error, changeset} ->
         if Monitoring.get_monitor(state.monitor.id) do
           Logger.error("Could not record check result: #{inspect(changeset.errors)}")
-          {:ok, state, status}
+          {:ok, state, status, nil}
         else
           # The monitor was deleted while the check was running.
           :stop
@@ -370,6 +454,14 @@ defmodule Sentinelix.Monitoring.Worker do
   defp maintenance?(%{config: %{maintenance: module}, monitor: monitor}),
     do: module.active?(monitor, DateTime.utc_now())
 
+  defp emit_start(%{monitor: monitor}) do
+    :telemetry.execute(
+      [:sentinelix, :check, :start],
+      %{system_time: System.system_time(), monotonic_time: System.monotonic_time()},
+      %{monitor_id: monitor.id, monitor_type: monitor.type}
+    )
+  end
+
   defp emit_stop(state, duration, result, status, error, details) do
     :telemetry.execute(
       [:sentinelix, :check, :stop],
@@ -396,6 +488,19 @@ defmodule Sentinelix.Monitoring.Worker do
     interval_ms = interval_s * 1000
     elapsed_ms = System.convert_time_unit(elapsed, :native, :millisecond)
     delay = max(interval_ms - elapsed_ms, 0) + jitter(interval_ms, state.config.jitter)
+
+    %{
+      state
+      | timer: Process.send_after(self(), :check, delay),
+        next_check_at: DateTime.add(DateTime.utc_now(), delay, :millisecond)
+    }
+  end
+
+  # Passive checks: run the check (no push received) if no push arrives
+  # within the interval plus the grace period.
+  defp schedule_deadline(%{monitor: monitor} = state) do
+    grace_s = (monitor.settings && monitor.settings.push_grace_seconds) || 0
+    delay = (monitor.interval_seconds + grace_s) * 1000
 
     %{
       state

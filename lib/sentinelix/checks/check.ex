@@ -52,4 +52,16 @@ defmodule Sentinelix.Checks.Check do
   `:down` by the worker.
   """
   @callback run(monitor :: Monitor.t()) :: result()
+
+  @doc """
+  Whether the check is passive (optional, defaults to `false`).
+
+  Passive checks don't probe their target: results are delivered to the
+  worker from outside with `Sentinelix.Monitoring.Worker.push/3` (e.g. by
+  the push endpoint), and `c:run/1` is only called when no result arrived
+  in time. See "Passive checks" in `Sentinelix.Monitoring.Worker`.
+  """
+  @callback passive?() :: boolean()
+
+  @optional_callbacks passive?: 0
 end
