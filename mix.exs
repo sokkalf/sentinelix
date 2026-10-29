@@ -70,6 +70,7 @@ defmodule Sentinelix.MixProject do
       {:finch, "~> 0.20"},
       {:telemetry_metrics, "~> 1.1"},
       {:telemetry_poller, "~> 1.3"},
+      {:peep, "~> 5.0"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:bandit, "~> 1.8"},

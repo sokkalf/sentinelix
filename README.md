@@ -89,3 +89,42 @@ a local admin (or reset its password) with
 
 or set `ADMIN_EMAIL` and `ADMIN_PASSWORD` to create it on boot if it does not
 exist yet.
+
+## Health check and metrics
+
+`GET /healthz` needs no authentication and is meant for Docker/Kubernetes
+health checks: it responds `200 {"status": "ok", "db": "ok"}` when the
+database answers and `503 {"status": "error", "db": "error"}` otherwise.
+
+`GET /metrics` serves Prometheus metrics. It is **disabled (404) unless
+`METRICS_TOKEN` is set**; with it set, requests must send
+`Authorization: Bearer <METRICS_TOKEN>` (401 otherwise):
+
+```yaml
+scrape_configs:
+  - job_name: sentinelix
+    scheme: https
+    authorization:
+      credentials: <METRICS_TOKEN>
+    static_configs:
+      - targets: ["sentinelix.example.com"]
+```
+
+Per-monitor gauges (labels `monitor_id`, `monitor` (name) and `type`) are
+computed at scrape time, so they are present right after boot and vanish when
+a monitor is deleted:
+
+| Metric | Meaning |
+| --- | --- |
+| `sentinelix_monitor_up` | 1 up, 0 down; absent while pending, in maintenance or disabled |
+| `sentinelix_monitor_status{status="up\|down\|pending\|maintenance"}` | 1 for the current status (enabled monitors) |
+| `sentinelix_monitor_enabled` | 1 enabled, 0 paused |
+| `sentinelix_monitor_warning` | 1 while a check reports a warning (e.g. certificate close to expiry) |
+| `sentinelix_monitor_response_time_ms` | response time of the latest check |
+| `sentinelix_monitor_last_check_timestamp_seconds` | Unix time of the latest check |
+| `sentinelix_monitor_cert_days_remaining` | days until the certificate expires (certificate checks) |
+
+Besides these, `/metrics` exports check counts and durations
+(`sentinelix_checks_total`, `sentinelix_check_duration_milliseconds`,
+`sentinelix_monitor_status_changes_total`), Phoenix request and Ecto query
+metrics and BEAM VM metrics (`vm_*`).
