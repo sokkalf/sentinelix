@@ -4,14 +4,12 @@
 # If you find anything wrong or unclear in this file, please report an
 # issue on GitHub: https://github.com/rrrene/credo/issues
 #
-# Legacy code that is about to be replaced: the monitor engine (#5) and the
-# web UI (#8) rewrite these files. Rather than refactoring code that is going
-# away, the style/complexity checks that it fails are switched off for these
-# paths only. Remove an entry once the rewrite that owns it has landed.
+# Legacy code that is about to be replaced: the web UI (#8) rewrites these
+# files. Rather than refactoring code that is going away, the
+# style/complexity checks that it fails are switched off for these paths
+# only. Remove an entry once the rewrite that owns it has landed.
 legacy = [
-  ~r"lib/monitors/",
-  ~r"lib/sentinelix_web/live/",
-  ~r"lib/sentinelix_web/services/"
+  ~r"lib/sentinelix_web/live/"
 ]
 
 %{
