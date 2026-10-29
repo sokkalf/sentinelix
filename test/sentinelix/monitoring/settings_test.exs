@@ -1,0 +1,215 @@
+defmodule Sentinelix.Monitoring.SettingsTest do
+  use Sentinelix.DataCase, async: true
+
+  import Sentinelix.MonitoringFixtures
+
+  alias Sentinelix.Monitoring
+  alias Sentinelix.Monitoring.{Monitor, Settings}
+
+  defp settings_errors(type, settings) do
+    changeset =
+      Monitoring.change_monitor(%Monitor{}, valid_monitor_attrs(type, %{settings: settings}))
+
+    changeset |> errors_on() |> Map.get(:settings, %{})
+  end
+
+  defp valid?(type, settings), do: settings_errors(type, settings) == %{}
+
+  defp apply_settings(type, settings) do
+    {:ok, monitor} = Monitoring.create_monitor(valid_monitor_attrs(type, %{settings: settings}))
+    monitor.settings
+  end
+
+  test "every type has valid example settings and a field list" do
+    for type <- Monitor.types() do
+      assert valid?(type, valid_settings(type)), "#{type} example settings are invalid"
+      assert Settings.fields_for(type) != []
+    end
+  end
+
+  describe "http" do
+    test "requires a valid http(s) URL" do
+      assert %{url: ["can't be blank"]} = settings_errors(:http, %{})
+
+      for url <- ["example.com", "ftp://example.com", "https://", "http//x", "  "] do
+        refute valid?(:http, %{url: url}), "expected #{inspect(url)} to be rejected"
+      end
+
+      for url <- ["http://example.com", "https://example.com:8443/a?b=c", "http://10.0.0.1/"] do
+        assert valid?(:http, %{url: url}), "expected #{inspect(url)} to be accepted"
+      end
+
+      assert apply_settings(:http, %{url: "  https://example.com  "}).url ==
+               "https://example.com"
+    end
+
+    test "validates method" do
+      assert apply_settings(:http, %{url: "https://example.com", method: "head"}).method ==
+               "HEAD"
+
+      assert %{method: ["is invalid"]} =
+               settings_errors(:http, %{url: "https://example.com", method: "FETCH"})
+    end
+
+    test "validates accepted status codes" do
+      base = %{url: "https://example.com"}
+
+      assert valid?(:http, Map.put(base, :accepted_status_codes, ["200", "300-399"]))
+
+      for codes <- [["2xx"], ["600"], ["299-200"], ["200-"]] do
+        refute valid?(:http, Map.put(base, :accepted_status_codes, codes)),
+               "expected #{inspect(codes)} to be rejected"
+      end
+
+      # Blank entries (e.g. an empty form input) are dropped, values trimmed.
+      settings = apply_settings(:http, Map.put(base, :accepted_status_codes, ["", " 201 "]))
+      assert settings.accepted_status_codes == ["201"]
+    end
+
+    test "validates headers" do
+      base = %{url: "https://example.com"}
+
+      assert valid?(:http, Map.put(base, :headers, %{"Authorization" => "Bearer x"}))
+      refute valid?(:http, Map.put(base, :headers, %{"Bad Header" => "x"}))
+      refute valid?(:http, Map.put(base, :headers, %{"X-Inject" => "a\r\nHost: evil"}))
+    end
+
+    test "validates max redirects" do
+      base = %{url: "https://example.com"}
+      assert valid?(:http, Map.put(base, :max_redirects, 0))
+      refute valid?(:http, Map.put(base, :max_redirects, -1))
+      refute valid?(:http, Map.put(base, :max_redirects, 21))
+    end
+
+    test "keeps explicit false booleans" do
+      settings =
+        apply_settings(:http, %{
+          url: "https://example.com",
+          follow_redirects: false,
+          verify_tls: "false"
+        })
+
+      assert settings.follow_redirects == false
+      assert settings.verify_tls == false
+    end
+  end
+
+  describe "keyword" do
+    test "requires a URL and keyword, with defaults for the options" do
+      assert %{url: ["can't be blank"], keyword: ["can't be blank"]} =
+               settings_errors(:keyword, %{})
+
+      settings = apply_settings(:keyword, %{url: "https://example.com", keyword: " Welcome"})
+      # Keywords are kept verbatim (whitespace may be significant).
+      assert settings.keyword == " Welcome"
+      assert settings.invert_keyword == false
+      assert settings.case_sensitive == true
+      assert settings.method == "GET"
+    end
+  end
+
+  describe "tcp" do
+    test "requires host and port in range" do
+      assert %{host: ["can't be blank"], port: ["can't be blank"]} = settings_errors(:tcp, %{})
+
+      assert %{port: [_]} = settings_errors(:tcp, %{host: "example.com", port: 0})
+      assert %{port: [_]} = settings_errors(:tcp, %{host: "example.com", port: 65_536})
+      assert valid?(:tcp, %{host: "example.com", port: 65_535})
+      assert valid?(:tcp, %{host: "::1", port: "22"})
+    end
+  end
+
+  describe "ping" do
+    test "requires a valid hostname or IP" do
+      assert %{host: ["can't be blank"]} = settings_errors(:ping, %{})
+
+      for host <- ["example.com", "localhost", "192.0.2.1", "2001:db8::1", "a-b.example.com."] do
+        assert valid?(:ping, %{host: host}), "expected #{inspect(host)} to be accepted"
+      end
+
+      for host <- ["-c 1000 example.com", "-flood", "exa mple.com", "example..com", "a;rm -rf /"] do
+        assert %{host: ["must be a valid hostname or IP address"]} =
+                 settings_errors(:ping, %{host: host}),
+               "expected #{inspect(host)} to be rejected"
+      end
+    end
+  end
+
+  describe "dns" do
+    test "requires host, defaults record type to A and validates resolver" do
+      assert %{host: ["can't be blank"]} = settings_errors(:dns, %{})
+
+      settings = apply_settings(:dns, %{host: "_dmarc.example.com", dns_record_type: "txt"})
+      assert settings.dns_record_type == "TXT"
+
+      assert apply_settings(:dns, %{host: "example.com"}).dns_record_type == "A"
+
+      assert %{dns_record_type: ["is invalid"]} =
+               settings_errors(:dns, %{host: "example.com", dns_record_type: "SRVX"})
+
+      assert valid?(:dns, %{host: "example.com", dns_resolver: "1.1.1.1"})
+
+      assert %{dns_resolver: ["must be a valid IP address"]} =
+               settings_errors(:dns, %{host: "example.com", dns_resolver: "dns.google"})
+    end
+  end
+
+  describe "cert" do
+    test "defaults port and expiry thresholds" do
+      settings = apply_settings(:cert, %{host: "example.com"})
+      assert %Settings{port: 443, cert_warn_days: 30, cert_critical_days: 7} = settings
+    end
+
+    test "validates thresholds" do
+      assert %{cert_critical_days: ["must not be greater than the warning days"]} =
+               settings_errors(:cert, %{
+                 host: "example.com",
+                 cert_warn_days: 5,
+                 cert_critical_days: 10
+               })
+
+      assert %{cert_warn_days: [_]} =
+               settings_errors(:cert, %{host: "example.com", cert_warn_days: 0})
+    end
+  end
+
+  describe "push" do
+    test "generates a token when none is given and keeps it on update" do
+      monitor = monitor_fixture(:push)
+      token = monitor.settings.push_token
+      assert is_binary(token) and byte_size(token) >= 32
+
+      {:ok, updated} = Monitoring.update_monitor(monitor, %{name: "renamed"})
+      assert updated.settings.push_token == token
+    end
+
+    test "validates custom tokens" do
+      assert valid?(:push, %{push_token: "abcdefghijklmnop"})
+      assert %{push_token: [_]} = settings_errors(:push, %{push_token: "short"})
+      assert %{push_token: [_]} = settings_errors(:push, %{push_token: "has spaces in the token"})
+    end
+  end
+
+  test "fields not relevant for the type are discarded" do
+    settings =
+      apply_settings(:tcp, %{host: "example.com", port: 22, url: "https://x", keyword: "y"})
+
+    assert settings.url == nil
+    assert settings.keyword == nil
+  end
+
+  describe "accepted_status_ranges/1 and accepted_status?/2" do
+    test "default depends on follow_redirects" do
+      assert Settings.accepted_status_ranges(%Settings{follow_redirects: true}) == [200..399]
+      assert Settings.accepted_status_ranges(%Settings{follow_redirects: false}) == [200..299]
+    end
+
+    test "parses codes and ranges" do
+      settings = %Settings{accepted_status_codes: ["200", "300-399"]}
+      assert Settings.accepted_status_ranges(settings) == [200..200, 300..399]
+      assert Settings.accepted_status?(settings, 200)
+      assert Settings.accepted_status?(settings, 302)
+      refute Settings.accepted_status?(settings, 204)
+    end
+  end
+end
