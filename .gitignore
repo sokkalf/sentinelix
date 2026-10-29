@@ -35,3 +35,10 @@ sentinelix-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Local, developer-specific config overrides (see config/dev.exs and config/test.exs).
+/config/dev.local.exs
+/config/test.local.exs
+
+# ElixirLS
+/.elixir_ls/
+

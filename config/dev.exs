@@ -1,11 +1,16 @@
 import Config
 
 # Configure your database
+#
+# Defaults can be overridden with the PGHOST, PGPORT, PGUSER, PGPASSWORD
+# and PGDATABASE environment variables, or permanently in
+# config/dev.local.exs (see the bottom of this file).
 config :sentinelix, Sentinelix.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  database: "sentinelix_dev",
+  username: System.get_env("PGUSER", "postgres"),
+  password: System.get_env("PGPASSWORD", "postgres"),
+  hostname: System.get_env("PGHOST", "localhost"),
+  port: String.to_integer(System.get_env("PGPORT", "5432")),
+  database: System.get_env("PGDATABASE", "sentinelix_dev"),
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -14,19 +19,20 @@ config :sentinelix, Sentinelix.Repo,
 # debugging and code reloading.
 #
 # The watchers configuration can be used to run external
-# watchers to your application. For example, we use it
-# with esbuild to bundle .js and .css sources.
+# watchers to your application. For example, we can use it
+# to bundle .js and .css sources.
 config :sentinelix, SentinelixWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
+  # The port can also be set with the PORT environment variable.
   http: [ip: {127, 0, 0, 1}, port: 4000],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
   secret_key_base: "K39XmHrH/JyBv6JLlEKdpiUfHgq84QCzuD1pzvy+1/19iQIWAnD48vs/3H5pj91r",
   watchers: [
-    esbuild: {Esbuild, :install_and_run, [:default, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:default, ~w(--watch)]}
+    esbuild: {Esbuild, :install_and_run, [:sentinelix, ~w(--sourcemap=inline --watch)]},
+    tailwind: {Tailwind, :install_and_run, [:sentinelix, ~w(--watch)]}
   ]
 
 # ## SSL Support
@@ -52,21 +58,11 @@ config :sentinelix, SentinelixWeb.Endpoint,
 # configured to run both http and https servers on
 # different ports.
 
-# Watch static and templates for browser reloading.
-config :sentinelix, SentinelixWeb.Endpoint,
-  live_reload: [
-    patterns: [
-      ~r"priv/static/.*(js|css|png|jpeg|jpg|gif|svg)$",
-      ~r"priv/gettext/.*(po)$",
-      ~r"lib/sentinelix_web/(controllers|live|components)/.*(ex|heex)$"
-    ]
-  ]
-
 # Enable dev routes for dashboard and mailbox
 config :sentinelix, dev_routes: true
 
 # Do not include metadata nor timestamps in development logs
-config :logger, :console, format: "[$level] $message\n"
+config :logger, :default_formatter, format: "[$level] $message\n"
 
 # Set a higher stacktrace during development. Avoid configuring such
 # in production as building large stacktraces may be expensive.
@@ -75,5 +71,28 @@ config :phoenix, :stacktrace_depth, 20
 # Initialize plugs at runtime for faster development compilation
 config :phoenix, :plug_init_mode, :runtime
 
+config :phoenix_live_view,
+  # Include debug annotations and locations in rendered markup.
+  # Changing this configuration will require mix clean and a full recompile.
+  debug_heex_annotations: true,
+  debug_attributes: true,
+  # Enable helpful, but potentially expensive runtime checks
+  enable_expensive_runtime_checks: true
+
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false
+
+# Developer-specific overrides (database credentials, ports, ...) go in
+# config/dev.local.exs, which is gitignored. For example:
+#
+#     import Config
+#
+#     config :sentinelix, Sentinelix.Repo,
+#       hostname: "db.example.internal",
+#       username: "sentinelix",
+#       password: "secret"
+#
+#     config :sentinelix, SentinelixWeb.Endpoint, http: [ip: {0, 0, 0, 0}, port: 4012]
+if File.exists?(Path.expand("dev.local.exs", __DIR__)) do
+  import_config "dev.local.exs"
+end
