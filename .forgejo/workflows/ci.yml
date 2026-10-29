@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  test:
+    # The instance-wide runners carry the `ubuntu-latest` label and run jobs
+    # in containers, so the toolchain comes from the job image.
+    runs-on: ubuntu-latest
+    container:
+      # Keep in step with .tool-versions. The hexpm image pins Elixir and OTP
+      # exactly.
+      image: hexpm/elixir:1.19.4-erlang-28.3-alpine-3.23.4
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: sentinelix
+          POSTGRES_PASSWORD: sentinelix
+    env:
+      MIX_ENV: test
+      # Read by config/test.exs.
+      PGHOST: postgres
+      PGUSER: sentinelix
+      PGPASSWORD: sentinelix
+    steps:
+      # git for the checkout and the git deps (heroicons, daisyui); nodejs
+      # because the actions below are written in JavaScript; build-base and
+      # cmake for lazy_html, which may have to build its NIF from source.
+      - name: Install system dependencies
+        run: apk add --no-cache git nodejs build-base cmake
+      - uses: actions/checkout@v4
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+      # Allowed to fail: a runner without a cache server should cost a slower
+      # build, not a red pipeline.
+      - name: Cache dependencies and build
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ env.MIX_ENV }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            mix-${{ env.MIX_ENV }}-
+      - name: Install Mix dependencies
+        run: mix deps.get
+      - name: Check for unused dependencies
+        run: mix deps.unlock --check-unused
+      # --force so a restored _build cannot hide a warning in unchanged code.
+      - name: Compile
+        run: mix compile --warnings-as-errors --force
+      - name: Check formatting
+        run: mix format --check-formatted
+      - name: Credo
+        run: mix credo --strict
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            nc -z "$PGHOST" 5432 && exit 0
+            sleep 1
+          done
+          echo "Postgres did not come up" >&2
+          exit 1
+      - name: Run tests
+        run: mix test
