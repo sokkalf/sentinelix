@@ -5,6 +5,8 @@ defmodule SentinelixWeb.Layouts do
   """
   use SentinelixWeb, :html
 
+  alias Sentinelix.Accounts.User
+
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
   # skeleton of your application, namely HTML headers
@@ -12,15 +14,15 @@ defmodule SentinelixWeb.Layouts do
   embed_templates "layouts/*"
 
   @doc """
-  Renders your app layout.
+  Renders the app layout.
 
-  This function is typically invoked from every template,
-  and it often contains your application menu, sidebar,
-  or similar.
+  Logged in users get the app shell: a sidebar with the navigation (a drawer
+  on small screens), a top bar with the theme toggle and the user menu.
+  Without a user (login pages) a minimal centered layout is rendered.
 
   ## Examples
 
-      <Layouts.app flash={@flash}>
+      <Layouts.app flash={@flash} current_scope={@current_scope} active={:dashboard}>
         <h1>Content</h1>
       </Layouts.app>
 
@@ -31,36 +33,83 @@ defmodule SentinelixWeb.Layouts do
     default: nil,
     doc: "the current [scope](https://phoenix.hexdocs.pm/scopes.html)"
 
+  attr :active, :atom, default: nil, doc: "the key of the active navigation item"
+
   slot :inner_block, required: true
+
+  def app(%{current_scope: %{user: %{}}} = assigns) do
+    assigns = assign(assigns, :nav, nav_sections())
+
+    ~H"""
+    <div class="drawer lg:drawer-open">
+      <input id="app-drawer" type="checkbox" class="drawer-toggle" />
+      <div class="drawer-content flex min-h-screen flex-col">
+        <header class="navbar sticky top-0 z-30 gap-2 border-b border-base-300 bg-base-100/90 px-4 backdrop-blur sm:px-6">
+          <div class="flex-none lg:hidden">
+            <label for="app-drawer" class="btn btn-square btn-ghost btn-sm" aria-label="Open menu">
+              <.icon name="hero-bars-3" class="size-5" />
+            </label>
+          </div>
+          <div class="flex-1">
+            <.link navigate={~p"/"} class="flex w-fit items-center gap-2 lg:hidden">
+              <.logo />
+            </.link>
+          </div>
+          <div class="flex flex-none items-center gap-2">
+            <.theme_toggle />
+            <.user_menu user={@current_scope.user} />
+          </div>
+        </header>
+
+        <main class="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+          <div class="mx-auto max-w-7xl space-y-6">
+            {render_slot(@inner_block)}
+          </div>
+        </main>
+      </div>
+
+      <div class="drawer-side z-40">
+        <label for="app-drawer" aria-label="Close menu" class="drawer-overlay"></label>
+        <aside class="flex min-h-full w-64 flex-col border-r border-base-300 bg-base-200">
+          <.link navigate={~p"/"} class="flex h-16 items-center gap-2 px-6">
+            <.logo />
+          </.link>
+          <nav id="app-nav" class="flex-1 px-3 py-2">
+            <ul :for={{title, items} <- @nav} class="menu w-full gap-0.5 p-0 pb-4">
+              <li :if={title} class="menu-title px-3 pt-2 text-xs uppercase tracking-wide">
+                {title}
+              </li>
+              <li :for={item <- items}>
+                <.link
+                  navigate={item.path}
+                  class={[item.key == @active && "menu-active"]}
+                  aria-current={item.key == @active && "page"}
+                >
+                  <.icon name={item.icon} class="size-5" /> {item.label}
+                </.link>
+              </li>
+            </ul>
+          </nav>
+          <div class="px-6 py-4 text-xs opacity-50">
+            Sentinelix {Application.spec(:sentinelix, :vsn)}
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <.flash_group flash={@flash} />
+    """
+  end
 
   def app(assigns) do
     ~H"""
     <header class="navbar border-b border-base-300 px-4 sm:px-6 lg:px-8">
       <div class="flex-1">
         <.link navigate={~p"/"} class="flex w-fit items-center gap-2">
-          <.icon name="hero-signal" class="size-6 text-primary" />
-          <span class="text-lg font-semibold">Sentinelix</span>
+          <.logo />
         </.link>
       </div>
       <div class="flex flex-none items-center gap-4">
-        <div :if={@current_scope && @current_scope.user} class="flex items-center gap-3 text-sm">
-          <span id="current-user" class="opacity-75">
-            {Sentinelix.Accounts.User.display_name(@current_scope.user)}
-          </span>
-          <.link
-            navigate={~p"/settings/notifications"}
-            title="Notification settings"
-            class="link-hover"
-          >
-            <.icon name="hero-bell" class="size-5" />
-          </.link>
-          <.link href={~p"/admin/dashboard"} title="System dashboard" class="link-hover">
-            <.icon name="hero-cpu-chip" class="size-5" />
-          </.link>
-          <.link href={~p"/logout"} method="delete" id="logout-link" class="link link-hover">
-            Log out
-          </.link>
-        </div>
         <.theme_toggle />
       </div>
     </header>
@@ -73,6 +122,98 @@ defmodule SentinelixWeb.Layouts do
 
     <.flash_group flash={@flash} />
     """
+  end
+
+  # The sidebar navigation: a list of `{section_title, items}`. Later
+  # features add their entries here (status pages, maintenance windows,
+  # notification settings, ...); only link to routes that exist.
+  defp nav_sections do
+    [
+      {nil,
+       [
+         %{key: :dashboard, label: "Dashboard", icon: "hero-squares-2x2", path: ~p"/"},
+         %{key: :monitors, label: "Monitors", icon: "hero-signal", path: ~p"/monitors"}
+       ]},
+      {"Settings",
+       [
+         %{
+           key: :notifications,
+           label: "Notifications",
+           icon: "hero-bell",
+           path: ~p"/settings/notifications"
+         },
+         %{
+           key: :users,
+           label: "Users & sessions",
+           icon: "hero-users",
+           path: ~p"/settings/users"
+         }
+       ]}
+    ]
+  end
+
+  defp logo(assigns) do
+    ~H"""
+    <span class="grid size-8 place-items-center rounded-lg bg-primary text-primary-content">
+      <.icon name="hero-signal" class="size-5" />
+    </span>
+    <span class="text-lg font-semibold tracking-tight">Sentinelix</span>
+    """
+  end
+
+  attr :user, :map, required: true
+
+  defp user_menu(assigns) do
+    ~H"""
+    <div class="dropdown dropdown-end">
+      <div
+        tabindex="0"
+        role="button"
+        class="btn btn-ghost btn-sm gap-2 px-2"
+        aria-label="User menu"
+      >
+        <span class="grid size-7 place-items-center rounded-full bg-neutral text-xs font-semibold text-neutral-content">
+          {initials(@user)}
+        </span>
+        <span id="current-user" class="hidden max-w-40 truncate text-sm font-normal sm:inline">
+          {User.display_name(@user)}
+        </span>
+        <.icon name="hero-chevron-down-micro" class="size-4 opacity-60" />
+      </div>
+      <ul
+        tabindex="0"
+        class="menu dropdown-content z-50 mt-2 w-60 rounded-box border border-base-300 bg-base-100 p-2 shadow-lg"
+      >
+        <li class="menu-title">
+          <span class="truncate">{@user.email || User.display_name(@user)}</span>
+        </li>
+        <li>
+          <.link navigate={~p"/settings/users"}>
+            <.icon name="hero-users" class="size-4" /> Users & sessions
+          </.link>
+        </li>
+        <li>
+          <.link href={~p"/admin/dashboard"}>
+            <.icon name="hero-cpu-chip" class="size-4" /> System dashboard
+          </.link>
+        </li>
+        <li>
+          <.link href={~p"/logout"} method="delete" id="logout-link">
+            <.icon name="hero-arrow-right-start-on-rectangle" class="size-4" /> Log out
+          </.link>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  defp initials(user) do
+    user
+    |> User.display_name()
+    |> String.split(~r/[\s@._-]+/, trim: true)
+    |> Enum.take(2)
+    |> Enum.map_join(&String.first/1)
+    |> String.upcase()
   end
 
   @doc """

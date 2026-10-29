@@ -211,4 +211,31 @@ defmodule Sentinelix.AccountsTest do
     refute user.last_login_at
     assert Accounts.touch_last_login(user).last_login_at
   end
+
+  describe "list_users_with_session_counts/0" do
+    test "lists users with their number of active sessions" do
+      a = user_fixture(%{name: "Alice"})
+      b = oidc_user_fixture(%{name: "Bob"})
+      Accounts.generate_user_session_token(a)
+      Accounts.generate_user_session_token(a)
+      expired = Accounts.generate_user_session_token(b)
+      offset_user_token(expired, -15, :day)
+
+      assert [{%User{id: a_id}, 2}, {%User{id: b_id}, 0}] =
+               Accounts.list_users_with_session_counts()
+
+      assert {a_id, b_id} == {a.id, b.id}
+    end
+  end
+
+  describe "delete_user/1" do
+    test "deletes the user and returns their session tokens" do
+      user = user_fixture()
+      token = Accounts.generate_user_session_token(user)
+
+      assert {:ok, %User{}, [%UserToken{token: ^token}]} = Accounts.delete_user(user)
+      refute Accounts.get_user(user.id)
+      refute Accounts.get_user_by_session_token(token)
+    end
+  end
 end

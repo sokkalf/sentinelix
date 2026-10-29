@@ -1,0 +1,265 @@
+defmodule SentinelixWeb.MonitorComponents do
+  @moduledoc """
+  Components and formatting helpers for monitors: status badges, heartbeat
+  bars, uptime and response time values.
+  """
+
+  use SentinelixWeb, :html
+
+  alias Sentinelix.Monitoring.{CheckResult, Monitor}
+
+  @type display_status :: :up | :down | :pending | :maintenance | :paused
+
+  @type_labels %{
+    http: "HTTP(S)",
+    keyword: "HTTP(S) keyword",
+    tcp: "TCP port",
+    ping: "Ping",
+    dns: "DNS",
+    cert: "TLS certificate",
+    push: "Push"
+  }
+
+  @doc "A human readable label for a monitor type."
+  @spec type_label(atom()) :: String.t()
+  def type_label(type), do: Map.get(@type_labels, type, to_string(type))
+
+  @doc "Options for a monitor type select."
+  def type_options, do: Enum.map(Monitor.types(), &{type_label(&1), &1})
+
+  @doc """
+  The status to display for a monitor: `:paused` when disabled, otherwise
+  the status of its latest check result (`:pending` without one).
+  """
+  @spec display_status(Monitor.t(), CheckResult.t() | nil) :: display_status()
+  def display_status(%Monitor{enabled: false}, _latest), do: :paused
+  def display_status(_monitor, %CheckResult{status: status}), do: status
+  def display_status(_monitor, nil), do: :pending
+
+  @doc """
+  The target of a monitor (URL, host:port, host, ...), or nil.
+  """
+  @spec target(Monitor.t()) :: String.t() | nil
+  def target(%Monitor{type: :push}), do: nil
+  def target(%Monitor{settings: %{url: url}}) when is_binary(url), do: url
+
+  def target(%Monitor{type: :dns, settings: %{host: host, dns_record_type: type}})
+      when is_binary(host),
+      do: "#{host} (#{type})"
+
+  def target(%Monitor{settings: %{host: host, port: port}})
+      when is_binary(host) and is_integer(port),
+      do: "#{host}:#{port}"
+
+  def target(%Monitor{settings: %{host: host}}) when is_binary(host), do: host
+  def target(_monitor), do: nil
+
+  @doc """
+  The public URL push monitors send their heartbeats to.
+  """
+  @spec push_url(String.t() | nil) :: String.t() | nil
+  def push_url(token) when is_binary(token) and token != "",
+    do: SentinelixWeb.Endpoint.url() <> "/api/push/" <> token
+
+  def push_url(_token), do: nil
+
+  @doc "Formats an uptime percentage."
+  @spec format_uptime(number() | nil) :: String.t()
+  def format_uptime(nil), do: "–"
+  def format_uptime(value) when value >= 100, do: "100%"
+  def format_uptime(value), do: :erlang.float_to_binary(value * 1.0, decimals: 2) <> "%"
+
+  @doc "Formats a response time in milliseconds."
+  @spec format_ms(number() | nil) :: String.t()
+  def format_ms(nil), do: "–"
+  def format_ms(ms) when ms >= 10_000, do: "#{Float.round(ms / 1000, 1)} s"
+  def format_ms(ms), do: "#{round(ms)} ms"
+
+  @doc "Formats a number of seconds as a short duration (\"1h 5m\")."
+  @spec format_duration(integer()) :: String.t()
+  def format_duration(seconds) when seconds < 60, do: "#{max(seconds, 0)}s"
+
+  def format_duration(seconds) when seconds < 3600 do
+    join_units([{div(seconds, 60), "m"}, {rem(seconds, 60), "s"}])
+  end
+
+  def format_duration(seconds) when seconds < 86_400 do
+    join_units([{div(seconds, 3600), "h"}, {div(rem(seconds, 3600), 60), "m"}])
+  end
+
+  def format_duration(seconds) do
+    join_units([{div(seconds, 86_400), "d"}, {div(rem(seconds, 86_400), 3600), "h"}])
+  end
+
+  defp join_units(parts) do
+    parts
+    |> Enum.reject(fn {n, _unit} -> n == 0 end)
+    |> Enum.map_join(" ", fn {n, unit} -> "#{n}#{unit}" end)
+  end
+
+  @doc """
+  Formats a timestamp relative to now ("5m ago", "in 30s").
+  """
+  @spec relative_time(DateTime.t() | nil, DateTime.t()) :: String.t()
+  def relative_time(at, now \\ DateTime.utc_now())
+  def relative_time(nil, _now), do: "never"
+
+  def relative_time(%DateTime{} = at, now) do
+    case DateTime.diff(now, at) do
+      diff when diff >= 0 and diff < 5 -> "just now"
+      diff when diff >= 0 -> format_duration(diff) <> " ago"
+      diff when diff > -5 -> "now"
+      diff -> "in " <> format_duration(-diff)
+    end
+  end
+
+  @doc "Formats a timestamp in UTC (local time is filled in by the LocalTime hook)."
+  @spec format_datetime(DateTime.t() | nil) :: String.t()
+  def format_datetime(nil), do: "–"
+  def format_datetime(%DateTime{} = at), do: Calendar.strftime(at, "%Y-%m-%d %H:%M:%S UTC")
+
+  @doc """
+  Renders a timestamp that the browser shows in the user's local time zone.
+  """
+  attr :id, :string, required: true
+  attr :at, DateTime, default: nil
+  attr :class, :any, default: nil
+
+  def local_time(assigns) do
+    ~H"""
+    <time
+      :if={@at}
+      id={@id}
+      phx-hook="LocalTime"
+      datetime={DateTime.to_iso8601(@at)}
+      title={format_datetime(@at)}
+      class={@class}
+    >
+      {format_datetime(@at)}
+    </time>
+    <span :if={!@at} class={@class}>–</span>
+    """
+  end
+
+  @doc """
+  A status badge (up, down, pending, maintenance, paused).
+  """
+  attr :status, :atom, required: true
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def status_badge(assigns) do
+    ~H"""
+    <span class={["badge badge-sm gap-1.5 font-medium", badge_class(@status), @class]} {@rest}>
+      <span class={[
+        "inline-block size-1.5 rounded-full bg-current",
+        @status == :up && "animate-pulse"
+      ]} />
+      {status_label(@status)}
+    </span>
+    """
+  end
+
+  @doc "A human readable status label."
+  def status_label(:up), do: "Up"
+  def status_label(:down), do: "Down"
+  def status_label(:pending), do: "Pending"
+  def status_label(:maintenance), do: "Maintenance"
+  def status_label(:paused), do: "Paused"
+
+  defp badge_class(:up), do: "badge-success"
+  defp badge_class(:down), do: "badge-error"
+  defp badge_class(:pending), do: "badge-warning"
+  defp badge_class(:maintenance), do: "badge-info"
+  defp badge_class(:paused), do: "badge-ghost"
+
+  @doc """
+  The color class used for a status (text color).
+  """
+  def status_text_class(:up), do: "text-success"
+  def status_text_class(:down), do: "text-error"
+  def status_text_class(:pending), do: "text-warning"
+  def status_text_class(:maintenance), do: "text-info"
+  def status_text_class(_status), do: "text-base-content/50"
+
+  @doc """
+  A heartbeat bar: one pill per check result (oldest first), right
+  aligned, padded with empty pills up to `slots`. Older pills are cut off
+  on narrow screens.
+  """
+  attr :id, :string, required: true
+  attr :results, :list, required: true, doc: "check results, oldest first"
+  attr :slots, :integer, default: 50
+  attr :class, :any, default: nil
+  attr :size, :string, values: ~w(sm md), default: "sm"
+
+  def heartbeat_bar(assigns) do
+    results = Enum.take(assigns.results, -assigns.slots)
+
+    assigns =
+      assigns
+      |> assign(:pills, Enum.reverse(results))
+      |> assign(:empty, assigns.slots - length(results))
+
+    ~H"""
+    <div
+      id={@id}
+      class={["flex flex-row-reverse items-center justify-start gap-[3px] overflow-hidden", @class]}
+      aria-label="Recent checks"
+    >
+      <span
+        :for={result <- @pills}
+        class={[
+          "shrink-0 rounded-full transition-transform hover:scale-125",
+          pill_size(@size),
+          pill_class(result.status)
+        ]}
+        title={pill_title(result)}
+        data-status={result.status}
+      />
+      <span
+        :for={_ <- 1..@empty//1}
+        class={["shrink-0 rounded-full bg-base-content/10", pill_size(@size)]}
+      />
+    </div>
+    """
+  end
+
+  defp pill_size("sm"), do: "h-5 w-1.5"
+  defp pill_size("md"), do: "h-8 w-2"
+
+  defp pill_class(:up), do: "bg-success"
+  defp pill_class(:down), do: "bg-error"
+  defp pill_class(:pending), do: "bg-warning"
+  defp pill_class(:maintenance), do: "bg-info"
+
+  defp pill_title(result) do
+    [
+      format_datetime(result.checked_at),
+      status_label(result.status),
+      result.response_time_ms && format_ms(result.response_time_ms),
+      result.message
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  @doc """
+  A stat tile with a title, a value and an optional description.
+  """
+  attr :title, :string, required: true
+  attr :id, :string, default: nil
+  attr :class, :any, default: nil
+  slot :inner_block, required: true
+  slot :desc
+
+  def stat_card(assigns) do
+    ~H"""
+    <div id={@id} class={["rounded-box border border-base-300 bg-base-100 p-4", @class]}>
+      <div class="text-xs font-medium uppercase tracking-wide text-base-content/60">{@title}</div>
+      <div class="mt-1 text-2xl font-semibold tabular-nums">{render_slot(@inner_block)}</div>
+      <div :if={@desc != []} class="mt-1 text-xs text-base-content/60">{render_slot(@desc)}</div>
+    </div>
+    """
+  end
+end

@@ -322,16 +322,16 @@ defmodule SentinelixWeb.CoreComponents do
 
   def header(assigns) do
     ~H"""
-    <header class={[@actions != [] && "flex items-center justify-between gap-6", "pb-4"]}>
-      <div>
-        <h1 class="text-lg font-semibold leading-8">
+    <header class={[@actions != [] && "flex flex-wrap items-center justify-between gap-4", "pb-2"]}>
+      <div class="min-w-0">
+        <h1 class="text-xl font-semibold leading-8 sm:text-2xl">
           {render_slot(@inner_block)}
         </h1>
         <p :if={@subtitle != []} class="text-sm text-base-content/70">
           {render_slot(@subtitle)}
         </p>
       </div>
-      <div class="flex-none">{render_slot(@actions)}</div>
+      <div class="flex flex-none flex-wrap items-center gap-2">{render_slot(@actions)}</div>
     </header>
     """
   end

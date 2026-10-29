@@ -16,7 +16,7 @@ defmodule SentinelixWeb.Live.NotificationSettings do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
+    <Layouts.app flash={@flash} current_scope={@current_scope} active={:notifications}>
       <%= if @live_action == :index do %>
         <.header>
           Notification channels
