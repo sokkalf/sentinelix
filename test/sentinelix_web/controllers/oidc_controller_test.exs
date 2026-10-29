@@ -94,11 +94,11 @@ defmodule SentinelixWeb.OIDCControllerTest do
     end
 
     test "returns to the originally requested page", %{conn: conn, fake: fake} do
-      conn = get(conn, ~p"/monitor/example")
+      conn = get(conn, ~p"/monitors/1")
       assert redirected_to(conn) == ~p"/login"
 
       conn = oidc_login(recycle(conn), fake, @claims)
-      assert redirected_to(conn) == ~p"/monitor/example"
+      assert redirected_to(conn) == ~p"/monitors/1"
     end
 
     test "uses claims from the userinfo endpoint", %{conn: conn, fake: fake} do

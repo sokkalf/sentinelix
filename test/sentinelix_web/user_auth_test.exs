@@ -142,7 +142,7 @@ defmodule SentinelixWeb.UserAuthTest do
 
   describe "app routes" do
     test "redirect anonymous requests to the login page", %{conn: conn} do
-      for path <- [~p"/", ~p"/monitor/example", ~p"/admin/dashboard"] do
+      for path <- [~p"/", ~p"/monitors/1", ~p"/admin/dashboard"] do
         conn = get(conn, path)
         assert redirected_to(conn) == ~p"/login"
       end
