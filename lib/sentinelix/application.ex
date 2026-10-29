@@ -1,5 +1,5 @@
 defmodule Sentinelix.Application do
-  # See https://hexdocs.pm/elixir/Application.html
+  # See https://elixir.hexdocs.pm/Application.html
   # for more information on OTP Applications
   @moduledoc false
 
@@ -8,23 +8,17 @@ defmodule Sentinelix.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Start the Telemetry supervisor
       SentinelixWeb.Telemetry,
-      # Start the Ecto repository
       Sentinelix.Repo,
-      # Start the PubSub system
       {Phoenix.PubSub, name: Sentinelix.PubSub},
-      # Start Finch
       {Finch, name: Sentinelix.Finch},
-      # Start the Endpoint (http/https)
-      SentinelixWeb.Endpoint,
-      # Start a worker by calling: Sentinelix.Worker.start_link(arg)
-      # {Sentinelix.Worker, arg}
       {SentinelixWeb.Services.MonitorService, []},
       Supervisor.child_spec({Cachex, name: :monitor_cache}, id: :monitor_cache),
+      # Start to serve requests, typically the last entry
+      SentinelixWeb.Endpoint
     ]
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
+    # See https://elixir.hexdocs.pm/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Sentinelix.Supervisor]
     Supervisor.start_link(children, opts)

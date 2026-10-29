@@ -11,10 +11,22 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   HTTP Monitor
   """
 
-  defstruct [:name, :url, :status, :interval, :retries,
-             :last_checked, :last_status, :last_response,
-             :verify_ssl, :follow_redirects, :remaining_retries,
-             :last_response_time, :last_status_code, :keyword]
+  defstruct [
+    :name,
+    :url,
+    :status,
+    :interval,
+    :retries,
+    :last_checked,
+    :last_status,
+    :last_response,
+    :verify_ssl,
+    :follow_redirects,
+    :remaining_retries,
+    :last_response_time,
+    :last_status_code,
+    :keyword
+  ]
 
   @doc """
   Starts the HTTP Monitor
@@ -49,8 +61,10 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
       cond do
         url == nil ->
           {:error, "No URL specified"}
+
         not is_binary(url) ->
           {:error, "URL must be a string"}
+
         URI.parse(url) ->
           {:ok, url}
       end
@@ -58,106 +72,127 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
 
     with {:name, true} <- {:name, !is_nil(name) && is_binary(name)},
          {:ok, url} <- verify_url.(url) do
-            Logger.info("Starting HTTP Monitor")
-            tick(interval)
-            mon = %HTTPMonitor{
-              name: name,
-              url: url,
-              status: :pending,
-              interval: interval,
-              retries: retries,
-              last_checked: nil,
-              last_status: nil,
-              last_status_code: nil,
-              last_response: nil,
-              verify_ssl: verify_ssl,
-              follow_redirects: follow_redirects,
-              remaining_retries: retries
-            }
-            PubSub.broadcast(Sentinelix.PubSub, "HTTPMonitor_#{name}", {:started, mon})
-            {:ok, mon}
-      else
-        {:error, error} ->
-          {:stop, {:error, error}}
-        {:name, false} ->
-          {:stop, {:error, "Name must be a string"}}
-      end
+      Logger.info("Starting HTTP Monitor")
+      tick(interval)
+
+      mon = %HTTPMonitor{
+        name: name,
+        url: url,
+        status: :pending,
+        interval: interval,
+        retries: retries,
+        last_checked: nil,
+        last_status: nil,
+        last_status_code: nil,
+        last_response: nil,
+        verify_ssl: verify_ssl,
+        follow_redirects: follow_redirects,
+        remaining_retries: retries
+      }
+
+      PubSub.broadcast(Sentinelix.PubSub, "HTTPMonitor_#{name}", {:started, mon})
+      {:ok, mon}
+    else
+      {:error, error} ->
+        {:stop, {:error, error}}
+
+      {:name, false} ->
+        {:stop, {:error, "Name must be a string"}}
+    end
   end
 
   @impl true
-  def handle_info(:tick, state) do
+  def handle_info(:tick, %HTTPMonitor{} = state) do
     Logger.info("Checking HTTP Monitor")
-    case check_http(state.url, [
-      verify_ssl: state.verify_ssl,
-      follow_redirects: state.follow_redirects
-    ]) do
+
+    case check_http(state.url,
+           verify_ssl: state.verify_ssl,
+           follow_redirects: state.follow_redirects
+         ) do
       {:ok, response, response_time} ->
         Logger.info("HTTP Monitor OK")
         tick(state.interval)
-        if (state.remaining_retries > 1) and (state.status != :ok) do
+
+        if state.remaining_retries > 1 and state.status != :ok do
           mon = %HTTPMonitor{
-            state | status: :pending,
-            last_checked: DateTime.utc_now(),
-            last_status: state.last_status || :pending,
-            last_status_code: response.status_code,
-            remaining_retries: state.remaining_retries - 1,
-            last_response_time: response_time,
-            last_response: response.body
+            state
+            | status: :pending,
+              last_checked: DateTime.utc_now(),
+              last_status: state.last_status || :pending,
+              last_status_code: response.status_code,
+              remaining_retries: state.remaining_retries - 1,
+              last_response_time: response_time,
+              last_response: response.body
           }
+
           PubSub.broadcast(Sentinelix.PubSub, "HTTPMonitor_#{state.name}", {:checked, mon})
           {:noreply, mon}
         else
           if state.last_status == :error do
             alert(:ok, state)
           end
+
           mon = %HTTPMonitor{
-            state | status: :ok,
-            last_checked: DateTime.utc_now(),
-            last_status: :ok,
-            last_status_code: response.status_code,
-            remaining_retries: state.retries,
-            last_response_time: response_time,
-            last_response: response.body
+            state
+            | status: :ok,
+              last_checked: DateTime.utc_now(),
+              last_status: :ok,
+              last_status_code: response.status_code,
+              remaining_retries: state.retries,
+              last_response_time: response_time,
+              last_response: response.body
           }
+
           PubSub.broadcast(Sentinelix.PubSub, "HTTPMonitor_#{state.name}", {:checked, mon})
           {:noreply, mon}
         end
+
       {:error, response, response_time} ->
-        status_code = case response do
-          %HTTPoison.Response{status_code: status_code} -> status_code
-          _ -> nil
-        end
-        body = case response do
-          %HTTPoison.Response{body: body} -> body
-          _ -> response
-        end
+        status_code =
+          case response do
+            %HTTPoison.Response{status_code: status_code} -> status_code
+            _ -> nil
+          end
+
+        body =
+          case response do
+            %HTTPoison.Response{body: body} -> body
+            _ -> response
+          end
+
         Logger.error("HTTP Monitor Error: #{inspect(response)}")
         tick(state.interval)
-        if (state.remaining_retries > 1) and (state.status != :error) do
+
+        if state.remaining_retries > 1 and state.status != :error do
           mon = %HTTPMonitor{
-            state | status: :pending,
-            last_checked: DateTime.utc_now(),
-            last_status: state.last_status,
-            last_status_code: status_code,
-            remaining_retries: state.remaining_retries - 1,
-            last_response_time: response_time,
-            last_response: body
+            state
+            | status: :pending,
+              last_checked: DateTime.utc_now(),
+              last_status: state.last_status,
+              last_status_code: status_code,
+              remaining_retries: state.remaining_retries - 1,
+              last_response_time: response_time,
+              last_response: body
           }
+
           PubSub.broadcast(Sentinelix.PubSub, "HTTPMonitor_#{state.name}", {:checked, mon})
           {:noreply, mon}
         else
           if state.last_status == :ok do
             alert(:error, state)
           end
+
           mon = %HTTPMonitor{
-            state | status: :error,
-            last_checked: DateTime.utc_now(),
-            last_status: :error,
-            last_status_code: status_code,
-            remaining_retries: state.retries,
-            last_response_time: response_time,
-            last_response: body
+            state
+            | status: :error,
+              last_checked: DateTime.utc_now(),
+              last_status: :error,
+              last_status_code: status_code,
+              remaining_retries: state.retries,
+              last_response_time: response_time,
+              last_response: body
           }
+
           PubSub.broadcast(Sentinelix.PubSub, "HTTPMonitor_#{state.name}", {:checked, mon})
           {:noreply, mon}
         end
@@ -171,6 +206,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
 
   defp alert(status, state) do
     PubSub.broadcast(Sentinelix.PubSub, "HTTPMonitor_#{state.name}", {status, state})
+
     case status do
       :ok -> Logger.info("UP Alert goes here")
       :error -> Logger.info("DOWN Alert goes here")
@@ -178,23 +214,31 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
   end
 
   defp check_http(url, opts) do
-    verify_ssl = case Keyword.get(opts, :verify_ssl, true) do
-      true -> :verify_peer
-      false -> :verify_none
-    end
-    {response_time, httpoison_result} = :timer.tc(fn ->
-      HTTPoison.get(url, [{"User-Agent", "Sentinelix HTTP Monitor"}], [ssl: [verify: verify_ssl]])
-    end)
+    verify_ssl =
+      case Keyword.get(opts, :verify_ssl, true) do
+        true -> :verify_peer
+        false -> :verify_none
+      end
+
+    {response_time, httpoison_result} =
+      :timer.tc(fn ->
+        HTTPoison.get(url, [{"User-Agent", "Sentinelix HTTP Monitor"}], ssl: [verify: verify_ssl])
+      end)
+
     case httpoison_result do
       {:ok, response} ->
         normalized_headers = Enum.map(response.headers, fn {k, v} -> {String.downcase(k), v} end)
+
         case response.status_code do
           x when x in 200..299 ->
             {:ok, response, response_time}
+
           x when x in 300..399 ->
             follow_redirects = Keyword.get(opts, :follow_redirects, false)
+
             if follow_redirects do
               redirects = Keyword.get(opts, :redirects, 0)
+
               if redirects > 10 do
                 {:error, "Too many redirects", response_time}
               else
@@ -202,6 +246,7 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
                   {"location", url} ->
                     Keyword.put(opts, :redirects, redirects + 1)
                     check_http(url, opts)
+
                   _ ->
                     {:error, "No location header", response_time}
                 end
@@ -209,13 +254,17 @@ defmodule Sentinelix.Monitors.HTTPMonitor do
             else
               {:error, response, response_time}
             end
+
           x when x in 400..499 ->
             {:error, response, response_time}
+
           x when x in 500..599 ->
             {:error, response, response_time}
+
           _ ->
             {:error, response, response_time}
         end
+
       {:error, error} ->
         {:error, error, response_time}
     end
