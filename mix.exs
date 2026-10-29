@@ -73,6 +73,8 @@ defmodule Sentinelix.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:bandit, "~> 1.8"},
+      {:oidcc, "~> 3.9"},
+      {:bcrypt_elixir, "~> 3.3"},
       # httpoison and cachex are removed by the monitor engine rewrite (#5)
       {:httpoison, "~> 2.2"},
       {:cachex, "~> 4.1"}
