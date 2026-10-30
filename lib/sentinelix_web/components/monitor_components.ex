@@ -160,6 +160,28 @@ defmodule SentinelixWeb.MonitorComponents do
     """
   end
 
+  @doc """
+  A badge shown while a monitor is in an active maintenance window (see
+  `Sentinelix.Maintenance.active_windows_for/2`). Renders nothing for an
+  empty list. The window titles are shown as a tooltip.
+  """
+  attr :windows, :list, required: true
+  attr :class, :any, default: "badge-xs"
+  attr :rest, :global
+
+  def maintenance_badge(assigns) do
+    ~H"""
+    <span
+      :if={@windows != []}
+      class={["badge badge-info badge-soft gap-1", @class]}
+      title={"In maintenance: " <> Enum.map_join(@windows, ", ", & &1.title)}
+      {@rest}
+    >
+      <.icon name="hero-wrench-screwdriver-micro" class="size-3" /> Maintenance
+    </span>
+    """
+  end
+
   @doc "A human readable status label."
   def status_label(:up), do: "Up"
   def status_label(:down), do: "Down"

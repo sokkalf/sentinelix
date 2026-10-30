@@ -132,7 +132,13 @@ defmodule SentinelixWeb.Layouts do
       {nil,
        [
          %{key: :dashboard, label: "Dashboard", icon: "hero-squares-2x2", path: ~p"/"},
-         %{key: :monitors, label: "Monitors", icon: "hero-signal", path: ~p"/monitors"}
+         %{key: :monitors, label: "Monitors", icon: "hero-signal", path: ~p"/monitors"},
+         %{
+           key: :maintenance,
+           label: "Maintenance",
+           icon: "hero-wrench-screwdriver",
+           path: ~p"/maintenance"
+         }
        ]},
       {"Settings",
        [
