@@ -12,8 +12,8 @@ jobs:
     # in containers, so the toolchain comes from the job image.
     runs-on: ubuntu-latest
     container:
-      # Keep in step with .tool-versions. The hexpm image pins Elixir and OTP
-      # exactly.
+      # Keep in step with .tool-versions and ELIXIR_VERSION/OTP_VERSION in the
+      # Dockerfile. The hexpm image pins Elixir and OTP exactly.
       image: hexpm/elixir:1.19.4-erlang-28.3-alpine-3.23.4
     services:
       postgres:

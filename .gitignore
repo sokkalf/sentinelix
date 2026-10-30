@@ -42,3 +42,6 @@ npm-debug.log
 # ElixirLS
 /.elixir_ls/
 
+
+# Docker compose settings (see .env.example)
+/.env
