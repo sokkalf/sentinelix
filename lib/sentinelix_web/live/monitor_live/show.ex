@@ -10,17 +10,26 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.History
+  alias Sentinelix.Stats
 
   @heartbeats 100
   @incidents 25
   @tick_ms 5_000
 
-  # range => {label, seconds, bucket seconds (nil = raw results)}
+  # range => {label, seconds, source}: every raw result (:raw) or the
+  # hourly statistics (:hourly)
   @ranges [
-    {"1h", {"1 hour", 3_600, nil}},
-    {"24h", {"24 hours", 86_400, nil}},
-    {"7d", {"7 days", 7 * 86_400, 600}},
-    {"30d", {"30 days", 30 * 86_400, 3_600}}
+    {"1h", {"1 hour", 3_600, :raw}},
+    {"24h", {"24 hours", 86_400, :raw}},
+    {"7d", {"7 days", 7 * 86_400, :hourly}},
+    {"30d", {"30 days", 30 * 86_400, :hourly}}
+  ]
+  # Uptime cards: {key, window, label}
+  @uptime_windows [
+    {"24h", {24, :hour}, "24 hours"},
+    {"7d", {7, :day}, "7 days"},
+    {"30d", {30, :day}, "30 days"},
+    {"90d", {90, :day}, "90 days"}
   ]
   @range_keys Enum.map(@ranges, &elem(&1, 0))
   @default_range "24h"
@@ -170,16 +179,26 @@ defmodule SentinelixWeb.MonitorLive.Show do
           <:desc>Latest check</:desc>
         </.stat_card>
         <.stat_card title="Avg. response" id="stat-avg-response">
-          {format_ms(@avg_24h)}
+          {format_ms(@stats_24h.avg_ms)}
           <:desc>24 hours</:desc>
         </.stat_card>
-        <.stat_card title="Uptime" id="stat-uptime-24h">
-          {format_uptime(@uptime_24h)}
+        <.stat_card title="P95 response" id="stat-p95-response">
+          {format_ms(@stats_24h.p95_ms)}
           <:desc>24 hours</:desc>
         </.stat_card>
-        <.stat_card title="Uptime" id="stat-uptime-30d">
-          {format_uptime(@uptime_30d)}
-          <:desc>30 days</:desc>
+        <.stat_card title="Min / max response" id="stat-min-max-response">
+          <span class="text-lg">
+            {format_ms(@stats_24h.min_ms)} / {format_ms(@stats_24h.max_ms)}
+          </span>
+          <:desc>24 hours</:desc>
+        </.stat_card>
+        <.stat_card
+          :for={{key, label, uptime} <- @uptimes}
+          title="Uptime"
+          id={"stat-uptime-#{key}"}
+        >
+          {format_uptime(uptime)}
+          <:desc>{label}</:desc>
         </.stat_card>
       </div>
 
@@ -447,26 +466,43 @@ defmodule SentinelixWeb.MonitorLive.Show do
   defp assign_stats(socket) do
     monitor = socket.assigns.monitor
     now = DateTime.utc_now()
-    day_ago = DateTime.add(now, -1, :day)
+    stats_24h = Stats.summary(monitor, {24, :hour}, now: now)
 
-    assign(socket,
-      uptime_24h: History.uptime(monitor, day_ago),
-      uptime_30d: History.uptime(monitor, DateTime.add(now, -30, :day)),
-      avg_24h: History.average_response_time(monitor, day_ago)
-    )
+    uptimes =
+      Enum.map(@uptime_windows, fn
+        {"24h", _window, label} -> {"24h", label, stats_24h.uptime}
+        {key, window, label} -> {key, label, Stats.uptime(monitor, window, now: now)}
+      end)
+
+    assign(socket, stats_24h: stats_24h, uptimes: uptimes)
   end
 
   defp assign_chart(socket) do
-    {_label, seconds, bucket} = range_spec(socket.assigns.range)
-    since = DateTime.add(DateTime.utc_now(), -seconds, :second)
-    points = History.response_times(socket.assigns.monitor, since, bucket_seconds: bucket)
+    {_label, seconds, source} = range_spec(socket.assigns.range)
+    points = chart_points(socket.assigns.monitor, seconds, source)
 
     assign(socket,
       chart_points: Jason.encode!(Enum.map(points, &chart_point/1)),
       chart_empty: points == [],
-      chart_live: bucket == nil,
+      chart_live: source == :raw,
       range_ms: seconds * 1000
     )
+  end
+
+  defp chart_points(monitor, seconds, :raw) do
+    History.response_times(monitor, DateTime.add(DateTime.utc_now(), -seconds, :second))
+  end
+
+  # One point per hour: the average response time of the hour's up checks,
+  # marked down if any check in it was down. Maintenance-only hours are
+  # left out.
+  defp chart_points(monitor, seconds, :hourly) do
+    monitor
+    |> Stats.hourly({div(seconds, 3_600), :hour})
+    |> Enum.reject(&(&1.up + &1.down + &1.pending == 0))
+    |> Enum.map(fn hour ->
+      %{at: hour.hour, response_time_ms: hour.avg_ms && round(hour.avg_ms), down: hour.down > 0}
+    end)
   end
 
   defp push_chart_point(%{assigns: %{chart_live: true}} = socket, %{status: status} = result)

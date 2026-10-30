@@ -1,11 +1,8 @@
 defmodule Sentinelix.Monitoring.History do
   @moduledoc """
-  Read-only queries over the check result history used by the web UI:
-  heartbeat bars, uptime percentages and response time series.
-
-  The uptime functions compute directly from the raw `check_results` rows.
-  They are deliberately small so they can be backed by the statistics
-  module (rollups, #9) without touching the UI.
+  Read-only queries over the raw check result history used by the web UI:
+  heartbeat bars and short-range response time series. Uptime and
+  aggregated response time statistics live in `Sentinelix.Stats`.
   """
 
   import Ecto.Query, warn: false
@@ -45,106 +42,24 @@ defmodule Sentinelix.Monitoring.History do
   end
 
   @doc """
-  Uptime percentage (0.0–100.0) per monitor since `since`, as a map of
-  monitor id => percentage. Only monitors with at least one `:up` or
-  `:down` result in the window are included.
-
-  `:up` results count as up and `:down` results as down; `:pending`
-  (retrying) and `:maintenance` results are left out of the calculation.
+  The response time series of a monitor since `since`, one point per check
+  result (except `:maintenance`), oldest first. For longer ranges use the
+  hourly buckets of `Sentinelix.Stats.hourly/3`.
   """
-  @spec uptime_by_monitor(DateTime.t(), [pos_integer()] | nil) :: %{pos_integer() => float()}
-  def uptime_by_monitor(%DateTime{} = since, monitor_ids \\ nil) do
+  @spec response_times(Monitor.t() | pos_integer(), DateTime.t()) :: [point()]
+  def response_times(monitor, %DateTime{} = since) do
+    id = monitor_id(monitor)
+
     CheckResult
-    |> where([r], r.checked_at >= ^since and r.status in [:up, :down])
-    |> then(fn q -> if monitor_ids, do: where(q, [r], r.monitor_id in ^monitor_ids), else: q end)
-    |> group_by([r], r.monitor_id)
-    |> select([r], {r.monitor_id, count(r.id), filter(count(r.id), r.status == :up)})
+    |> where([r], r.monitor_id == ^id and r.checked_at >= ^since)
+    |> where([r], r.status != :maintenance)
+    |> order_by([r], asc: r.checked_at, asc: r.id)
+    |> select([r], %{
+      at: r.checked_at,
+      response_time_ms: r.response_time_ms,
+      down: r.status == :down
+    })
     |> Repo.all()
-    |> Map.new(fn {id, total, up} -> {id, up * 100 / total} end)
-  end
-
-  @doc """
-  Uptime percentage of a single monitor since `since`, or `nil` without
-  data. See `uptime_by_monitor/2`.
-  """
-  @spec uptime(Monitor.t() | pos_integer(), DateTime.t()) :: float() | nil
-  def uptime(monitor, %DateTime{} = since) do
-    id = monitor_id(monitor)
-    since |> uptime_by_monitor([id]) |> Map.get(id)
-  end
-
-  @doc """
-  Average response time (ms) of a monitor's `:up` results since `since`,
-  or `nil` without data.
-  """
-  @spec average_response_time(Monitor.t() | pos_integer(), DateTime.t()) :: float() | nil
-  def average_response_time(monitor, %DateTime{} = since) do
-    id = monitor_id(monitor)
-
-    CheckResult
-    |> where([r], r.monitor_id == ^id and r.checked_at >= ^since and r.status == :up)
-    |> select([r], avg(r.response_time_ms))
-    |> Repo.one()
-    |> case do
-      nil -> nil
-      %Decimal{} = avg -> Decimal.to_float(avg)
-      avg -> avg / 1
-    end
-  end
-
-  @doc """
-  The response time series of a monitor since `since`, oldest first.
-
-  Without `:bucket_seconds` every result is a point. With it, results are
-  grouped into buckets of that many seconds: the point's response time is
-  the bucket's average and `down` is true if any check in the bucket was
-  down.
-  """
-  @spec response_times(Monitor.t() | pos_integer(), DateTime.t(), keyword()) :: [point()]
-  def response_times(monitor, %DateTime{} = since, opts \\ []) do
-    id = monitor_id(monitor)
-
-    base =
-      CheckResult
-      |> where([r], r.monitor_id == ^id and r.checked_at >= ^since)
-      |> where([r], r.status != :maintenance)
-
-    case Keyword.get(opts, :bucket_seconds) do
-      nil ->
-        base
-        |> order_by([r], asc: r.checked_at, asc: r.id)
-        |> select([r], %{
-          at: r.checked_at,
-          response_time_ms: r.response_time_ms,
-          down: r.status == :down
-        })
-        |> Repo.all()
-
-      bucket when is_integer(bucket) and bucket > 0 ->
-        bucketed =
-          select(base, [r], %{
-            bucket:
-              fragment(
-                "to_timestamp(floor(extract(epoch from ?) / ?) * ?) AT TIME ZONE 'UTC'",
-                r.checked_at,
-                ^bucket,
-                ^bucket
-              ),
-            response_time_ms: r.response_time_ms,
-            status: r.status
-          })
-
-        from(b in subquery(bucketed),
-          group_by: b.bucket,
-          order_by: b.bucket,
-          select: %{
-            at: type(b.bucket, :utc_datetime_usec),
-            response_time_ms: type(fragment("round(avg(?))", b.response_time_ms), :integer),
-            down: fragment("bool_or(? = 'down')", b.status)
-          }
-        )
-        |> Repo.all()
-    end
   end
 
   defp monitor_id(%Monitor{id: id}), do: id
