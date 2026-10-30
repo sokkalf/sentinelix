@@ -182,6 +182,17 @@ defmodule Sentinelix.Monitoring.WorkerTest do
     assert Process.alive?(pid)
   end
 
+  test "a timed out check is killed even if it traps exits" do
+    monitor = monitor_fixture(:http, %{timeout_ms: 100})
+    start(monitor, [:hang_trapping_exits])
+
+    # Waiting for a graceful shutdown would block the worker (and the task
+    # supervisor) for the supervisor's shutdown timeout of 5 seconds.
+    result = assert_result(:down)
+    assert result.message == "Timed out after 100 ms"
+    assert %{checking: false} = Worker.info(monitor, @engine)
+  end
+
   test "the worker stays responsive while a check runs" do
     monitor = monitor_fixture(:http, %{timeout_ms: 1_000})
     start(monitor, [:hang])
