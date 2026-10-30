@@ -37,7 +37,16 @@ defmodule SentinelixWeb.ConnCase do
 
   setup tags do
     Sentinelix.DataCase.setup_sandbox(tags)
-    {:ok, conn: Phoenix.ConnTest.build_conn()}
+    {:ok, conn: Phoenix.ConnTest.build_conn() |> Map.put(:remote_ip, unique_ip())}
+  end
+
+  @doc """
+  A client IP address unique to the calling test, so that per-IP rate limits
+  (`Sentinelix.RateLimit`) don't leak between tests.
+  """
+  def unique_ip do
+    <<a, b, c>> = <<System.unique_integer([:positive])::24>>
+    {10, a, b, c}
   end
 
   @doc """

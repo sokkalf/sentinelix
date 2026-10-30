@@ -157,10 +157,26 @@ defmodule Sentinelix.Maintenance do
   """
   @spec create_window(map()) :: {:ok, Window.t()} | {:error, Ecto.Changeset.t()}
   def create_window(attrs \\ %{}) do
-    %Window{monitors: []}
+    new_window()
     |> Window.changeset(attrs, monitors(attrs) || [])
     |> Repo.insert()
     |> refreshed()
+  end
+
+  @doc """
+  A new, unsaved window in the default time zone (`default_timezone/0`).
+  """
+  @spec new_window() :: Window.t()
+  def new_window, do: %Window{monitors: [], timezone: default_timezone()}
+
+  @doc """
+  The time zone new windows start out in: `config :sentinelix,
+  :default_timezone` (`DEFAULT_TIMEZONE` in production), falling back to
+  `Etc/UTC` if it isn't set or not a known time zone.
+  """
+  @spec default_timezone(String.t() | nil) :: String.t()
+  def default_timezone(tz \\ Application.get_env(:sentinelix, :default_timezone)) do
+    if Window.valid_timezone?(tz), do: tz, else: "Etc/UTC"
   end
 
   @doc """

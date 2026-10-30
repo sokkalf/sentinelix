@@ -7,9 +7,14 @@ defmodule Sentinelix.Application do
 
   alias Sentinelix.Accounts
   alias Sentinelix.Auth.OIDC
+  alias SentinelixWeb.Plugs.ClientIP
 
   @impl true
   def start(_type, _args) do
+    # Fail fast on an invalid TRUSTED_PROXIES entry
+    ClientIP.validate_config!()
+    Sentinelix.Mailer.warn_if_unconfigured()
+
     # OIDC provider discovery/JWKS worker (only when OIDC is configured)
     children =
       [
@@ -18,7 +23,9 @@ defmodule Sentinelix.Application do
         # Creates the local admin from ADMIN_EMAIL/ADMIN_PASSWORD if needed
         {Task, &Accounts.ensure_bootstrap_admin/0},
         {Phoenix.PubSub, name: Sentinelix.PubSub},
-        {Finch, name: Sentinelix.Finch}
+        {Finch, name: Sentinelix.Finch},
+        # Login and push endpoint rate limits
+        {Sentinelix.RateLimit, clean_period: :timer.minutes(5)}
       ] ++
         OIDC.children() ++
         [

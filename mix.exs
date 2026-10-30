@@ -78,6 +78,8 @@ defmodule Sentinelix.MixProject do
       {:bcrypt_elixir, "~> 3.3"},
       {:req, "~> 0.7"},
       {:tz, "~> 0.28"},
+      {:hammer, "~> 7.1"},
+      {:gen_smtp, "~> 1.3"},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ]
   end

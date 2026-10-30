@@ -45,6 +45,9 @@ defmodule SentinelixWeb.Endpoint do
     param_key: "request_logger",
     cookie_key: "request_logger"
 
+  # Real client address behind a trusted reverse proxy (TRUSTED_PROXIES).
+  plug SentinelixWeb.Plugs.ClientIP
+
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 

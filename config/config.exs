@@ -25,6 +25,15 @@ config :sentinelix, Sentinelix.Stats,
   retention_days: 90,
   rollup_retention_days: 365
 
+# Rate limits per client IP as {limit, period_ms} (nil disables); see
+# Sentinelix.RateLimit and config/runtime.exs (LOGIN_RATE_LIMIT,
+# PUSH_RATE_LIMIT, TRUSTED_PROXIES).
+config :sentinelix, Sentinelix.RateLimit,
+  login: {10, 60_000},
+  push: {300, 60_000}
+
+config :sentinelix, :trusted_proxies, []
+
 # Configure the endpoint
 config :sentinelix, SentinelixWeb.Endpoint,
   url: [host: "localhost"],
