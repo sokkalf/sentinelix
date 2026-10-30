@@ -24,7 +24,7 @@ defmodule Sentinelix.Monitoring.Settings do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Sentinelix.Checks.Postgres.Expectation
+  alias Sentinelix.Checks.Postgres.{Expectation, Replication}
 
   @http_methods ~w(GET HEAD POST PUT PATCH DELETE OPTIONS)
   @dns_record_types ~w(A AAAA CNAME MX TXT NS)
@@ -66,7 +66,13 @@ defmodule Sentinelix.Monitoring.Settings do
       expected_value: nil,
       comparison: "equals",
       expected_rows: nil,
-      rows_comparison: "equals"
+      rows_comparison: "equals",
+      replication_check: "none",
+      min_standbys: 1,
+      lag_warn_seconds: nil,
+      lag_critical_seconds: nil,
+      lag_warn_bytes: nil,
+      lag_critical_bytes: nil
     ]
   }
 
@@ -124,6 +130,14 @@ defmodule Sentinelix.Monitoring.Settings do
     field :comparison, :string
     field :expected_rows, :integer
     field :rows_comparison, :string
+    # Replication status, see Sentinelix.Checks.Postgres.Replication:
+    # "none", "primary" or "standby".
+    field :replication_check, :string
+    field :min_standbys, :integer
+    field :lag_warn_seconds, :integer
+    field :lag_critical_seconds, :integer
+    field :lag_warn_bytes, :integer
+    field :lag_critical_bytes, :integer
   end
 
   @type t :: %__MODULE__{}
@@ -294,6 +308,11 @@ defmodule Sentinelix.Monitoring.Settings do
     |> validate_expected_value()
     |> validate_number(:expected_rows, greater_than_or_equal_to: 0)
     |> validate_inclusion(:rows_comparison, Expectation.rows_comparisons())
+    |> validate_required([:replication_check, :min_standbys])
+    |> validate_inclusion(:replication_check, Replication.modes())
+    |> validate_number(:min_standbys, greater_than_or_equal_to: 0)
+    |> validate_thresholds(:lag_warn_seconds, :lag_critical_seconds)
+    |> validate_thresholds(:lag_warn_bytes, :lag_critical_bytes)
   end
 
   defp validate_type(changeset, _type), do: changeset
@@ -328,6 +347,22 @@ defmodule Sentinelix.Monitoring.Settings do
 
       true ->
         changeset
+    end
+  end
+
+  defp validate_thresholds(changeset, warn_field, critical_field) do
+    changeset =
+      changeset
+      |> validate_number(warn_field, greater_than: 0)
+      |> validate_number(critical_field, greater_than: 0)
+
+    warn = get_field(changeset, warn_field)
+    critical = get_field(changeset, critical_field)
+
+    if is_integer(warn) and is_integer(critical) and critical < warn do
+      add_error(changeset, critical_field, "must not be less than the warning threshold")
+    else
+      changeset
     end
   end
 

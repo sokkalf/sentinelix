@@ -292,6 +292,44 @@ defmodule Sentinelix.Monitoring.SettingsTest do
       assert %{rows_comparison: ["is invalid"]} =
                settings_errors(:postgres, Map.put(valid, :rows_comparison, "contains"))
     end
+
+    test "validates the replication check" do
+      valid = valid_settings(:postgres)
+
+      assert %Settings{replication_check: "none", min_standbys: 1, lag_warn_seconds: nil} =
+               apply_settings(:postgres, valid)
+
+      for mode <- ["none", "primary", "standby"] do
+        assert valid?(:postgres, Map.put(valid, :replication_check, mode))
+      end
+
+      assert %{replication_check: ["is invalid"]} =
+               settings_errors(:postgres, Map.put(valid, :replication_check, "both"))
+
+      assert %{min_standbys: [_]} = settings_errors(:postgres, Map.put(valid, :min_standbys, -1))
+
+      assert valid?(
+               :postgres,
+               Map.merge(valid, %{lag_warn_seconds: 10, lag_critical_seconds: 10})
+             )
+
+      assert valid?(:postgres, Map.merge(valid, %{lag_critical_bytes: 1_000_000}))
+
+      assert %{lag_critical_seconds: ["must not be less than the warning threshold"]} =
+               settings_errors(
+                 :postgres,
+                 Map.merge(valid, %{lag_warn_seconds: 60, lag_critical_seconds: 30})
+               )
+
+      assert %{lag_critical_bytes: ["must not be less than the warning threshold"]} =
+               settings_errors(
+                 :postgres,
+                 Map.merge(valid, %{lag_warn_bytes: 100, lag_critical_bytes: 10})
+               )
+
+      assert %{lag_warn_seconds: [_]} =
+               settings_errors(:postgres, Map.put(valid, :lag_warn_seconds, 0))
+    end
   end
 
   test "fields not relevant for the type are discarded" do

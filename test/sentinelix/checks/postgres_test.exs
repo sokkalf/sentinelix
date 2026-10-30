@@ -260,6 +260,55 @@ defmodule Sentinelix.Checks.PostgresTest do
     end
   end
 
+  # The test server is a primary. Whether its replication status can be
+  # read depends on the test role (superuser in CI).
+  defp replication_access do
+    %{rows: [[privileged, streaming]]} =
+      Repo.query!("""
+      SELECT pg_has_role('pg_read_all_stats', 'USAGE'),
+             (SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming')
+      """)
+
+    {privileged, streaming}
+  end
+
+  describe "replication" do
+    test "checks a primary's standbys after the query" do
+      result = Postgres.run(monitor(%{replication_check: "primary"}))
+
+      case replication_access() do
+        {false, _streaming} ->
+          assert {:down, %{message: message}} = result
+
+          assert message ==
+                   "Query OK: 1 row; Insufficient privileges to read the replication status (grant pg_monitor)"
+
+        {true, 0} ->
+          assert {:down, %{message: "Query OK: 1 row; 0 of 1 standbys streaming", meta: meta}} =
+                   result
+
+          assert %{replication: %{role: :primary, standbys_streaming: 0}} = meta
+
+        {true, _streaming} ->
+          assert {status, _details} = result
+          assert status in [:up, :down]
+      end
+    end
+
+    test "a primary expected to be a standby is a role mismatch" do
+      assert {:down, %{message: message, meta: %{replication: %{role: :primary}}}} =
+               Postgres.run(monitor(%{replication_check: "standby"}))
+
+      assert message ==
+               "Query OK: 1 row; Expected a standby, but the server is not in recovery (failover?)"
+    end
+
+    test "is not checked when the query fails" do
+      assert {:down, %{message: "Query failed: " <> _}} =
+               Postgres.run(monitor(%{query: "SELEC 1", replication_check: "standby"}))
+    end
+  end
+
   test "killing a running check closes its connection" do
     observer = observer()
     marker = "sentinelix_kill_#{System.unique_integer([:positive])}"

@@ -31,6 +31,14 @@ defmodule Sentinelix.Checks.Postgres do
   `Sentinelix.Checks.Postgres.Expectation`. A failed assertion is `:down`
   with the actual value in the message, e.g. `got "42", expected > 100`.
 
+  ## Replication
+
+  With `replication_check` set to `"primary"` or `"standby"`, the
+  replication status is checked after the query (on the same connection),
+  see `Sentinelix.Checks.Postgres.Replication`. Lag above a warning
+  threshold is `:up` with `warning: true`; the lag is in
+  `meta.replication`.
+
   ## Result
 
   `:down` on connection, TLS, authentication and query errors, with the
@@ -44,7 +52,7 @@ defmodule Sentinelix.Checks.Postgres do
 
   @behaviour Sentinelix.Checks.Check
 
-  alias Sentinelix.Checks.Postgres.{Connection, Expectation}
+  alias Sentinelix.Checks.Postgres.{Connection, Expectation, Replication}
   alias Sentinelix.Monitoring.{Monitor, Settings}
 
   @application_name "sentinelix"
@@ -80,7 +88,16 @@ defmodule Sentinelix.Checks.Postgres do
     error -> {:down, %{message: "Check failed: unexpected error (#{inspect(error.__struct__)})"}}
   end
 
+  # The query, then (if it succeeded) the replication status, on the same
+  # connection.
   defp probe(conn, settings) do
+    case run_query(conn, settings) do
+      {conn, {:up, details}} -> check_replication(conn, settings, details)
+      {conn, down} -> {conn, down}
+    end
+  end
+
+  defp run_query(conn, settings) do
     started = System.monotonic_time()
 
     case Connection.query(conn, settings.query) do
@@ -94,6 +111,28 @@ defmodule Sentinelix.Checks.Postgres do
         {conn, {:down, %{message: "Query failed: " <> format_error(error), meta: meta}}}
     end
   end
+
+  defp check_replication(conn, %Settings{replication_check: mode} = settings, query_details)
+       when mode in ["primary", "standby"] do
+    case Replication.fetch(conn, mode) do
+      {:ok, data, conn} ->
+        {status, details} = Replication.evaluate(data, settings)
+
+        {conn,
+         {status,
+          %{
+            message: query_details.message <> "; " <> details.message,
+            warning: details.warning,
+            meta: Map.put(query_details.meta, :replication, details.meta)
+          }}}
+
+      {:error, error, conn} ->
+        message = "Replication status query failed: " <> format_error(error)
+        {conn, {:down, %{query_details | message: query_details.message <> "; " <> message}}}
+    end
+  end
+
+  defp check_replication(conn, _settings, query_details), do: {conn, {:up, query_details}}
 
   defp evaluate(result, settings) do
     rows =
