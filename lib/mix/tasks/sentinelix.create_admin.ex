@@ -61,10 +61,56 @@ defmodule Mix.Tasks.Sentinelix.CreateAdmin do
 
   defp prompt(label), do: label |> Mix.shell().prompt() |> String.trim()
 
+  # `:io.get_password/0` only works when the Erlang shell owns the terminal; under
+  # `mix` (noshell) it returns `{:error, :enotsup}`. Fall back to switching off
+  # echo on our terminal with `stty` while reading the line.
   defp prompt_password do
     IO.write("Password: ")
-    password = :io.get_password() |> to_string() |> String.trim()
+
+    password =
+      case :io.get_password() do
+        chars when is_list(chars) -> to_string(chars)
+        {:error, _} -> read_without_echo()
+      end
+
     IO.write("\n")
-    password
+    password |> String.trim()
+  end
+
+  defp read_without_echo do
+    tty = tty_device()
+    echo_off? = tty != nil and stty(tty, "-echo")
+
+    try do
+      case IO.gets("") do
+        line when is_binary(line) -> line
+        _eof_or_error -> Mix.raise("No password given")
+      end
+    after
+      if echo_off?, do: stty(tty, "echo")
+    end
+  end
+
+  # Ports are started in a new session without a controlling terminal, so
+  # `/dev/tty` can't be used; look up the terminal device of this OS process.
+  defp tty_device do
+    case System.cmd("ps", ["-o", "tty=", "-p", System.pid()], stderr_to_stdout: true) do
+      {out, 0} ->
+        case String.trim(out) do
+          tty when tty in ["", "?", "??"] -> nil
+          tty -> "/dev/" <> tty
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp stty(tty, mode) do
+    match?({_, 0}, System.cmd("sh", ["-c", "stty #{mode} < #{tty}"], stderr_to_stdout: true))
+  rescue
+    _ -> false
   end
 end
