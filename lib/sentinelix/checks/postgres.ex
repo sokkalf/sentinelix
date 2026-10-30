@@ -23,6 +23,14 @@ defmodule Sentinelix.Checks.Postgres do
     * `"verify-full"` – TLS with the certificate chain verified against
       `ssl_ca_cert` (or the system CAs) and the hostname checked.
 
+  ## Expected result
+
+  Optionally, the first value of the result (`expected_value` with
+  `comparison`) and the number of rows (`expected_rows` with
+  `rows_comparison`) are checked, see
+  `Sentinelix.Checks.Postgres.Expectation`. A failed assertion is `:down`
+  with the actual value in the message, e.g. `got "42", expected > 100`.
+
   ## Result
 
   `:down` on connection, TLS, authentication and query errors, with the
@@ -36,7 +44,7 @@ defmodule Sentinelix.Checks.Postgres do
 
   @behaviour Sentinelix.Checks.Check
 
-  alias Sentinelix.Checks.Postgres.Connection
+  alias Sentinelix.Checks.Postgres.{Connection, Expectation}
   alias Sentinelix.Monitoring.{Monitor, Settings}
 
   @application_name "sentinelix"
@@ -77,14 +85,34 @@ defmodule Sentinelix.Checks.Postgres do
 
     case Connection.query(conn, settings.query) do
       {:ok, result, conn} ->
-        query_ms = elapsed_ms(started)
-        rows = result.num_rows || 0
-        meta = %{query_ms: query_ms, rows: rows}
-        {conn, {:up, %{message: "Query OK: #{pluralize_rows(rows)}", meta: meta}}}
+        meta = %{query_ms: elapsed_ms(started), rows: result.num_rows || 0}
+        {status, message} = evaluate(result, settings)
+        {conn, {status, %{message: message, meta: meta}}}
 
       {:error, error, conn} ->
         meta = %{query_ms: elapsed_ms(started)}
         {conn, {:down, %{message: "Query failed: " <> format_error(error), meta: meta}}}
+    end
+  end
+
+  defp evaluate(result, settings) do
+    rows =
+      Expectation.check_rows(
+        result,
+        settings.expected_rows,
+        settings.rows_comparison || "equals"
+      )
+
+    value =
+      Expectation.check_value(result, settings.expected_value, settings.comparison || "equals")
+
+    ok = "Query OK: " <> pluralize_rows(result.num_rows || 0)
+
+    case {rows, value} do
+      {{:error, message}, _value} -> {:down, "Unexpected result: " <> message}
+      {_rows, {:error, message}} -> {:down, "Unexpected result: " <> message}
+      {_rows, {:ok, message}} -> {:up, ok <> ", " <> message}
+      {_rows, :skip} -> {:up, ok}
     end
   end
 

@@ -24,6 +24,8 @@ defmodule Sentinelix.Monitoring.Settings do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Sentinelix.Checks.Postgres.Expectation
+
   @http_methods ~w(GET HEAD POST PUT PATCH DELETE OPTIONS)
   @dns_record_types ~w(A AAAA CNAME MX TXT NS)
   @max_redirects_limit 20
@@ -60,7 +62,11 @@ defmodule Sentinelix.Monitoring.Settings do
       username: nil,
       ssl_mode: "require",
       ssl_ca_cert: nil,
-      query: "SELECT 1"
+      query: "SELECT 1",
+      expected_value: nil,
+      comparison: "equals",
+      expected_rows: nil,
+      rows_comparison: "equals"
     ]
   }
 
@@ -91,6 +97,7 @@ defmodule Sentinelix.Monitoring.Settings do
     # dns
     field :dns_record_type, :string
     field :dns_resolver, :string
+    # dns / postgres
     field :expected_value, :string
 
     # cert
@@ -111,6 +118,12 @@ defmodule Sentinelix.Monitoring.Settings do
     # PEM encoded CA certificate(s) for "verify-full".
     field :ssl_ca_cert, :string
     field :query, :string
+    # Optional assertions on the query result, see
+    # Sentinelix.Checks.Postgres.Expectation. (`expected_value` is shared
+    # with dns.)
+    field :comparison, :string
+    field :expected_rows, :integer
+    field :rows_comparison, :string
   end
 
   @type t :: %__MODULE__{}
@@ -277,6 +290,10 @@ defmodule Sentinelix.Monitoring.Settings do
       end
     end)
     |> validate_length(:query, max: @max_query_length)
+    |> validate_inclusion(:comparison, Expectation.comparisons())
+    |> validate_expected_value()
+    |> validate_number(:expected_rows, greater_than_or_equal_to: 0)
+    |> validate_inclusion(:rows_comparison, Expectation.rows_comparisons())
   end
 
   defp validate_type(changeset, _type), do: changeset
@@ -293,6 +310,26 @@ defmodule Sentinelix.Monitoring.Settings do
   end
 
   defp validate_keyword(changeset, _type), do: changeset
+
+  # Validated whenever the comparison or the value changes.
+  defp validate_expected_value(changeset) do
+    comparison = get_field(changeset, :comparison)
+    value = get_field(changeset, :expected_value)
+
+    cond do
+      is_nil(value) ->
+        changeset
+
+      Expectation.numeric?(comparison) and Expectation.parse_number(value) == :error ->
+        add_error(changeset, :expected_value, "must be a number for #{comparison}")
+
+      comparison == "regex" and match?({:error, _}, Regex.compile(value)) ->
+        add_error(changeset, :expected_value, "must be a valid regular expression")
+
+      true ->
+        changeset
+    end
+  end
 
   defp validate_port(changeset) do
     validate_number(changeset, :port, greater_than: 0, less_than_or_equal_to: 65_535)

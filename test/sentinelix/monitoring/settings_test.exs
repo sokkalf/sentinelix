@@ -259,6 +259,39 @@ defmodule Sentinelix.Monitoring.SettingsTest do
       assert %{ssl_ca_cert: ["must contain PEM encoded certificates"]} =
                settings_errors(:postgres, Map.put(valid, :ssl_ca_cert, "not a certificate"))
     end
+
+    test "validates the expected result" do
+      valid = valid_settings(:postgres)
+      settings = apply_settings(:postgres, valid)
+      assert %Settings{expected_value: nil, comparison: "equals"} = settings
+      assert %Settings{expected_rows: nil, rows_comparison: "equals"} = settings
+
+      assert valid?(:postgres, Map.merge(valid, %{expected_value: "16.", comparison: "contains"}))
+      assert valid?(:postgres, Map.merge(valid, %{expected_value: "1.5", comparison: "<="}))
+
+      assert %{comparison: ["is invalid"]} =
+               settings_errors(:postgres, Map.put(valid, :comparison, "like"))
+
+      assert %{expected_value: ["must be a number for >"]} =
+               settings_errors(
+                 :postgres,
+                 Map.merge(valid, %{expected_value: "x", comparison: ">"})
+               )
+
+      assert %{expected_value: ["must be a valid regular expression"]} =
+               settings_errors(
+                 :postgres,
+                 Map.merge(valid, %{expected_value: "(", comparison: "regex"})
+               )
+
+      assert valid?(:postgres, Map.merge(valid, %{expected_rows: 0, rows_comparison: "<="}))
+
+      assert %{expected_rows: [_]} =
+               settings_errors(:postgres, Map.put(valid, :expected_rows, -1))
+
+      assert %{rows_comparison: ["is invalid"]} =
+               settings_errors(:postgres, Map.put(valid, :rows_comparison, "contains"))
+    end
   end
 
   test "fields not relevant for the type are discarded" do

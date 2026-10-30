@@ -23,17 +23,16 @@ defmodule Sentinelix.Checks.PostgresTest do
     server = server()
 
     settings =
-      Map.merge(
-        %{
-          host: server.host,
-          port: server.port,
-          database: server.database,
-          username: server.username,
-          ssl_mode: "disable",
-          query: "SELECT 1"
-        },
-        settings
-      )
+      Settings.defaults_for(:postgres)
+      |> Map.merge(%{
+        host: server.host,
+        port: server.port,
+        database: server.database,
+        username: server.username,
+        ssl_mode: "disable",
+        query: "SELECT 1"
+      })
+      |> Map.merge(settings)
 
     %Monitor{
       type: :postgres,
@@ -179,6 +178,85 @@ defmodule Sentinelix.Checks.PostgresTest do
     test "leaves the calling process killable" do
       assert {:up, _} = Postgres.run(monitor())
       assert Process.info(self(), :trap_exit) == {:trap_exit, false}
+    end
+  end
+
+  describe "expected result" do
+    test "checks the first value" do
+      assert {:up, %{message: ~s(Query OK: 1 row, got "42")}} =
+               Postgres.run(monitor(%{query: "SELECT 42", expected_value: "42"}))
+
+      assert {:down, %{message: ~s(Unexpected result: got "42", expected > 100)}} =
+               Postgres.run(
+                 monitor(%{query: "SELECT 42", expected_value: "100", comparison: ">"})
+               )
+
+      assert {:up, _} =
+               Postgres.run(
+                 monitor(%{
+                   query: "SELECT version()",
+                   expected_value: "PostgreSQL",
+                   comparison: "contains"
+                 })
+               )
+
+      # Freshness: a boolean.
+      assert {:up, _} =
+               Postgres.run(
+                 monitor(%{
+                   query: "SELECT now() > now() - interval '10 min'",
+                   expected_value: "true"
+                 })
+               )
+    end
+
+    test "converts typed values to text" do
+      for {sql, text} <- [
+            {"SELECT 1.50::numeric", "1.50"},
+            {"SELECT 2::float8 / 4", "0.5"},
+            {"SELECT NULL", "NULL"},
+            {"SELECT DATE '2026-10-30'", "2026-10-30"},
+            {"SELECT TIMESTAMPTZ '2026-10-30 12:00:00+00'", "2026-10-30T12:00:00Z"},
+            {"SELECT interval '1 day 2 hours'", "1 day 02:00:00"},
+            {"SELECT ARRAY[1, 2]", "{1,2}"},
+            {"SELECT 'a'::text", "a"},
+            {"SELECT '\\x00ff'::bytea", "\\x00ff"}
+          ] do
+        assert {:up, _} = Postgres.run(monitor(%{query: sql, expected_value: text})),
+               "#{sql} should be #{text}"
+      end
+
+      assert {:up, _} =
+               Postgres.run(
+                 monitor(%{
+                   query: "SELECT count(*) FROM pg_class",
+                   expected_value: "0",
+                   comparison: ">"
+                 })
+               )
+    end
+
+    test "checks the number of rows" do
+      assert {:up, %{message: "Query OK: 0 rows"}} =
+               Postgres.run(
+                 monitor(%{
+                   query: "SELECT 1 WHERE false",
+                   expected_rows: 0,
+                   rows_comparison: "<="
+                 })
+               )
+
+      assert {:down, %{message: "Unexpected result: got 3 rows, expected <= 0"}} =
+               Postgres.run(
+                 monitor(%{
+                   query: "SELECT generate_series(1, 3)",
+                   expected_rows: 0,
+                   rows_comparison: "<="
+                 })
+               )
+
+      assert {:down, %{message: ~s(Unexpected result: got no rows, expected "1")}} =
+               Postgres.run(monitor(%{query: "SELECT 1 WHERE false", expected_value: "1"}))
     end
   end
 
