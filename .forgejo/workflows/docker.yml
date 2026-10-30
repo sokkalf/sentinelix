@@ -29,11 +29,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Uses the Docker daemon if the runner exposes one to job containers
+    # (DOCKER_HOST or /var/run/docker.sock).
     container:
       image: docker:28-cli
-      # Use the host's Docker daemon if the runner exposes it.
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
     steps:
       # nodejs for the JavaScript checkout action, git for the checkout
       - name: Install system dependencies
@@ -42,6 +41,7 @@ jobs:
       - name: Build image
         run: |
           if ! docker info > /dev/null 2>&1; then
+            docker info 2>&1 | tail -n 3 || true
             echo "::warning::No Docker daemon available on this runner - image build skipped"
             exit 0
           fi
