@@ -45,47 +45,7 @@ defmodule Sentinelix.Monitoring.HistoryTest do
     end
   end
 
-  describe "uptime" do
-    test "counts up vs down, ignoring pending, maintenance and older results" do
-      monitor = monitor_fixture()
-      other = monitor_fixture()
-
-      result(monitor, :up, 10)
-      result(monitor, :up, 20)
-      result(monitor, :up, 30)
-      result(monitor, :down, 40)
-      result(monitor, :pending, 50)
-      result(monitor, :maintenance, 60)
-      result(monitor, :down, 7200)
-      result(other, :down, 10)
-
-      since = ago(3600)
-      assert History.uptime(monitor, since) == 75.0
-      assert History.uptime_by_monitor(since) == %{monitor.id => 75.0, other.id => 0.0}
-      assert History.uptime_by_monitor(since, [monitor.id]) == %{monitor.id => 75.0}
-    end
-
-    test "is nil without data" do
-      monitor = monitor_fixture()
-      assert History.uptime(monitor, ago(3600)) == nil
-
-      result(monitor, :maintenance, 10)
-      assert History.uptime(monitor.id, ago(3600)) == nil
-    end
-  end
-
-  test "average_response_time/2 averages up results only" do
-    monitor = monitor_fixture()
-    assert History.average_response_time(monitor, ago(3600)) == nil
-
-    result(monitor, :up, 10, %{response_time_ms: 100})
-    result(monitor, :up, 20, %{response_time_ms: 200})
-    result(monitor, :down, 30, %{response_time_ms: 30_000})
-
-    assert History.average_response_time(monitor, ago(3600)) == 150.0
-  end
-
-  describe "response_times/3" do
+  describe "response_times/2" do
     test "returns raw points oldest first" do
       monitor = monitor_fixture()
       a = result(monitor, :up, 30, %{response_time_ms: 10})
@@ -100,24 +60,6 @@ defmodule Sentinelix.Monitoring.HistoryTest do
 
       assert at_a == a.checked_at
       assert at_b == b.checked_at
-    end
-
-    test "buckets points" do
-      monitor = monitor_fixture()
-      base = ~U[2026-01-01 10:00:00.000000Z]
-
-      for {offset, status, ms} <- [{0, :up, 100}, {120, :down, 300}, {3700, :up, 50}] do
-        check_result_fixture(monitor, %{
-          status: status,
-          response_time_ms: ms,
-          checked_at: DateTime.add(base, offset, :second)
-        })
-      end
-
-      assert [
-               %{at: ~U[2026-01-01 10:00:00.000000Z], response_time_ms: 200, down: true},
-               %{at: ~U[2026-01-01 11:00:00.000000Z], response_time_ms: 50, down: false}
-             ] = History.response_times(monitor, base, bucket_seconds: 3600)
     end
   end
 end

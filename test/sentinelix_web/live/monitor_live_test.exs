@@ -67,6 +67,8 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#chart-empty")
       assert has_element?(view, "#incidents-empty")
       assert has_element?(view, "#stat-uptime-24h", "–")
+      assert has_element?(view, "#stat-uptime-90d", "–")
+      assert has_element?(view, "#stat-p95-response", "–")
       assert has_element?(view, "#next-check", "Not running")
     end
 
@@ -79,6 +81,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert html =~ "example.com:443"
       assert has_element?(view, "#stat-avg-response", "10 ms")
       assert has_element?(view, "#stat-uptime-24h", "100%")
+      assert has_element?(view, "#stat-p95-response", "10 ms")
       assert has_element?(view, "#cert-info", "valid")
       assert has_element?(view, "#incidents", "handshake failed")
       assert has_element?(view, "#incidents", "Ongoing")
@@ -89,6 +92,9 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#monitor-status", "Down")
       assert has_element?(view, "#stat-avg-response", "10 ms")
       assert has_element?(view, "#stat-uptime-24h", "50.00%")
+      assert has_element?(view, "#stat-uptime-7d", "50.00%")
+      assert has_element?(view, "#stat-uptime-30d", "50.00%")
+      assert has_element?(view, "#stat-uptime-90d", "50.00%")
       assert has_element?(view, "#heartbeats [data-status=down]")
 
       incident = Monitoring.get_open_incident(monitor)
@@ -110,6 +116,41 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}?range=bogus")
       assert has_element?(view, "#range-24h.btn-active")
+    end
+
+    test "long ranges chart hourly statistics", %{conn: conn} do
+      monitor = monitor_fixture()
+      hour = DateTime.utc_now() |> DateTime.add(-2, :day) |> Sentinelix.Stats.floor_hour()
+
+      for {offset, status, ms} <- [{0, :up, 100}, {60, :up, 300}, {120, :down, nil}] do
+        check_result_fixture(monitor, %{
+          status: status,
+          response_time_ms: ms,
+          checked_at: DateTime.add(hour, offset, :second)
+        })
+      end
+
+      # Maintenance-only hours are left out.
+      check_result_fixture(monitor, %{
+        status: :maintenance,
+        checked_at: DateTime.add(hour, -3600, :second)
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}?range=24h")
+      assert has_element?(view, "#chart-empty")
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}?range=7d")
+      refute has_element?(view, "#chart-empty")
+
+      [points] =
+        view
+        |> element("#response-chart")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.attribute("data-points")
+
+      # Average of the up checks; marked down.
+      assert Jason.decode!(points) == [[DateTime.to_unix(hour, :millisecond), 200, 1]]
     end
 
     test "pauses, resumes and checks now", %{conn: conn} do

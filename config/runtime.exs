@@ -26,6 +26,39 @@ if port = System.get_env("PORT") do
   config :sentinelix, SentinelixWeb.Endpoint, http: [port: String.to_integer(port)]
 end
 
+# ## Data retention
+#
+#   RETENTION_DAYS         days to keep raw check results (default 90)
+#   ROLLUP_RETENTION_DAYS  days to keep the hourly rollups used for long-term
+#                          uptime statistics (default 365)
+#
+# 0 keeps the data forever.
+retention_env = fn name ->
+  case System.get_env(name) do
+    nil ->
+      nil
+
+    value ->
+      case Integer.parse(String.trim(value)) do
+        {days, ""} when days >= 0 -> days
+        _ -> raise "#{name} must be a non-negative integer (days), got: #{inspect(value)}"
+      end
+  end
+end
+
+retention =
+  Enum.reject(
+    [
+      retention_days: retention_env.("RETENTION_DAYS"),
+      rollup_retention_days: retention_env.("ROLLUP_RETENTION_DAYS")
+    ],
+    fn {_key, days} -> is_nil(days) end
+  )
+
+if retention != [] do
+  config :sentinelix, Sentinelix.Stats, retention
+end
+
 if config_env() == :dev do
   # Reload browser tabs when matching files change.
   config :sentinelix, SentinelixWeb.Endpoint,

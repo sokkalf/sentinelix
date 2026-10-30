@@ -27,6 +27,9 @@ defmodule Sentinelix.Application do
            Application.get_env(:sentinelix, Sentinelix.Notifications.Supervisor, [])},
           {Sentinelix.Monitoring.Supervisor,
            Application.get_env(:sentinelix, Sentinelix.Monitoring.Supervisor, [])},
+          # Hourly rollups and data retention
+          {Sentinelix.Stats.Scheduler,
+           Application.get_env(:sentinelix, Sentinelix.Stats.Scheduler, [])},
           # Start to serve requests, typically the last entry
           SentinelixWeb.Endpoint
         ]

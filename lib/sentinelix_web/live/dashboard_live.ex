@@ -15,8 +15,10 @@ defmodule SentinelixWeb.DashboardLive do
 
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.History
+  alias Sentinelix.Stats
 
   @heartbeats 50
+  @uptime_window {24, :hour}
   @statuses ~w(up down pending maintenance paused)a
 
   @impl true
@@ -330,7 +332,7 @@ defmodule SentinelixWeb.DashboardLive do
     entries = visible_entries(socket)
     ids = Enum.map(entries, & &1.monitor.id)
     results = History.recent_results_by_monitor(@heartbeats, ids)
-    uptime = History.uptime_by_monitor(uptime_since(), ids)
+    uptime = Stats.uptimes(ids, @uptime_window)
 
     rows =
       Enum.map(entries, fn entry ->
@@ -358,7 +360,7 @@ defmodule SentinelixWeb.DashboardLive do
           build_row(
             Enum.at(entries, position),
             Map.get(results, id, []),
-            History.uptime(id, uptime_since())
+            Stats.uptime(id, @uptime_window)
           )
 
         stream_insert(socket, :monitors, row, at: position)
@@ -368,8 +370,6 @@ defmodule SentinelixWeb.DashboardLive do
   defp build_row(entry, results, uptime) do
     Map.merge(entry, %{id: entry.monitor.id, results: results, uptime: uptime})
   end
-
-  defp uptime_since, do: DateTime.add(DateTime.utc_now(), -1, :day)
 
   ## Filtering
 

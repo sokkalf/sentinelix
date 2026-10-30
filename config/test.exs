@@ -48,6 +48,9 @@ config :sentinelix, Sentinelix.Notifications,
   req_options: [plug: {Req.Test, Sentinelix.Notifications}],
   backoff_ms: 1
 
+# Tests run rollups and pruning explicitly.
+config :sentinelix, Sentinelix.Stats.Scheduler, enabled: false
+
 # Route HTTP checks through Req.Test stubs instead of the network.
 config :sentinelix, Sentinelix.Checks.HTTP,
   req_options: [plug: {Req.Test, Sentinelix.Checks.HTTP}]

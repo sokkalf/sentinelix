@@ -18,6 +18,13 @@ config :sentinelix, :oidc, []
 config :sentinelix, :local_auth_enabled, nil
 config :sentinelix, :bootstrap_admin, []
 
+# Data retention (days; nil or 0 keeps data forever). Raw check results are
+# rolled up hourly; see Sentinelix.Stats.Rollup and config/runtime.exs
+# (RETENTION_DAYS, ROLLUP_RETENTION_DAYS).
+config :sentinelix, Sentinelix.Stats,
+  retention_days: 90,
+  rollup_retention_days: 365
+
 # Configure the endpoint
 config :sentinelix, SentinelixWeb.Endpoint,
   url: [host: "localhost"],
