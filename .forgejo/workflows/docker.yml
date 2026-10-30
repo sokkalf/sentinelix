@@ -1,0 +1,81 @@
+name: Docker image
+
+# Pull requests and pushes to master that touch the image inputs build the
+# image to prove the Dockerfile still works. A `v*` tag builds it and pushes
+# it to this Forgejo's container registry, as the tag and as `latest`.
+#
+# Pushing needs a `PUSH_TOKEN` repository secret: an access token with
+# write:package scope for the user/org owning the repository.
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - master
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - mix.exs
+      - mix.lock
+      - rel/**
+      - config/**
+      - .forgejo/workflows/docker.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - mix.exs
+      - mix.lock
+      - rel/**
+      - config/**
+      - .forgejo/workflows/docker.yml
+
+jobs:
+  docker_build:
+    runs-on: ubuntu-latest
+    # The runners have no Docker daemon; Buildah builds rootless inside the job
+    # container instead.
+    container:
+      image: quay.io/buildah/stable
+    env:
+      STORAGE_DRIVER: vfs
+      BUILDAH_ISOLATION: chroot
+    steps:
+      # nodejs because the actions below are written in JavaScript.
+      - name: Setup Buildah environment
+        run: |
+          dnf install -y git nodejs
+          mkdir -p /etc/containers/registries.conf.d
+          echo 'unqualified-search-registries = ["docker.io"]' > /etc/containers/registries.conf.d/docker.conf
+          echo 'short-name-mode = "permissive"' >> /etc/containers/registries.conf.d/docker.conf
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set VERSION and IMAGE
+        run: |
+          VERSION=$(git describe --dirty --abbrev=7 --tags --always --first-parent)
+          REGISTRY_HOST=$(echo "${{ github.server_url }}" | awk -F/ '{print $3}')
+          # Image repository names must be lowercase
+          IMAGE=$(echo "$REGISTRY_HOST/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "REGISTRY_HOST=$REGISTRY_HOST" >> $GITHUB_ENV
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Build image
+        run: |
+          buildah build \
+            --label org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.revision="${{ github.sha }}" \
+            --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
+            -t "$IMAGE:build" .
+
+      - name: Push image
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "${{ secrets.PUSH_TOKEN }}" | buildah login "$REGISTRY_HOST" -u "${{ github.actor }}" --password-stdin
+          buildah tag "$IMAGE:build" "$IMAGE:$TAG_NAME" "$IMAGE:latest"
+          buildah push "$IMAGE:$TAG_NAME"
+          buildah push "$IMAGE:latest"

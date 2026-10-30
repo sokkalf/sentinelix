@@ -49,3 +49,6 @@ erl_crash.dump
 .env
 /config/dev.local.exs
 /config/test.local.exs
+
+# Claude Code agent worktrees and settings
+.claude/
