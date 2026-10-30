@@ -4,8 +4,9 @@ defmodule Sentinelix.NotificationsTest do
   import Sentinelix.MonitoringFixtures
   import Sentinelix.NotificationsFixtures
 
+  alias Sentinelix.EncryptedMap
   alias Sentinelix.Notifications
-  alias Sentinelix.Notifications.{Channel, Delivery, EncryptedMap, Event}
+  alias Sentinelix.Notifications.{Channel, Delivery, Event}
 
   describe "channels" do
     test "create_channel/1 keeps only the provider's fields, trimmed" do

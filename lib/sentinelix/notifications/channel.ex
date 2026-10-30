@@ -5,7 +5,7 @@ defmodule Sentinelix.Notifications.Channel do
 
     * `config` – provider specific settings (string keys, see the
       provider's `fields/0`), encrypted at rest
-      (`Sentinelix.Notifications.EncryptedMap`).
+      (`Sentinelix.EncryptedMap`).
     * `enabled` – disabled channels are skipped when dispatching.
     * `default` – attached automatically to newly created monitors.
 
@@ -22,8 +22,9 @@ defmodule Sentinelix.Notifications.Channel do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Sentinelix.EncryptedMap
   alias Sentinelix.Monitoring.Monitor
-  alias Sentinelix.Notifications.{EncryptedMap, Provider}
+  alias Sentinelix.Notifications.Provider
 
   schema "notification_channels" do
     field :name, :string

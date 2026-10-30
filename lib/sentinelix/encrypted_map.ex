@@ -1,16 +1,17 @@
-defmodule Sentinelix.Notifications.EncryptedMap do
+defmodule Sentinelix.EncryptedMap do
   @moduledoc """
   An Ecto type for maps that are stored encrypted (as a binary column).
 
-  Notification channel configs contain secrets (bot tokens, webhook URLs
-  with embedded tokens, passwords in headers). They are JSON encoded and
+  Used for values that contain secrets: notification channel configs (bot
+  tokens, webhook URLs with embedded tokens, passwords in headers) and
+  monitor secrets (e.g. database passwords). They are JSON encoded and
   encrypted with `Plug.Crypto.MessageEncryptor` (AES-256-GCM) using keys
   derived from the endpoint's `secret_key_base` (`SECRET_KEY_BASE` in
   production), so a database dump alone doesn't leak them.
 
-  Rotating `SECRET_KEY_BASE` makes existing configs unreadable: they load
-  as an empty map (and an error is logged), so the affected channels have to
-  be configured again.
+  Rotating `SECRET_KEY_BASE` makes existing values unreadable: they load as
+  an empty map (and an error is logged), so the affected channels and
+  monitors have to be configured again.
   """
 
   use Ecto.Type
@@ -19,6 +20,8 @@ defmodule Sentinelix.Notifications.EncryptedMap do
 
   alias Plug.Crypto.{KeyGenerator, MessageEncryptor}
 
+  # The salts predate the use for monitor secrets; changing them would make
+  # existing values unreadable.
   @secret_salt "sentinelix notification config encryption"
   @sign_salt "sentinelix notification config signing"
 
@@ -40,9 +43,7 @@ defmodule Sentinelix.Notifications.EncryptedMap do
         {:ok, map}
 
       :error ->
-        Logger.error(
-          "Could not decrypt a notification channel config (was SECRET_KEY_BASE changed?)"
-        )
+        Logger.error("Could not decrypt an encrypted value (was SECRET_KEY_BASE changed?)")
 
         {:ok, %{}}
     end
