@@ -12,7 +12,8 @@ public status pages.
 * **Check types:** HTTP(S) (status codes, redirects, TLS verification),
   keyword / JSON (body contains a keyword or a JSON path matches), TCP port,
   ping (ICMP), DNS records (A, AAAA, CNAME, MX, TXT, NS), TLS certificate
-  expiry, and push (heartbeat) monitors for cron jobs and backups.
+  expiry, PostgreSQL (login, query with expected result, replication status
+  and lag) and push (heartbeat) monitors for cron jobs and backups.
 * **Live dashboard** with per-monitor status, heartbeat bars, response time
   charts, uptime over 24 hours / 7 / 30 / 90 days and incident history
   (LiveView, updates without reloading).
@@ -260,6 +261,61 @@ in development, `bin/create_admin` in a release (see
 `ADMIN_PASSWORD` to create it on boot if it does not exist yet (existing
 users are never modified by these variables).
 
+## PostgreSQL monitors
+
+A PostgreSQL monitor logs in to a server, runs a query and optionally checks
+its result and the replication status – a step past "the port is open".
+
+* **Connection:** host, port, database, username and password, and the SSL
+  mode: *require* (the default: encrypted, certificate not verified),
+  *verify-full* (certificate chain checked against a CA certificate you
+  paste, or the system CAs, and the hostname checked) or *disable*. Every
+  check opens one fresh connection and closes it afterwards, so a working
+  login is part of what is checked. The password is encrypted in the
+  database like notification channel secrets and never shown again (leave
+  the field blank to keep it).
+* **Query:** a single statement, by default `SELECT 1`. It runs in a
+  **read-only transaction** (`default_transaction_read_only`), bounded by a
+  `statement_timeout` of the monitor's timeout, so a mistyped `DELETE` fails
+  instead of deleting anything. Optionally the first column of the first row
+  is compared with an expected value (equals, does not equal, contains,
+  regular expression, or numerically `<`, `<=`, `>`, `>=`), and/or the number
+  of rows with an expected count:
+
+  | Query | Expected |
+  | --- | --- |
+  | `SELECT count(*) FROM jobs WHERE state = 'failed' AND inserted_at > now() - interval '1 hour'` | value `<=` 0 |
+  | `SELECT max(created_at) > now() - interval '10 min' FROM events` | value equals `true` |
+  | `SELECT version()` | value contains `16.` |
+  | `SELECT id FROM jobs WHERE state = 'stuck'` | rows equals 0 |
+
+  Values are compared as text: `NULL`, `true`/`false`, numbers as written,
+  timestamps in ISO 8601, binary data as `\x…` hex (cast UUIDs to `text`).
+* **Replication:** *primary* requires the server not to be in recovery and at
+  least *minimum standbys* streaming WAL senders, and warns about inactive
+  replication slots (they retain WAL until the disk fills up). *Standby*
+  requires the server to be in recovery with a streaming WAL receiver. Both
+  are role assertions: after a failover the monitor goes down. Replication
+  lag (seconds and/or bytes) above the warning threshold raises a warning,
+  above the critical threshold it is down. Needs PostgreSQL 10 or newer.
+
+Use a dedicated low-privilege role; `pg_monitor` is only needed for the
+replication check (without it the status can't be read and the monitor
+reports "insufficient privileges"):
+
+```sql
+CREATE ROLE sentinelix_monitor LOGIN PASSWORD '...';
+GRANT pg_monitor TO sentinelix_monitor;  -- only for replication checks
+-- and for custom queries, e.g.:
+GRANT SELECT ON jobs TO sentinelix_monitor;
+```
+
+The server must allow the login from Sentinelix' address in `pg_hba.conf`,
+e.g. `hostssl app sentinelix_monitor 192.0.2.10/32 scram-sha-256` (`hostssl`
+matches the default SSL mode *require*). For replication checks on standbys,
+the role is replicated from the primary; their `pg_hba.conf` needs the entry
+too.
+
 ## Status pages
 
 Status pages are managed at `/status-pages`. A page has a slug, title,
@@ -401,6 +457,11 @@ Tests use the same `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` variables (or a full
 A gitignored `config/test.local.exs` can be used for local overrides.
 
     PGHOST=db.example.internal PGUSER=sentinelix PGPASSWORD=secret mix test
+
+The PostgreSQL check tests connect to the same server with their own
+connections (outside the SQL sandbox). The test role needs no special
+privileges; the replication tests adapt their expectations to whether it can
+read the replication status (superuser or `pg_monitor`).
 
 Before committing, run `mix precommit` (compile with warnings as errors,
 unlock unused deps, check formatting, Credo, run the tests). CI
