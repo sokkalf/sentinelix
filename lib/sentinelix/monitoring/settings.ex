@@ -24,10 +24,14 @@ defmodule Sentinelix.Monitoring.Settings do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Sentinelix.Checks.Postgres.{Expectation, Replication}
+
   @http_methods ~w(GET HEAD POST PUT PATCH DELETE OPTIONS)
   @dns_record_types ~w(A AAAA CNAME MX TXT NS)
   @max_redirects_limit 20
   @max_push_grace_seconds 86_400
+  @ssl_modes ~w(disable require verify-full)
+  @max_query_length 10_000
 
   @http_fields [
     url: nil,
@@ -50,7 +54,26 @@ defmodule Sentinelix.Monitoring.Settings do
     ping: [host: nil],
     dns: [host: nil, dns_record_type: "A", dns_resolver: nil, expected_value: nil],
     cert: [host: nil, port: 443, cert_warn_days: 30, cert_critical_days: 7],
-    push: [push_token: nil, push_grace_seconds: 30]
+    push: [push_token: nil, push_grace_seconds: 30],
+    postgres: [
+      host: nil,
+      port: 5432,
+      database: nil,
+      username: nil,
+      ssl_mode: "require",
+      ssl_ca_cert: nil,
+      query: "SELECT 1",
+      expected_value: nil,
+      comparison: "equals",
+      expected_rows: nil,
+      rows_comparison: "equals",
+      replication_check: "none",
+      min_standbys: 1,
+      lag_warn_seconds: nil,
+      lag_critical_seconds: nil,
+      lag_warn_bytes: nil,
+      lag_critical_bytes: nil
+    ]
   }
 
   @primary_key false
@@ -73,13 +96,14 @@ defmodule Sentinelix.Monitoring.Settings do
     # with `keyword` instead of searching the body for it.
     field :json_path, :string
 
-    # tcp / ping / dns / cert
+    # tcp / ping / dns / cert / postgres
     field :host, :string
     field :port, :integer
 
     # dns
     field :dns_record_type, :string
     field :dns_resolver, :string
+    # dns / postgres
     field :expected_value, :string
 
     # cert
@@ -90,6 +114,30 @@ defmodule Sentinelix.Monitoring.Settings do
     field :push_token, :string
     # Extra time after the interval before a missing push counts as down.
     field :push_grace_seconds, :integer
+
+    # postgres (the password is a secret, see Monitor.secret_fields/1)
+    field :database, :string
+    field :username, :string
+    # "disable", "require" (encrypted, certificate not verified) or
+    # "verify-full" (verified against `ssl_ca_cert` or the system CAs).
+    field :ssl_mode, :string
+    # PEM encoded CA certificate(s) for "verify-full".
+    field :ssl_ca_cert, :string
+    field :query, :string
+    # Optional assertions on the query result, see
+    # Sentinelix.Checks.Postgres.Expectation. (`expected_value` is shared
+    # with dns.)
+    field :comparison, :string
+    field :expected_rows, :integer
+    field :rows_comparison, :string
+    # Replication status, see Sentinelix.Checks.Postgres.Replication:
+    # "none", "primary" or "standby".
+    field :replication_check, :string
+    field :min_standbys, :integer
+    field :lag_warn_seconds, :integer
+    field :lag_critical_seconds, :integer
+    field :lag_warn_bytes, :integer
+    field :lag_critical_bytes, :integer
   end
 
   @type t :: %__MODULE__{}
@@ -99,6 +147,9 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @doc "Allowed DNS record types."
   def dns_record_types, do: @dns_record_types
+
+  @doc "Allowed PostgreSQL SSL modes."
+  def ssl_modes, do: @ssl_modes
 
   @doc """
   The settings fields (in display order) relevant for a monitor type.
@@ -139,7 +190,12 @@ defmodule Sentinelix.Monitoring.Settings do
     :dns_record_type,
     :dns_resolver,
     :json_path,
-    :push_token
+    :push_token,
+    :database,
+    :username,
+    :ssl_mode,
+    :ssl_ca_cert,
+    :query
   ]
 
   defp trim_strings(changeset) do
@@ -233,6 +289,32 @@ defmodule Sentinelix.Monitoring.Settings do
     )
   end
 
+  defp validate_type(changeset, :postgres) do
+    changeset
+    |> validate_required([:host, :port, :database, :username, :ssl_mode, :query])
+    |> validate_host(:host)
+    |> validate_port()
+    |> validate_length(:database, max: 63)
+    |> validate_length(:username, max: 63)
+    |> validate_inclusion(:ssl_mode, @ssl_modes)
+    |> validate_change(:ssl_ca_cert, fn field, pem ->
+      case parse_ca_certs(pem) do
+        {:ok, _certs} -> []
+        :error -> [{field, "must contain PEM encoded certificates"}]
+      end
+    end)
+    |> validate_length(:query, max: @max_query_length)
+    |> validate_inclusion(:comparison, Expectation.comparisons())
+    |> validate_expected_value()
+    |> validate_number(:expected_rows, greater_than_or_equal_to: 0)
+    |> validate_inclusion(:rows_comparison, Expectation.rows_comparisons())
+    |> validate_required([:replication_check, :min_standbys])
+    |> validate_inclusion(:replication_check, Replication.modes())
+    |> validate_number(:min_standbys, greater_than_or_equal_to: 0)
+    |> validate_thresholds(:lag_warn_seconds, :lag_critical_seconds)
+    |> validate_thresholds(:lag_warn_bytes, :lag_critical_bytes)
+  end
+
   defp validate_type(changeset, _type), do: changeset
 
   defp validate_keyword(changeset, :keyword) do
@@ -247,6 +329,42 @@ defmodule Sentinelix.Monitoring.Settings do
   end
 
   defp validate_keyword(changeset, _type), do: changeset
+
+  # Validated whenever the comparison or the value changes.
+  defp validate_expected_value(changeset) do
+    comparison = get_field(changeset, :comparison)
+    value = get_field(changeset, :expected_value)
+
+    cond do
+      is_nil(value) ->
+        changeset
+
+      Expectation.numeric?(comparison) and Expectation.parse_number(value) == :error ->
+        add_error(changeset, :expected_value, "must be a number for #{comparison}")
+
+      comparison == "regex" and match?({:error, _}, Regex.compile(value)) ->
+        add_error(changeset, :expected_value, "must be a valid regular expression")
+
+      true ->
+        changeset
+    end
+  end
+
+  defp validate_thresholds(changeset, warn_field, critical_field) do
+    changeset =
+      changeset
+      |> validate_number(warn_field, greater_than: 0)
+      |> validate_number(critical_field, greater_than: 0)
+
+    warn = get_field(changeset, warn_field)
+    critical = get_field(changeset, critical_field)
+
+    if is_integer(warn) and is_integer(critical) and critical < warn do
+      add_error(changeset, critical_field, "must not be less than the warning threshold")
+    else
+      changeset
+    end
+  end
 
   defp validate_port(changeset) do
     validate_number(changeset, :port, greater_than: 0, less_than_or_equal_to: 65_535)
@@ -344,6 +462,19 @@ defmodule Sentinelix.Monitoring.Settings do
     if path != "" and Enum.all?(segments, &(&1 != "")),
       do: {:ok, segments},
       else: :error
+  end
+
+  @doc """
+  Parses PEM encoded certificates into a list of DER binaries.
+  """
+  @spec parse_ca_certs(String.t()) :: {:ok, [binary()]} | :error
+  def parse_ca_certs(pem) when is_binary(pem) do
+    case for({:Certificate, der, :not_encrypted} <- :public_key.pem_decode(pem), do: der) do
+      [] -> :error
+      ders -> {:ok, ders}
+    end
+  rescue
+    _ -> :error
   end
 
   @doc """

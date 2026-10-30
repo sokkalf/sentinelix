@@ -16,7 +16,11 @@ defmodule Sentinelix.Monitoring.Worker do
   Each check runs in a task under the engine's `Task.Supervisor`; the worker
   stays responsive while it runs and kills it after the monitor's
   `timeout_ms` (recorded as `:down`). A check that raises or exits is
-  recorded as `:down` too.
+  recorded as `:down` too. Checks are killed outright (`:kill`) rather than
+  shut down gracefully: a check that traps exits (e.g. while Postgrex
+  connects) would otherwise block the worker and the task supervisor for
+  the supervisor's shutdown timeout. Resources owned by the task (sockets,
+  linked processes) are released when it dies.
 
   ## State machine
 
@@ -247,8 +251,7 @@ defmodule Sentinelix.Monitoring.Worker do
   end
 
   def handle_info({:check_timeout, ref}, %{task: %Task{ref: ref} = task} = state) do
-    Task.Supervisor.terminate_child(state.config.task_supervisor, task.pid)
-    Process.demonitor(ref, [:flush])
+    kill_task(task)
     message = "Timed out after #{state.monitor.timeout_ms} ms"
     complete(state, {:down, %{message: message}}, :timeout)
   end
@@ -289,10 +292,14 @@ defmodule Sentinelix.Monitoring.Worker do
   defp cancel_check(%{task: nil} = state), do: state
 
   defp cancel_check(%{task: task} = state) do
-    Task.Supervisor.terminate_child(state.config.task_supervisor, task.pid)
-    Process.demonitor(task.ref, [:flush])
+    kill_task(task)
     cancel_timer(state.task_timer)
     %{state | task: nil, task_timer: nil}
+  end
+
+  defp kill_task(%Task{pid: pid, ref: ref}) do
+    Process.exit(pid, :kill)
+    Process.demonitor(ref, [:flush])
   end
 
   defp passive?(check) do

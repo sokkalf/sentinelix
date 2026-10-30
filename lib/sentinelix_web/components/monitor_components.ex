@@ -17,7 +17,8 @@ defmodule SentinelixWeb.MonitorComponents do
     ping: "Ping",
     dns: "DNS",
     cert: "TLS certificate",
-    push: "Push"
+    push: "Push",
+    postgres: "PostgreSQL"
   }
 
   @doc "A human readable label for a monitor type."
@@ -46,6 +47,10 @@ defmodule SentinelixWeb.MonitorComponents do
   def target(%Monitor{type: :dns, settings: %{host: host, dns_record_type: type}})
       when is_binary(host),
       do: "#{host} (#{type})"
+
+  def target(%Monitor{type: :postgres, settings: %{host: host, port: port, database: db}})
+      when is_binary(host),
+      do: "#{host}:#{port}/#{db}"
 
   def target(%Monitor{settings: %{host: host, port: port}})
       when is_binary(host) and is_integer(port),

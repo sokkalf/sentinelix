@@ -217,6 +217,121 @@ defmodule Sentinelix.Monitoring.SettingsTest do
     end
   end
 
+  describe "postgres" do
+    test "requires connection settings and defaults port, SSL mode and query" do
+      assert %{host: _, database: _, username: _} = settings_errors(:postgres, %{})
+
+      settings =
+        apply_settings(:postgres, %{
+          host: " db.example.com ",
+          database: " app ",
+          username: " monitor ",
+          query: "  "
+        })
+
+      assert %Settings{
+               host: "db.example.com",
+               port: 5432,
+               database: "app",
+               username: "monitor",
+               ssl_mode: "require",
+               ssl_ca_cert: nil,
+               query: "SELECT 1"
+             } = settings
+    end
+
+    test "validates the SSL mode and CA certificate" do
+      valid = valid_settings(:postgres)
+
+      for mode <- Settings.ssl_modes() do
+        assert valid?(:postgres, Map.put(valid, :ssl_mode, mode))
+      end
+
+      assert %{ssl_mode: ["is invalid"]} =
+               settings_errors(:postgres, Map.put(valid, :ssl_mode, "prefer"))
+
+      %{cert: der} = :public_key.pkix_test_root_cert(~c"Test CA", [])
+      pem = :public_key.pem_encode([{:Certificate, der, :not_encrypted}])
+
+      assert valid?(:postgres, Map.merge(valid, %{ssl_mode: "verify-full", ssl_ca_cert: pem}))
+      assert Settings.parse_ca_certs(pem) == {:ok, [der]}
+
+      assert %{ssl_ca_cert: ["must contain PEM encoded certificates"]} =
+               settings_errors(:postgres, Map.put(valid, :ssl_ca_cert, "not a certificate"))
+    end
+
+    test "validates the expected result" do
+      valid = valid_settings(:postgres)
+      settings = apply_settings(:postgres, valid)
+      assert %Settings{expected_value: nil, comparison: "equals"} = settings
+      assert %Settings{expected_rows: nil, rows_comparison: "equals"} = settings
+
+      assert valid?(:postgres, Map.merge(valid, %{expected_value: "16.", comparison: "contains"}))
+      assert valid?(:postgres, Map.merge(valid, %{expected_value: "1.5", comparison: "<="}))
+
+      assert %{comparison: ["is invalid"]} =
+               settings_errors(:postgres, Map.put(valid, :comparison, "like"))
+
+      assert %{expected_value: ["must be a number for >"]} =
+               settings_errors(
+                 :postgres,
+                 Map.merge(valid, %{expected_value: "x", comparison: ">"})
+               )
+
+      assert %{expected_value: ["must be a valid regular expression"]} =
+               settings_errors(
+                 :postgres,
+                 Map.merge(valid, %{expected_value: "(", comparison: "regex"})
+               )
+
+      assert valid?(:postgres, Map.merge(valid, %{expected_rows: 0, rows_comparison: "<="}))
+
+      assert %{expected_rows: [_]} =
+               settings_errors(:postgres, Map.put(valid, :expected_rows, -1))
+
+      assert %{rows_comparison: ["is invalid"]} =
+               settings_errors(:postgres, Map.put(valid, :rows_comparison, "contains"))
+    end
+
+    test "validates the replication check" do
+      valid = valid_settings(:postgres)
+
+      assert %Settings{replication_check: "none", min_standbys: 1, lag_warn_seconds: nil} =
+               apply_settings(:postgres, valid)
+
+      for mode <- ["none", "primary", "standby"] do
+        assert valid?(:postgres, Map.put(valid, :replication_check, mode))
+      end
+
+      assert %{replication_check: ["is invalid"]} =
+               settings_errors(:postgres, Map.put(valid, :replication_check, "both"))
+
+      assert %{min_standbys: [_]} = settings_errors(:postgres, Map.put(valid, :min_standbys, -1))
+
+      assert valid?(
+               :postgres,
+               Map.merge(valid, %{lag_warn_seconds: 10, lag_critical_seconds: 10})
+             )
+
+      assert valid?(:postgres, Map.merge(valid, %{lag_critical_bytes: 1_000_000}))
+
+      assert %{lag_critical_seconds: ["must not be less than the warning threshold"]} =
+               settings_errors(
+                 :postgres,
+                 Map.merge(valid, %{lag_warn_seconds: 60, lag_critical_seconds: 30})
+               )
+
+      assert %{lag_critical_bytes: ["must not be less than the warning threshold"]} =
+               settings_errors(
+                 :postgres,
+                 Map.merge(valid, %{lag_warn_bytes: 100, lag_critical_bytes: 10})
+               )
+
+      assert %{lag_warn_seconds: [_]} =
+               settings_errors(:postgres, Map.put(valid, :lag_warn_seconds, 0))
+    end
+  end
+
   test "fields not relevant for the type are discarded" do
     settings =
       apply_settings(:tcp, %{host: "example.com", port: 22, url: "https://x", keyword: "y"})

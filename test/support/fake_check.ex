@@ -8,6 +8,7 @@ defmodule Sentinelix.FakeCheck do
   result can be:
 
     * `:hang` – never returns (to test timeouts),
+    * `:hang_trapping_exits` – traps exits and never returns,
     * `:raise` – raises,
     * any other term – returned as is (to test invalid results).
   """
@@ -38,8 +39,14 @@ defmodule Sentinelix.FakeCheck do
 
     case next do
       :hang -> Process.sleep(:infinity)
+      :hang_trapping_exits -> hang_trapping_exits()
       :raise -> raise "boom"
       result -> result
     end
+  end
+
+  defp hang_trapping_exits do
+    Process.flag(:trap_exit, true)
+    Process.sleep(:infinity)
   end
 end

@@ -163,9 +163,10 @@ defmodule Sentinelix.Monitoring do
   """
   @spec create_monitor(map()) :: {:ok, Monitor.t()} | {:error, Ecto.Changeset.t()}
   def create_monitor(attrs \\ %{}) do
-    %Monitor{}
-    |> Monitor.changeset(attrs)
-    |> Repo.insert()
+    changeset = Monitor.changeset(%Monitor{}, attrs)
+
+    changeset
+    |> Repo.insert(write_options(changeset))
     |> tap(fn
       {:ok, monitor} -> Sentinelix.Notifications.attach_default_channels(monitor)
       _error -> :ok
@@ -178,10 +179,18 @@ defmodule Sentinelix.Monitoring do
   """
   @spec update_monitor(Monitor.t(), map()) :: {:ok, Monitor.t()} | {:error, Ecto.Changeset.t()}
   def update_monitor(%Monitor{} = monitor, attrs) do
-    monitor
-    |> Monitor.changeset(attrs)
-    |> Repo.update()
+    changeset = Monitor.changeset(monitor, attrs)
+
+    changeset
+    |> Repo.update(write_options(changeset))
     |> broadcast_monitor_change(:monitor_updated)
+  end
+
+  # Ecto logs queries (at debug level) with the parameters before they are
+  # dumped, i.e. secrets before they are encrypted. Writes that change
+  # secrets are not logged.
+  defp write_options(changeset) do
+    if Ecto.Changeset.changed?(changeset, :secrets), do: [log: false], else: []
   end
 
   @doc """
