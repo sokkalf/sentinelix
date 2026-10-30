@@ -91,7 +91,7 @@ defmodule SentinelixWeb.Layouts do
             </ul>
           </nav>
           <div class="px-6 py-4 text-xs opacity-50">
-            Sentinelix {Application.spec(:sentinelix, :vsn)}
+            Sentinelix {Sentinelix.version()}
           </div>
         </aside>
       </div>
