@@ -21,6 +21,9 @@ defmodule SentinelixWeb.StatusPageLiveTest do
           footer_text: "Contact ops"
         })
 
+      # Taken before rendering: if the page is rendered just after midnight
+      # (UTC), its last 90 days still include this date.
+      today = Date.utc_today()
       {:ok, view, html} = live(conn, ~p"/status/#{page.slug}")
 
       assert html =~ "Acme status"
@@ -35,7 +38,7 @@ defmodule SentinelixWeb.StatusPageLiveTest do
              )
 
       assert has_element?(view, "[data-status=operational]", "Operational")
-      assert has_element?(view, "[id^=days-] [data-date='#{Date.utc_today()}']")
+      assert has_element?(view, "[id^=days-] [data-date='#{today}']")
       assert has_element?(view, "#no-incidents")
       # no app shell
       refute has_element?(view, "#app-nav")

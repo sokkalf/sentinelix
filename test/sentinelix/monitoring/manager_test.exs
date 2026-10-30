@@ -6,6 +6,7 @@ defmodule Sentinelix.Monitoring.ManagerTest do
   alias Sentinelix.FakeCheck
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.Supervisor, as: Engine
+  alias Sentinelix.Monitoring.Worker
 
   @engine __MODULE__.Engine
 
@@ -84,8 +85,18 @@ defmodule Sentinelix.Monitoring.ManagerTest do
     eventually(fn -> running?(monitor) end)
 
     pid = Engine.whereis(monitor, @engine)
+
+    # Suspend the worker first, so it isn't killed in the middle of a query:
+    # that would make the sandbox drop the test's connection (and with it the
+    # ownership), and the restarted worker couldn't load its state.
+    :ok = :sys.suspend(pid)
     Process.exit(pid, :kill)
     eventually(fn -> running?(monitor) and Engine.whereis(monitor, @engine) != pid end)
+
+    # The restarted worker is healthy and checks.
+    Monitoring.subscribe_monitor(monitor)
+    :ok = Worker.check_now(monitor, @engine)
+    assert_receive {:check_result, %{status: :up}}, 2_000
   end
 
   test "check_now via the context" do
