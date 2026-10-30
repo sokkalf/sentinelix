@@ -9,6 +9,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
 
   import SentinelixWeb.MonitorComponents
 
+  alias Sentinelix.Checks.Postgres.Expectation
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.{Monitor, Settings}
   alias Sentinelix.Notifications
@@ -67,13 +68,26 @@ defmodule SentinelixWeb.MonitorLive.Form do
           >
             <h2 class="mb-3 font-semibold">{type_label(@type)} settings</h2>
             <.inputs_for :let={settings} field={@form[:settings]}>
-              <div class="grid gap-x-4 sm:grid-cols-2">
-                <.settings_field
-                  :for={name <- Settings.fields_for(@type)}
-                  name={name}
-                  field={settings[name]}
-                  type={@type}
-                />
+              <div :for={{title, fields} <- settings_groups(@type)} id={group_id(title)}>
+                <h3 :if={title} class="mt-2 mb-1 text-sm font-semibold text-base-content/70">
+                  {title}
+                </h3>
+                <div class="grid gap-x-4 sm:grid-cols-2">
+                  <%= for name <- fields, visible?(name, settings) do %>
+                    <.secret_field
+                      :if={name in @secret_fields}
+                      name={name}
+                      stored={@stored_secrets[to_string(name)]}
+                      value={@params["secrets"][to_string(name)]}
+                    />
+                    <.settings_field
+                      :if={name not in @secret_fields}
+                      name={name}
+                      field={settings[name]}
+                      type={@type}
+                    />
+                  <% end %>
+                </div>
               </div>
             </.inputs_for>
           </section>
@@ -164,6 +178,80 @@ defmodule SentinelixWeb.MonitorLive.Form do
         </div>
       </.form>
     </Layouts.app>
+    """
+  end
+
+  # Settings fields per type, in groups of {title, fields}. Secret fields
+  # (see Monitor.secret_fields/1) are rendered by secret_field/1.
+  @settings_groups %{
+    postgres: [
+      {"Connection", [:host, :port, :database, :username, :password, :ssl_mode, :ssl_ca_cert]},
+      {"Query", [:query, :expected_value, :comparison, :expected_rows, :rows_comparison]},
+      {"Replication",
+       [
+         :replication_check,
+         :min_standbys,
+         :lag_warn_seconds,
+         :lag_critical_seconds,
+         :lag_warn_bytes,
+         :lag_critical_bytes
+       ]}
+    ]
+  }
+
+  @doc false
+  def settings_groups(type) do
+    Map.get_lazy(@settings_groups, type, fn -> [{nil, Settings.fields_for(type)}] end)
+  end
+
+  defp group_id(nil), do: nil
+  defp group_id(title), do: "settings-group-#{String.downcase(title)}"
+
+  # Fields that only matter for some values of other fields.
+  defp visible?(:ssl_ca_cert, settings), do: settings[:ssl_mode].value == "verify-full"
+  defp visible?(:min_standbys, settings), do: settings[:replication_check].value == "primary"
+
+  defp visible?(name, settings)
+       when name in [
+              :lag_warn_seconds,
+              :lag_critical_seconds,
+              :lag_warn_bytes,
+              :lag_critical_bytes
+            ],
+       do: settings[:replication_check].value in ["primary", "standby"]
+
+  defp visible?(_name, _settings), do: true
+
+  attr :name, :atom, required: true
+  attr :stored, :boolean, default: false, doc: "whether a value is stored"
+  attr :value, :string, default: nil, doc: "the value entered in this form"
+
+  # Secrets are write-only: the stored value is never rendered, a blank
+  # input keeps it (see Monitor). Only what was typed in this form is
+  # rendered back, so it survives re-renders on validation.
+  defp secret_field(assigns) do
+    ~H"""
+    <div>
+      <.input
+        type="password"
+        id={"monitor_secrets_#{@name}"}
+        name={"monitor[secrets][#{@name}]"}
+        value={@value}
+        label={Phoenix.Naming.humanize(@name)}
+        placeholder={if @stored, do: "•••••••• (unchanged)", else: "Not set"}
+        autocomplete="new-password"
+        phx-debounce="300"
+      />
+      <label :if={@stored} class="-mt-1 mb-2 flex items-center gap-2 text-xs text-base-content/60">
+        <input
+          type="checkbox"
+          id={"monitor_secrets_clear_#{@name}"}
+          name={"monitor[secrets][clear_#{@name}]"}
+          value="true"
+          class="checkbox checkbox-xs"
+        /> Remove the stored {String.downcase(Phoenix.Naming.humanize(@name))}
+      </label>
+    </div>
     """
   end
 
@@ -331,9 +419,149 @@ defmodule SentinelixWeb.MonitorLive.Form do
       field={@field}
       type="text"
       label="Expected value (optional)"
-      placeholder="192.0.2.1"
+      placeholder={if @type == :postgres, do: "0", else: "192.0.2.1"}
       phx-debounce="300"
     />
+    """
+  end
+
+  defp settings_field(%{name: :database} = assigns) do
+    ~H"""
+    <.input field={@field} type="text" label="Database" placeholder="app" phx-debounce="300" />
+    """
+  end
+
+  defp settings_field(%{name: :username} = assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      type="text"
+      label="Username"
+      placeholder="sentinelix_monitor"
+      autocomplete="off"
+      phx-debounce="300"
+    />
+    """
+  end
+
+  defp settings_field(%{name: :ssl_mode} = assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      type="select"
+      label="SSL"
+      options={[
+        {"Require (certificate not verified)", "require"},
+        {"Verify certificate and hostname", "verify-full"},
+        {"Disable", "disable"}
+      ]}
+    />
+    """
+  end
+
+  defp settings_field(%{name: :ssl_ca_cert} = assigns) do
+    ~H"""
+    <div class="sm:col-span-2">
+      <.input
+        field={@field}
+        type="textarea"
+        label="CA certificate (optional)"
+        rows="3"
+        placeholder="-----BEGIN CERTIFICATE-----"
+        class="w-full textarea font-mono text-xs"
+        phx-debounce="300"
+      />
+      <p class="-mt-1 mb-2 text-xs text-base-content/60">
+        PEM encoded. Empty: the system's trusted CAs.
+      </p>
+    </div>
+    """
+  end
+
+  defp settings_field(%{name: :query} = assigns) do
+    ~H"""
+    <div class="sm:col-span-2">
+      <.input
+        field={@field}
+        type="textarea"
+        label="Query"
+        rows="3"
+        class="w-full textarea font-mono text-sm"
+        phx-debounce="300"
+      />
+      <p class="-mt-1 mb-2 text-xs text-base-content/60">
+        A single statement, run in a read-only transaction.
+        The expected value is compared with the first column of the first row.
+      </p>
+    </div>
+    """
+  end
+
+  defp settings_field(%{name: :comparison} = assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      type="select"
+      label="Comparison"
+      options={Enum.map(Expectation.comparisons(), &{comparison_label(&1), &1})}
+    />
+    """
+  end
+
+  defp settings_field(%{name: :expected_rows} = assigns) do
+    ~H"""
+    <.input field={@field} type="number" label="Expected rows (optional)" min="0" />
+    """
+  end
+
+  defp settings_field(%{name: :rows_comparison} = assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      type="select"
+      label="Rows comparison"
+      options={Enum.map(Expectation.rows_comparisons(), &{comparison_label(&1), &1})}
+    />
+    """
+  end
+
+  defp settings_field(%{name: :replication_check} = assigns) do
+    ~H"""
+    <div class="sm:col-span-2">
+      <.input
+        field={@field}
+        type="select"
+        label="Check replication"
+        options={[
+          {"No", "none"},
+          {"Primary: standbys are streaming", "primary"},
+          {"Standby: streaming from the primary", "standby"}
+        ]}
+      />
+      <p class="-mt-1 mb-2 text-xs text-base-content/60">
+        Also asserts the server's role (down after a failover). Needs the pg_monitor role.
+      </p>
+    </div>
+    """
+  end
+
+  defp settings_field(%{name: :min_standbys} = assigns) do
+    ~H"""
+    <div class="sm:col-span-2">
+      <.input field={@field} type="number" label="Minimum streaming standbys" min="0" />
+    </div>
+    """
+  end
+
+  defp settings_field(%{name: name} = assigns)
+       when name in [
+              :lag_warn_seconds,
+              :lag_critical_seconds,
+              :lag_warn_bytes,
+              :lag_critical_bytes
+            ] do
+    ~H"""
+    <.input field={@field} type="number" label={threshold_label(@name)} min="1" />
     """
   end
 
@@ -378,6 +606,17 @@ defmodule SentinelixWeb.MonitorLive.Form do
     """
   end
 
+  defp comparison_label("equals"), do: "equals"
+  defp comparison_label("not_equals"), do: "does not equal"
+  defp comparison_label("contains"), do: "contains"
+  defp comparison_label("regex"), do: "matches regular expression"
+  defp comparison_label(operator), do: operator
+
+  defp threshold_label(:lag_warn_seconds), do: "Warn at lag (seconds, optional)"
+  defp threshold_label(:lag_critical_seconds), do: "Down at lag (seconds, optional)"
+  defp threshold_label(:lag_warn_bytes), do: "Warn at lag (bytes, optional)"
+  defp threshold_label(:lag_critical_bytes), do: "Down at lag (bytes, optional)"
+
   defp checkbox_label(:follow_redirects), do: "Follow redirects"
   defp checkbox_label(:verify_tls), do: "Verify TLS certificate"
   defp checkbox_label(:invert_keyword), do: "Down if the keyword is found"
@@ -389,6 +628,9 @@ defmodule SentinelixWeb.MonitorLive.Form do
   defp type_help(:ping), do: "Checks that a host answers ICMP echo requests."
   defp type_help(:dns), do: "Resolves a hostname and optionally compares the answer."
   defp type_help(:cert), do: "Warns before a TLS certificate expires."
+
+  defp type_help(:postgres),
+    do: "Logs in to a PostgreSQL server, runs a query and optionally checks replication."
 
   defp type_help(:push),
     do: "Passive monitor: your service calls the push URL; it goes down when the pushes stop."
@@ -502,10 +744,17 @@ defmodule SentinelixWeb.MonitorLive.Form do
   end
 
   defp assign_form(socket, changeset, params) do
+    type = Ecto.Changeset.get_field(changeset, :type)
+    monitor = socket.assigns.monitor
+    # Stored secrets only apply while the type is unchanged.
+    stored = if monitor.type == type, do: monitor.secrets || %{}, else: %{}
+
     assign(socket,
       form: to_form(changeset),
-      type: Ecto.Changeset.get_field(changeset, :type),
-      params: params
+      type: type,
+      params: params,
+      secret_fields: Enum.map(Monitor.secret_fields(type), &String.to_existing_atom/1),
+      stored_secrets: Map.new(stored, fn {key, value} -> {key, value != nil} end)
     )
   end
 

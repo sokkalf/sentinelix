@@ -8,7 +8,9 @@ defmodule SentinelixWeb.MonitorLiveTest do
   import Sentinelix.NotificationsFixtures
 
   alias Sentinelix.Monitoring
+  alias Sentinelix.Monitoring.{Monitor, Settings}
   alias Sentinelix.Notifications
+  alias SentinelixWeb.MonitorLive.Form
 
   setup :register_and_log_in_user
 
@@ -257,6 +259,8 @@ defmodule SentinelixWeb.MonitorLiveTest do
             dns: ~w(host dns_record_type dns_resolver expected_value),
             cert: ~w(host port cert_warn_days cert_critical_days),
             push: ~w(push_token push_grace_seconds),
+            postgres:
+              ~w(host port database username ssl_mode query expected_value comparison expected_rows rows_comparison replication_check),
             http: ~w(url method headers body accepted_status_codes follow_redirects)
           ] do
         view |> form("#monitor-form", monitor: %{type: type}) |> render_change()
@@ -270,6 +274,113 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
       view |> form("#monitor-form", monitor: %{type: :tcp}) |> render_change()
       refute has_element?(view, "[name='monitor[settings][url]']")
+    end
+
+    test "creates a postgres monitor with a write-only password", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/monitors/new")
+      view |> form("#monitor-form", monitor: %{type: :postgres}) |> render_change()
+
+      assert has_element?(view, "#settings-group-connection [name='monitor[secrets][password]']")
+      assert has_element?(view, "#settings-group-query [name='monitor[settings][query]']")
+
+      assert has_element?(
+               view,
+               "#settings-group-replication [name='monitor[settings][replication_check]']"
+             )
+
+      # Fields that depend on other fields.
+      refute has_element?(view, "[name='monitor[settings][ssl_ca_cert]']")
+      refute has_element?(view, "[name='monitor[settings][min_standbys]']")
+      refute has_element?(view, "[name='monitor[settings][lag_warn_seconds]']")
+
+      view
+      |> form("#monitor-form",
+        monitor: %{
+          secrets: %{password: "typed-pw"},
+          settings: %{ssl_mode: "verify-full", replication_check: "primary"}
+        }
+      )
+      |> render_change()
+
+      assert has_element?(view, "[name='monitor[settings][ssl_ca_cert]']")
+      assert has_element?(view, "[name='monitor[settings][min_standbys]']")
+      assert has_element?(view, "[name='monitor[settings][lag_critical_bytes]']")
+      # What was typed survives the re-render.
+      assert has_element?(view, "[name='monitor[secrets][password]'][value='typed-pw']")
+      refute has_element?(view, "[name='monitor[secrets][clear_password]']")
+
+      {:ok, _view, html} =
+        view
+        |> form("#monitor-form",
+          monitor: %{
+            name: "Main DB",
+            secrets: %{password: "s3cret-pw"},
+            settings: %{
+              host: "db.example.com",
+              database: "app",
+              username: "sentinelix_monitor",
+              ssl_mode: "require",
+              replication_check: "primary",
+              min_standbys: "2",
+              lag_warn_seconds: "30"
+            }
+          }
+        )
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      assert html =~ "db.example.com:5432/app"
+      refute html =~ "s3cret-pw"
+
+      assert [monitor] = Monitoring.list_monitors()
+      assert monitor.secrets == %{"password" => "s3cret-pw"}
+
+      assert %{database: "app", replication_check: "primary", min_standbys: 2} =
+               monitor.settings
+    end
+
+    test "the settings groups contain every field of the type" do
+      for type <- Monitor.types() do
+        grouped =
+          type |> Form.settings_groups() |> Enum.flat_map(&elem(&1, 1))
+
+        secrets =
+          type |> Monitor.secret_fields() |> Enum.map(&String.to_atom/1)
+
+        assert Enum.sort(grouped) ==
+                 Enum.sort(Settings.fields_for(type) ++ secrets)
+      end
+    end
+
+    test "never renders a stored password and keeps it when left blank", %{conn: conn} do
+      monitor = monitor_fixture(:postgres, %{secrets: %{password: "stored-s3cret"}})
+
+      {:ok, view, html} = live(conn, ~p"/monitors/#{monitor}/edit")
+      refute html =~ "stored-s3cret"
+      assert has_element?(view, "[name='monitor[secrets][password]'][placeholder*=unchanged]")
+
+      refute view
+             |> form("#monitor-form", monitor: %{name: "Renamed", settings: %{port: "70000"}})
+             |> render_submit() =~ "stored-s3cret"
+
+      {:ok, _view, html} =
+        view
+        |> form("#monitor-form", monitor: %{name: "Renamed", settings: %{port: "5433"}})
+        |> render_submit()
+        |> follow_redirect(conn, ~p"/monitors/#{monitor}")
+
+      refute html =~ "stored-s3cret"
+      assert Monitoring.get_monitor!(monitor.id).secrets == %{"password" => "stored-s3cret"}
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}/edit")
+
+      {:ok, _view, _html} =
+        view
+        |> form("#monitor-form", monitor: %{secrets: %{clear_password: "true"}})
+        |> render_submit()
+        |> follow_redirect(conn, ~p"/monitors/#{monitor}")
+
+      assert Monitoring.get_monitor!(monitor.id).secrets == %{}
     end
 
     test "creates a push monitor and shows its push URL", %{conn: conn} do
