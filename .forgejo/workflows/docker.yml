@@ -32,11 +32,11 @@ jobs:
     # Uses the Docker daemon if the runner exposes one to job containers
     # (DOCKER_HOST or /var/run/docker.sock).
     container:
-      image: docker:28-cli
+      image: alpine:3.23
     steps:
       # nodejs for the JavaScript checkout action, git for the checkout
       - name: Install system dependencies
-        run: apk add --no-cache git nodejs
+        run: apk add --no-cache git nodejs docker-cli docker-cli-buildx
       - uses: actions/checkout@v4
       - name: Build image
         run: |
