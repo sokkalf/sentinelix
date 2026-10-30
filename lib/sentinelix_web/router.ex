@@ -73,6 +73,9 @@ defmodule SentinelixWeb.Router do
       live "/monitors/new", MonitorLive.Form, :new
       live "/monitors/:id", MonitorLive.Show
       live "/monitors/:id/edit", MonitorLive.Form, :edit
+      live "/maintenance", MaintenanceLive.Index
+      live "/maintenance/new", MaintenanceLive.Form, :new
+      live "/maintenance/:id/edit", MaintenanceLive.Form, :edit
       live "/settings/users", Settings.UsersLive
 
       live "/settings/notifications", Live.NotificationSettings, :index

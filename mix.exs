@@ -77,6 +77,7 @@ defmodule Sentinelix.MixProject do
       {:oidcc, "~> 3.9"},
       {:bcrypt_elixir, "~> 3.3"},
       {:req, "~> 0.7"},
+      {:tz, "~> 0.28"},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ]
   end

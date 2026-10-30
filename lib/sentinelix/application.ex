@@ -25,6 +25,9 @@ defmodule Sentinelix.Application do
           # Started before the engine so no status change goes unnoticed
           {Sentinelix.Notifications.Supervisor,
            Application.get_env(:sentinelix, Sentinelix.Notifications.Supervisor, [])},
+          # Maintenance windows, consulted by the engine after every check
+          {Sentinelix.Maintenance.Cache,
+           Application.get_env(:sentinelix, Sentinelix.Maintenance.Cache, [])},
           {Sentinelix.Monitoring.Supervisor,
            Application.get_env(:sentinelix, Sentinelix.Monitoring.Supervisor, [])},
           # Hourly rollups and data retention

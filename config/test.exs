@@ -39,6 +39,10 @@ config :sentinelix, SentinelixWeb.Endpoint,
 # start an isolated one (see Sentinelix.Monitoring.SupervisorTest).
 config :sentinelix, Sentinelix.Monitoring.Supervisor, manager: false
 
+# Don't load maintenance windows on boot or refresh them every minute (the
+# sandbox isn't available then); window changes still refresh the cache.
+config :sentinelix, Sentinelix.Maintenance.Cache, autoload: false
+
 # Don't dispatch notifications automatically: tests start their own
 # dispatcher (see Sentinelix.Notifications.DispatcherTest). Notification
 # HTTP requests go through Req.Test stubs, retries don't wait.

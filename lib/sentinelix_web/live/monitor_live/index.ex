@@ -8,7 +8,7 @@ defmodule SentinelixWeb.MonitorLive.Index do
 
   import SentinelixWeb.MonitorComponents
 
-  alias Sentinelix.Monitoring
+  alias Sentinelix.{Maintenance, Monitoring}
 
   @impl true
   def render(assigns) do
@@ -70,7 +70,11 @@ defmodule SentinelixWeb.MonitorLive.Index do
                   >
                     {row.monitor.name}
                   </.link>
-                  <div :if={row.monitor.tags != []} class="mt-1 flex flex-wrap gap-1">
+                  <div
+                    :if={row.monitor.tags != [] or row.maintenance != []}
+                    class="mt-1 flex flex-wrap gap-1"
+                  >
+                    <.maintenance_badge id={"maintenance-#{row.id}"} windows={row.maintenance} />
                     <span :for={tag <- row.monitor.tags} class="badge badge-ghost badge-xs">{tag}</span>
                   </div>
                 </td>
@@ -129,6 +133,7 @@ defmodule SentinelixWeb.MonitorLive.Index do
     if connected?(socket) do
       Monitoring.subscribe_monitors()
       Monitoring.subscribe_status_changes()
+      Maintenance.subscribe()
     end
 
     socket =
@@ -187,16 +192,19 @@ defmodule SentinelixWeb.MonitorLive.Index do
     end
   end
 
+  def handle_info({:maintenance_changed}, socket), do: {:noreply, load(socket)}
+
   def handle_info(_message, socket), do: {:noreply, socket}
 
   defp load(socket) do
     latest = Monitoring.latest_result_per_monitor()
     monitors = Monitoring.list_monitors()
+    maintenance = Maintenance.active_windows_for(Enum.map(monitors, & &1.id))
 
     rows =
       monitors
       |> Enum.filter(&matches?(&1, socket.assigns.q))
-      |> Enum.map(&row(&1, display_status(&1, latest[&1.id])))
+      |> Enum.map(&row(&1, display_status(&1, latest[&1.id]), Map.get(maintenance, &1.id, [])))
 
     socket
     |> assign(count: length(monitors))
@@ -211,7 +219,12 @@ defmodule SentinelixWeb.MonitorLive.Index do
     end
   end
 
-  defp row(monitor, status), do: %{id: monitor.id, monitor: monitor, status: status}
+  defp row(monitor, status, maintenance \\ nil) do
+    maintenance =
+      maintenance || Map.get(Maintenance.active_windows_for([monitor.id]), monitor.id, [])
+
+    %{id: monitor.id, monitor: monitor, status: status, maintenance: maintenance}
+  end
 
   defp current_status(monitor),
     do: display_status(monitor, Monitoring.get_latest_result(monitor))

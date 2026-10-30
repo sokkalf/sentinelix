@@ -80,6 +80,13 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# Time zone database for maintenance window recurrence in named time zones.
+config :elixir, :time_zone_database, Tz.TimeZoneDatabase
+
+# The monitoring engine records checks of monitors in an active maintenance
+# window as `:maintenance` (see Sentinelix.Maintenance).
+config :sentinelix, Sentinelix.Monitoring.Supervisor, maintenance: Sentinelix.Maintenance
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"

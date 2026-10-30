@@ -13,7 +13,7 @@ defmodule SentinelixWeb.DashboardLive do
 
   import SentinelixWeb.MonitorComponents
 
-  alias Sentinelix.Monitoring
+  alias Sentinelix.{Maintenance, Monitoring}
   alias Sentinelix.Monitoring.History
   alias Sentinelix.Stats
 
@@ -156,6 +156,7 @@ defmodule SentinelixWeb.DashboardLive do
                   >
                     <.icon name="hero-exclamation-triangle-micro" class="size-3" /> Warning
                   </span>
+                  <.maintenance_badge id={"maintenance-#{row.id}"} windows={row.maintenance} />
                 </div>
               </div>
             </div>
@@ -187,13 +188,18 @@ defmodule SentinelixWeb.DashboardLive do
     if connected?(socket) do
       Monitoring.subscribe_monitors()
       Enum.each(monitors, &Monitoring.subscribe_monitor/1)
+      Maintenance.subscribe()
     end
 
     latest = Monitoring.latest_result_per_monitor()
+    maintenance = Maintenance.active_windows_for(Enum.map(monitors, & &1.id))
 
     index =
       Map.new(monitors, fn monitor ->
-        {monitor.id, index_entry(monitor, Map.get(latest, monitor.id))}
+        entry =
+          index_entry(monitor, Map.get(latest, monitor.id), Map.get(maintenance, monitor.id, []))
+
+        {monitor.id, entry}
       end)
 
     socket =
@@ -237,8 +243,9 @@ defmodule SentinelixWeb.DashboardLive do
   def handle_info({:monitor_created, monitor}, socket) do
     Monitoring.subscribe_monitor(monitor)
 
-    {:noreply,
-     socket |> put_index(monitor.id, index_entry(monitor, nil)) |> refresh_row(monitor.id)}
+    maintenance = Maintenance.active_windows_for([monitor.id])
+    entry = index_entry(monitor, nil, Map.get(maintenance, monitor.id, []))
+    {:noreply, socket |> put_index(monitor.id, entry) |> refresh_row(monitor.id)}
   end
 
   def handle_info({:monitor_updated, monitor}, socket) do
@@ -272,17 +279,29 @@ defmodule SentinelixWeb.DashboardLive do
     {:noreply, update_entry(socket, monitor.id, &%{&1 | warning: event == :warning_raised})}
   end
 
+  def handle_info({:maintenance_changed}, socket) do
+    maintenance = Maintenance.active_windows_for(Map.keys(socket.assigns.index))
+
+    index =
+      Map.new(socket.assigns.index, fn {id, entry} ->
+        {id, %{entry | maintenance: Map.get(maintenance, id, [])}}
+      end)
+
+    {:noreply, socket |> assign(index: index) |> stream_rows(reset: true)}
+  end
+
   # Status changes are covered by the check result that caused them.
   def handle_info(_message, socket), do: {:noreply, socket}
 
   ## Index and rows
 
-  defp index_entry(monitor, latest) do
+  defp index_entry(monitor, latest, maintenance) do
     %{
       monitor: monitor,
       latest: latest,
       status: display_status(monitor, latest),
-      warning: warning?(monitor)
+      warning: warning?(monitor),
+      maintenance: maintenance
     }
   end
 

@@ -149,3 +149,23 @@ backoff).
 * The last notified state per monitor is persisted, so restarts (monitor
   edits, deploys) don't re-send notifications for monitors that are already
   down or warned about.
+
+## Maintenance windows
+
+Maintenance windows are managed at `/maintenance`. A window is one-off (start
+and end) or recurring (daily, or weekly on chosen weekdays, at a start time
+for a duration), in a named time zone (IANA, e.g. `Europe/Oslo`; daylight
+saving time is handled), and applies to selected monitors or to all monitors.
+
+* During a window checks keep running, but results are recorded as
+  `maintenance`: the monitor's status doesn't change, no incidents are opened
+  and no notifications are sent. Maintenance results don't count towards
+  uptime.
+* After the window normal evaluation resumes with the next check: a monitor
+  that is down then alerts as usual (unless its outage was already notified
+  before the window).
+* Push monitors: pushes received and pushes missed during a window are both
+  recorded as `maintenance`. A push still missing after the window is reported
+  by the next deadline check.
+* Monitors in an active window get a *Maintenance* badge on the dashboard and
+  the monitor pages.

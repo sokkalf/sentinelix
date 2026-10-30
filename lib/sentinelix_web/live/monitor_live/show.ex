@@ -8,7 +8,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
   import SentinelixWeb.MonitorComponents
 
-  alias Sentinelix.Monitoring
+  alias Sentinelix.{Maintenance, Monitoring}
   alias Sentinelix.Monitoring.History
   alias Sentinelix.Stats
 
@@ -53,6 +53,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
             >
               <.icon name="hero-exclamation-triangle-micro" class="size-4" /> Warning
             </span>
+            <.maintenance_badge id="monitor-maintenance" windows={@maintenance} class="badge-md" />
           </div>
           <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-base-content/60">
             <span>{type_label(@monitor.type)}</span>
@@ -328,6 +329,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
       monitor ->
         if connected?(socket) do
           Monitoring.subscribe_monitor(monitor)
+          Maintenance.subscribe()
           schedule_tick()
         end
 
@@ -337,6 +339,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
           |> assign(heartbeats: Monitoring.latest_results(monitor, @heartbeats) |> Enum.reverse())
           |> assign_latest()
           |> assign_worker()
+          |> assign_maintenance()
           |> assign_stats()
           |> stream(:incidents, Monitoring.list_incidents(monitor, @incidents))
 
@@ -436,6 +439,8 @@ defmodule SentinelixWeb.MonitorLive.Show do
     {:noreply, assign_worker(socket)}
   end
 
+  def handle_info({:maintenance_changed}, socket), do: {:noreply, assign_maintenance(socket)}
+
   def handle_info(:tick, socket) do
     schedule_tick()
     {:noreply, socket |> assign(now: DateTime.utc_now()) |> assign_worker()}
@@ -461,6 +466,11 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
   defp assign_worker(socket) do
     assign(socket, worker: Monitoring.worker_info(socket.assigns.monitor))
+  end
+
+  defp assign_maintenance(socket) do
+    id = socket.assigns.monitor.id
+    assign(socket, maintenance: Map.get(Maintenance.active_windows_for([id]), id, []))
   end
 
   defp assign_stats(socket) do
