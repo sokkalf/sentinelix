@@ -24,6 +24,9 @@ defmodule Sentinelix.MonitoringFixtures do
   def valid_settings(:cert), do: %{host: "example.com"}
   def valid_settings(:push), do: %{}
 
+  def valid_settings(:postgres),
+    do: %{host: "db.example.com", database: "app", username: "monitor"}
+
   def monitor_fixture(type \\ :http, attrs \\ %{}) do
     {:ok, monitor} = type |> valid_monitor_attrs(attrs) |> Monitoring.create_monitor()
     monitor

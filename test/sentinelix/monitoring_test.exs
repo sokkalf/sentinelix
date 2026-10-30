@@ -186,6 +186,64 @@ defmodule Sentinelix.MonitoringTest do
     end
   end
 
+  describe "secrets" do
+    test "are stored encrypted and never in the settings" do
+      monitor = monitor_fixture(:postgres, %{secrets: %{password: "s3cret pw"}})
+
+      assert Monitor.secret(monitor, "password") == "s3cret pw"
+      assert Monitor.secret(Monitoring.get_monitor!(monitor.id), "password") == "s3cret pw"
+
+      %{rows: [[settings, raw]]} =
+        Repo.query!("SELECT settings::text, secrets FROM monitors WHERE id = $1", [monitor.id])
+
+      refute settings =~ "s3cret"
+      refute raw =~ "s3cret"
+      refute inspect(monitor) =~ "s3cret"
+    end
+
+    test "a blank value keeps the stored secret, clear_<key> removes it" do
+      monitor = monitor_fixture(:postgres, %{secrets: %{"password" => "one"}})
+
+      {:ok, monitor} = Monitoring.update_monitor(monitor, %{"secrets" => %{"password" => ""}})
+      assert Monitor.secret(monitor, "password") == "one"
+
+      {:ok, monitor} = Monitoring.update_monitor(monitor, %{name: "Renamed"})
+      assert Monitor.secret(monitor, "password") == "one"
+
+      {:ok, monitor} = Monitoring.update_monitor(monitor, %{"secrets" => %{"password" => "two"}})
+      assert Monitor.secret(monitor, "password") == "two"
+
+      {:ok, monitor} =
+        Monitoring.update_monitor(monitor, %{
+          "secrets" => %{"password" => "", "clear_password" => "true"}
+        })
+
+      assert Monitor.secret(monitor, "password") == nil
+      assert Monitoring.get_monitor!(monitor.id).secrets == %{}
+    end
+
+    test "are dropped when they don't apply to the type" do
+      assert monitor_fixture(:http, %{secrets: %{password: "x"}}).secrets == %{}
+
+      monitor = monitor_fixture(:postgres, %{secrets: %{password: "x"}})
+
+      {:ok, monitor} =
+        Monitoring.update_monitor(monitor, %{type: :tcp, settings: %{host: "db", port: 5432}})
+
+      assert monitor.secrets == %{}
+    end
+
+    test "are redacted in changesets" do
+      changeset =
+        Monitoring.change_monitor(
+          %Monitor{},
+          valid_monitor_attrs(:postgres, %{secrets: %{password: "s3cret"}})
+        )
+
+      refute inspect(changeset) =~ "s3cret"
+    end
+  end
+
   describe "toggle_monitor/1" do
     test "flips enabled and broadcasts :monitor_updated" do
       monitor = monitor_fixture()

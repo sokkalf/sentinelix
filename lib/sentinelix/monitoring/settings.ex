@@ -28,6 +28,8 @@ defmodule Sentinelix.Monitoring.Settings do
   @dns_record_types ~w(A AAAA CNAME MX TXT NS)
   @max_redirects_limit 20
   @max_push_grace_seconds 86_400
+  @ssl_modes ~w(disable require verify-full)
+  @max_query_length 10_000
 
   @http_fields [
     url: nil,
@@ -50,7 +52,16 @@ defmodule Sentinelix.Monitoring.Settings do
     ping: [host: nil],
     dns: [host: nil, dns_record_type: "A", dns_resolver: nil, expected_value: nil],
     cert: [host: nil, port: 443, cert_warn_days: 30, cert_critical_days: 7],
-    push: [push_token: nil, push_grace_seconds: 30]
+    push: [push_token: nil, push_grace_seconds: 30],
+    postgres: [
+      host: nil,
+      port: 5432,
+      database: nil,
+      username: nil,
+      ssl_mode: "require",
+      ssl_ca_cert: nil,
+      query: "SELECT 1"
+    ]
   }
 
   @primary_key false
@@ -73,7 +84,7 @@ defmodule Sentinelix.Monitoring.Settings do
     # with `keyword` instead of searching the body for it.
     field :json_path, :string
 
-    # tcp / ping / dns / cert
+    # tcp / ping / dns / cert / postgres
     field :host, :string
     field :port, :integer
 
@@ -90,6 +101,16 @@ defmodule Sentinelix.Monitoring.Settings do
     field :push_token, :string
     # Extra time after the interval before a missing push counts as down.
     field :push_grace_seconds, :integer
+
+    # postgres (the password is a secret, see Monitor.secret_fields/1)
+    field :database, :string
+    field :username, :string
+    # "disable", "require" (encrypted, certificate not verified) or
+    # "verify-full" (verified against `ssl_ca_cert` or the system CAs).
+    field :ssl_mode, :string
+    # PEM encoded CA certificate(s) for "verify-full".
+    field :ssl_ca_cert, :string
+    field :query, :string
   end
 
   @type t :: %__MODULE__{}
@@ -99,6 +120,9 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @doc "Allowed DNS record types."
   def dns_record_types, do: @dns_record_types
+
+  @doc "Allowed PostgreSQL SSL modes."
+  def ssl_modes, do: @ssl_modes
 
   @doc """
   The settings fields (in display order) relevant for a monitor type.
@@ -139,7 +163,12 @@ defmodule Sentinelix.Monitoring.Settings do
     :dns_record_type,
     :dns_resolver,
     :json_path,
-    :push_token
+    :push_token,
+    :database,
+    :username,
+    :ssl_mode,
+    :ssl_ca_cert,
+    :query
   ]
 
   defp trim_strings(changeset) do
@@ -231,6 +260,23 @@ defmodule Sentinelix.Monitoring.Settings do
       greater_than_or_equal_to: 0,
       less_than_or_equal_to: @max_push_grace_seconds
     )
+  end
+
+  defp validate_type(changeset, :postgres) do
+    changeset
+    |> validate_required([:host, :port, :database, :username, :ssl_mode, :query])
+    |> validate_host(:host)
+    |> validate_port()
+    |> validate_length(:database, max: 63)
+    |> validate_length(:username, max: 63)
+    |> validate_inclusion(:ssl_mode, @ssl_modes)
+    |> validate_change(:ssl_ca_cert, fn field, pem ->
+      case parse_ca_certs(pem) do
+        {:ok, _certs} -> []
+        :error -> [{field, "must contain PEM encoded certificates"}]
+      end
+    end)
+    |> validate_length(:query, max: @max_query_length)
   end
 
   defp validate_type(changeset, _type), do: changeset
@@ -344,6 +390,19 @@ defmodule Sentinelix.Monitoring.Settings do
     if path != "" and Enum.all?(segments, &(&1 != "")),
       do: {:ok, segments},
       else: :error
+  end
+
+  @doc """
+  Parses PEM encoded certificates into a list of DER binaries.
+  """
+  @spec parse_ca_certs(String.t()) :: {:ok, [binary()]} | :error
+  def parse_ca_certs(pem) when is_binary(pem) do
+    case for({:Certificate, der, :not_encrypted} <- :public_key.pem_decode(pem), do: der) do
+      [] -> :error
+      ders -> {:ok, ders}
+    end
+  rescue
+    _ -> :error
   end
 
   @doc """

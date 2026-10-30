@@ -217,6 +217,50 @@ defmodule Sentinelix.Monitoring.SettingsTest do
     end
   end
 
+  describe "postgres" do
+    test "requires connection settings and defaults port, SSL mode and query" do
+      assert %{host: _, database: _, username: _} = settings_errors(:postgres, %{})
+
+      settings =
+        apply_settings(:postgres, %{
+          host: " db.example.com ",
+          database: " app ",
+          username: " monitor ",
+          query: "  "
+        })
+
+      assert %Settings{
+               host: "db.example.com",
+               port: 5432,
+               database: "app",
+               username: "monitor",
+               ssl_mode: "require",
+               ssl_ca_cert: nil,
+               query: "SELECT 1"
+             } = settings
+    end
+
+    test "validates the SSL mode and CA certificate" do
+      valid = valid_settings(:postgres)
+
+      for mode <- Settings.ssl_modes() do
+        assert valid?(:postgres, Map.put(valid, :ssl_mode, mode))
+      end
+
+      assert %{ssl_mode: ["is invalid"]} =
+               settings_errors(:postgres, Map.put(valid, :ssl_mode, "prefer"))
+
+      %{cert: der} = :public_key.pkix_test_root_cert(~c"Test CA", [])
+      pem = :public_key.pem_encode([{:Certificate, der, :not_encrypted}])
+
+      assert valid?(:postgres, Map.merge(valid, %{ssl_mode: "verify-full", ssl_ca_cert: pem}))
+      assert Settings.parse_ca_certs(pem) == {:ok, [der]}
+
+      assert %{ssl_ca_cert: ["must contain PEM encoded certificates"]} =
+               settings_errors(:postgres, Map.put(valid, :ssl_ca_cert, "not a certificate"))
+    end
+  end
+
   test "fields not relevant for the type are discarded" do
     settings =
       apply_settings(:tcp, %{host: "example.com", port: 22, url: "https://x", keyword: "y"})
