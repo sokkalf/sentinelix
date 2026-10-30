@@ -1,10 +1,12 @@
 defmodule Sentinelix.MixProject do
   use Mix.Project
 
+  Code.require_file("version.exs", __DIR__)
+
   def project do
     [
       app: :sentinelix,
-      version: "0.1.0",
+      version: Sentinelix.Version.semver(),
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,

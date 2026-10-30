@@ -51,5 +51,5 @@ defmodule Sentinelix.Notifications.HTTP do
   defp truncate(body) when is_binary(body), do: String.slice(body, 0, 500)
   defp truncate(body), do: body
 
-  defp version, do: Application.spec(:sentinelix, :vsn)
+  defp version, do: Sentinelix.version()
 end

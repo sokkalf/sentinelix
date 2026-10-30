@@ -36,5 +36,5 @@ defmodule Sentinelix.Checks do
   The value sent in the `User-Agent` header of HTTP based checks.
   """
   @spec user_agent() :: String.t()
-  def user_agent, do: "Sentinelix/#{Application.spec(:sentinelix, :vsn)}"
+  def user_agent, do: "Sentinelix/#{Sentinelix.version()}"
 end

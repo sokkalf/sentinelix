@@ -32,7 +32,7 @@ RUN mix local.hex --force \
 ENV MIX_ENV="prod"
 
 # install mix dependencies
-COPY mix.exs mix.lock ./
+COPY mix.exs mix.lock version.exs ./
 RUN mix deps.get --only $MIX_ENV
 RUN mkdir config
 
@@ -43,6 +43,13 @@ COPY config/config.exs config/${MIX_ENV}.exs config/
 RUN mix deps.compile
 
 RUN mix assets.setup
+
+# What the release calls itself. There is no .git in here to ask (see
+# .dockerignore), so the build passes it in; without one the build is
+# `unknown`. See version.exs. After the dependencies, so a new version does
+# not build them again.
+ARG VERSION
+ENV SENTINELIX_VERSION=$VERSION
 
 COPY priv priv
 
@@ -63,6 +70,9 @@ RUN mix release
 
 # The final image only contains the release and runtime dependencies.
 FROM ${RUNNER_IMAGE} AS final
+
+ARG VERSION
+LABEL org.opencontainers.image.version=$VERSION
 
 # iputils-ping: ping monitors run the system `ping`. It gets CAP_NET_RAW as a
 # *permitted* file capability (no effective bit), so it can open raw sockets
