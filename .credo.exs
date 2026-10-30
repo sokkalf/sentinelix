@@ -8,9 +8,7 @@
 # files. Rather than refactoring code that is going away, the
 # style/complexity checks that it fails are switched off for these paths
 # only. Remove an entry once the rewrite that owns it has landed.
-legacy = [
-  ~r"lib/sentinelix_web/live/"
-]
+legacy = []
 
 %{
   #

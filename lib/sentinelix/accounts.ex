@@ -20,6 +20,59 @@ defmodule Sentinelix.Accounts do
   def get_user!(id), do: Repo.get!(User, id)
 
   @doc """
+  Gets a single user, or nil if the user does not exist.
+  """
+  def get_user(id), do: Repo.get(User, id)
+
+  @doc """
+  Lists all users, ordered by name/email, each paired with the number of
+  their active (not expired) sessions: `[{%User{}, session_count}]`.
+  """
+  @spec list_users_with_session_counts() :: [{User.t(), non_neg_integer()}]
+  def list_users_with_session_counts do
+    sessions =
+      from t in UserToken,
+        where:
+          t.context == "session" and
+            t.inserted_at > ago(^UserToken.session_validity_in_days(), "day"),
+        group_by: t.user_id,
+        select: %{user_id: t.user_id, count: count(t.id)}
+
+    from(u in User,
+      left_join: s in subquery(sessions),
+      on: s.user_id == u.id,
+      order_by: [asc: fragment("lower(coalesce(?, ?, ''))", u.name, u.email), asc: u.id],
+      select: {u, coalesce(s.count, 0)}
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Deletes a user together with all of their sessions.
+
+  Returns the deleted session tokens so connected LiveViews can be
+  disconnected (see `SentinelixWeb.UserAuth.disconnect_sessions/1`).
+
+  Note that an OIDC user who is still allowed to log in is provisioned
+  again on their next login, and the bootstrap admin is recreated on boot
+  while `ADMIN_EMAIL`/`ADMIN_PASSWORD` are set.
+  """
+  @spec delete_user(User.t()) :: {:ok, User.t(), [UserToken.t()]} | {:error, Ecto.Changeset.t()}
+  def delete_user(%User{} = user) do
+    Repo.transact(fn ->
+      tokens = delete_all_user_session_tokens(user)
+
+      with {:ok, user} <- Repo.delete(user) do
+        {:ok, {user, tokens}}
+      end
+    end)
+    |> case do
+      {:ok, {user, tokens}} -> {:ok, user, tokens}
+      error -> error
+    end
+  end
+
+  @doc """
   Gets the user provisioned for an OIDC identity, or nil.
   """
   def get_user_by_oidc_identity(issuer, subject)

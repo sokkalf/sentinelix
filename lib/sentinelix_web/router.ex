@@ -68,8 +68,12 @@ defmodule SentinelixWeb.Router do
     # `@current_scope` assigned; pass it on to `<Layouts.app current_scope={@current_scope}>`.
     live_session :require_authenticated_user,
       on_mount: [{SentinelixWeb.UserAuth, :require_authenticated}] do
-      live "/", Live.Dashboard
-      live "/monitors/:id", Live.Monitor
+      live "/", DashboardLive
+      live "/monitors", MonitorLive.Index
+      live "/monitors/new", MonitorLive.Form, :new
+      live "/monitors/:id", MonitorLive.Show
+      live "/monitors/:id/edit", MonitorLive.Form, :edit
+      live "/settings/users", Settings.UsersLive
 
       live "/settings/notifications", Live.NotificationSettings, :index
       live "/settings/notifications/new", Live.NotificationSettings, :new
