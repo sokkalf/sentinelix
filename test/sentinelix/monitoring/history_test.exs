@@ -1,7 +1,5 @@
 defmodule Sentinelix.Monitoring.HistoryTest do
-  # Not async: creating monitors broadcasts on the global "monitors" topic,
-  # which other (async) tests subscribe to.
-  use Sentinelix.DataCase, async: false
+  use Sentinelix.DataCase, async: true
 
   import Sentinelix.MonitoringFixtures
 

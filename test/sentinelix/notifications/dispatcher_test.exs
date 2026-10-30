@@ -56,6 +56,14 @@ defmodule Sentinelix.Notifications.DispatcherTest do
 
   defp refute_notified, do: refute_receive({:notification_request, _}, 100)
 
+  # Waits until all sends started so far (including their retries) are done.
+  defp await_deliveries do
+    for pid <- Task.Supervisor.children(__MODULE__.Tasks) do
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 2_000
+    end
+  end
+
   defp webhook(attrs \\ %{}) do
     n = System.unique_integer([:positive])
     url = "https://hooks.example.com/#{n}"
@@ -209,7 +217,7 @@ defmodule Sentinelix.Notifications.DispatcherTest do
         status_changed(monitor, :up, :down)
         assert_receive :other_sent, 1_000
         # the failing channel gives up after its attempts
-        Process.sleep(100)
+        await_deliveries()
 
         # events for monitors that no longer exist
         {:ok, deleted} = Monitoring.delete_monitor(monitor_fixture())

@@ -69,6 +69,7 @@ defmodule SentinelixWeb.PushControllerTest do
 
   test "is rate limited per client IP", %{conn: conn, token: token} do
     {limit, period} = Application.fetch_env!(:sentinelix, Sentinelix.RateLimit)[:push]
+    await_rate_limit_window(:push)
     # Use up the client's budget.
     {:allow, ^limit} = Sentinelix.RateLimit.hit({:push, conn.remote_ip}, period, limit, limit)
 
