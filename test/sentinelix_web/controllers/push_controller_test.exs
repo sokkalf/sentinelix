@@ -67,6 +67,20 @@ defmodule SentinelixWeb.PushControllerTest do
     assert %{"ok" => false} = json_response(conn, 404)
   end
 
+  test "is rate limited per client IP", %{conn: conn, token: token} do
+    {limit, period} = Application.fetch_env!(:sentinelix, Sentinelix.RateLimit)[:push]
+    # Use up the client's budget.
+    {:allow, ^limit} = Sentinelix.RateLimit.hit({:push, conn.remote_ip}, period, limit, limit)
+
+    conn = get(conn, ~p"/api/push/#{token}")
+    assert json_response(conn, 429) == %{"ok" => false, "error" => "Rate limit exceeded"}
+    assert [_retry_after] = get_resp_header(conn, "retry-after")
+    refute_received {:check_result, _}
+
+    conn = get(build_conn() |> Map.put(:remote_ip, unique_ip()), ~p"/api/push/#{token}")
+    assert json_response(conn, 200)["ok"]
+  end
+
   test "disabled monitors are not found", %{conn: conn, monitor: monitor, token: token} do
     {:ok, _} = Monitoring.toggle_monitor(monitor)
     Engine.stop_worker(monitor)

@@ -171,6 +171,39 @@ if config_env() != :test do
 
     config :sentinelix, Sentinelix.Notifications, email_from: email_from
   end
+
+  # ## Rate limiting and reverse proxies
+  #
+  #   LOGIN_RATE_LIMIT   password login attempts per minute and client IP
+  #                      (default 10, 0 disables)
+  #   PUSH_RATE_LIMIT    push endpoint requests per minute and client IP
+  #                      (default 300, 0 disables)
+  #   TRUSTED_PROXIES    comma separated IPs/CIDR ranges of reverse proxies
+  #                      whose X-Forwarded-For header is trusted, e.g.
+  #                      "127.0.0.1,::1,172.16.0.0/12". Unset: the header is
+  #                      ignored and the peer address is the client.
+  rate_limit = fn name ->
+    if value = env.(name) do
+      case Integer.parse(value) do
+        {limit, ""} when limit >= 0 -> {limit, 60_000}
+        _ -> raise "#{name} must be a non-negative integer (per minute), got: #{inspect(value)}"
+      end
+    end
+  end
+
+  config :sentinelix,
+         Sentinelix.RateLimit,
+         reject_nil.(login: rate_limit.("LOGIN_RATE_LIMIT"), push: rate_limit.("PUSH_RATE_LIMIT"))
+
+  if trusted_proxies = env_list.("TRUSTED_PROXIES", [",", " "]) do
+    config :sentinelix, :trusted_proxies, trusted_proxies
+  end
+
+  # Time zone new maintenance windows start out in (IANA name, default
+  # Etc/UTC). The UI shows timestamps in the browser's time zone.
+  if default_timezone = env.("DEFAULT_TIMEZONE") do
+    config :sentinelix, :default_timezone, default_timezone
+  end
 end
 
 if config_env() == :prod do
@@ -183,12 +216,21 @@ if config_env() == :prod do
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
+  # ECTO_SSL: "true" connects over TLS and verifies the server certificate
+  # against the system CA store; "noverify" uses TLS without verification
+  # (self-signed certificates). Unset or "false": no TLS.
+  ecto_ssl =
+    case System.get_env("ECTO_SSL", "false") |> String.trim() |> String.downcase() do
+      value when value in ["", "false", "0", "no", "off"] -> false
+      value when value in ["true", "1", "yes", "on"] -> true
+      "noverify" -> [verify: :verify_none]
+      other -> raise "ECTO_SSL must be true, false or noverify, got: #{inspect(other)}"
+    end
+
   config :sentinelix, Sentinelix.Repo,
-    # ssl: true,
+    ssl: ecto_ssl,
     url: database_url,
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
-    # For machines with several cores, consider starting multiple pools of `pool_size`
-    # pool_count: 4,
     socket_options: maybe_ipv6
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
@@ -203,10 +245,31 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  # The public URL (used for OIDC redirect URIs and links in notifications)
+  # and the host browsers connect to (LiveView websockets only accept this
+  # origin host). PHX_SCHEME/PHX_URL_PORT default to https on 443; set
+  # PHX_SCHEME=http (port 80) or PHX_URL_PORT=4000 when not behind a TLS
+  # terminating proxy.
+  host =
+    System.get_env("PHX_HOST") ||
+      raise """
+      environment variable PHX_HOST is missing.
+      Set it to the host name Sentinelix is reached at, e.g. uptime.example.com
+      """
+
+  scheme = System.get_env("PHX_SCHEME", "https")
+
+  unless scheme in ["http", "https"] do
+    raise "PHX_SCHEME must be http or https, got: #{inspect(scheme)}"
+  end
+
+  url_port =
+    String.to_integer(
+      System.get_env("PHX_URL_PORT", if(scheme == "https", do: "443", else: "80"))
+    )
 
   config :sentinelix, SentinelixWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: host, port: url_port, scheme: scheme],
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
@@ -217,53 +280,62 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 
-  # ## SSL Support
+  # ## Email (SMTP)
   #
-  # To get SSL working, you will need to add the `https` key
-  # to your endpoint configuration:
+  #   SMTP_HOST      mail server; unset: no mail adapter, email
+  #                  notifications fail and a warning is logged on boot
+  #   SMTP_PORT      default 587 (465 with SMTP_TLS=ssl)
+  #   SMTP_USERNAME  / SMTP_PASSWORD  credentials (no auth when unset)
+  #   SMTP_TLS       starttls (default, required), if_available (STARTTLS
+  #                  when offered), ssl (implicit TLS) or none
   #
-  #     config :sentinelix, SentinelixWeb.Endpoint,
-  #       https: [
-  #         ...,
-  #         port: 443,
-  #         cipher_suite: :strong,
-  #         keyfile: System.get_env("SOME_APP_SSL_KEY_PATH"),
-  #         certfile: System.get_env("SOME_APP_SSL_CERT_PATH")
-  #       ]
-  #
-  # The `cipher_suite` is set to `:strong` to support only the
-  # latest and more secure SSL ciphers. This means old browsers
-  # and clients may not be supported. You can set it to
-  # `:compatible` for wider support.
-  #
-  # `:keyfile` and `:certfile` expect an absolute path to the key
-  # and cert in disk or a relative path inside priv, for example
-  # "priv/ssl/server.key". For all supported SSL configuration
-  # options, see https://plug.hexdocs.pm/Plug.SSL.html#configure/1
-  #
-  # We also recommend setting `force_ssl` in your config/prod.exs,
-  # ensuring no data is ever sent via http, always redirecting to https:
-  #
-  #     config :sentinelix, SentinelixWeb.Endpoint,
-  #       force_ssl: [hsts: true]
-  #
-  # Check `Plug.SSL` for all available options in `force_ssl`.
+  # Certificates are verified against the system CA store.
+  smtp_env = fn name ->
+    case System.get_env(name) do
+      nil -> nil
+      value -> if String.trim(value) == "", do: nil, else: String.trim(value)
+    end
+  end
 
-  # ## Configuring the mailer
-  #
-  # In production you need to configure the mailer to use a different adapter.
-  # Here is an example configuration for Mailgun:
-  #
-  #     config :sentinelix, Sentinelix.Mailer,
-  #       adapter: Swoosh.Adapters.Mailgun,
-  #       api_key: System.get_env("MAILGUN_API_KEY"),
-  #       domain: System.get_env("MAILGUN_DOMAIN")
-  #
-  # Most non-SMTP adapters require an API client. Swoosh supports Req, Hackney,
-  # and Finch out-of-the-box. This configuration is typically done at
-  # compile-time in your config/prod.exs:
-  #
-  #     config :swoosh, :api_client, Swoosh.ApiClient.Finch
-  #
-  # See https://swoosh.hexdocs.pm/Swoosh.html#module-installation for details.
+  if smtp_host = smtp_env.("SMTP_HOST") do
+    tls_mode = String.downcase(smtp_env.("SMTP_TLS") || "starttls")
+
+    unless tls_mode in ["starttls", "if_available", "ssl", "none"] do
+      raise "SMTP_TLS must be starttls, if_available, ssl or none, got: #{inspect(tls_mode)}"
+    end
+
+    verify_options = [
+      verify: :verify_peer,
+      cacerts: :public_key.cacerts_get(),
+      server_name_indication: String.to_charlist(smtp_host),
+      depth: 99,
+      customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
+    ]
+
+    username = smtp_env.("SMTP_USERNAME")
+    implicit_tls = tls_mode == "ssl"
+
+    starttls =
+      case tls_mode do
+        "starttls" -> :always
+        "if_available" -> :if_available
+        _ -> :never
+      end
+
+    config :sentinelix, Sentinelix.Mailer,
+      adapter: Swoosh.Adapters.SMTP,
+      relay: smtp_host,
+      port: String.to_integer(smtp_env.("SMTP_PORT") || if(implicit_tls, do: "465", else: "587")),
+      username: username,
+      password: System.get_env("SMTP_PASSWORD"),
+      auth: if(username, do: :always, else: :never),
+      ssl: implicit_tls,
+      sockopts: if(implicit_tls, do: verify_options, else: []),
+      tls: starttls,
+      tls_options: verify_options,
+      no_mx_lookups: true,
+      retries: 1
+  else
+    config :sentinelix, Sentinelix.Mailer, adapter: nil
+  end
 end

@@ -81,6 +81,37 @@ defmodule SentinelixWeb.SessionControllerTest do
       refute get_session(conn, :user_token)
     end
 
+    test "rate limits attempts per client IP", %{conn: conn, user: user} do
+      {limit, _period} = Application.fetch_env!(:sentinelix, Sentinelix.RateLimit)[:login]
+      wrong = %{"user" => %{"email" => user.email, "password" => "wrong"}}
+
+      for _ <- 1..limit do
+        assert build_conn()
+               |> Map.put(:remote_ip, conn.remote_ip)
+               |> post(~p"/login", wrong)
+               |> html_response(401)
+      end
+
+      # Even the right password is refused now.
+      conn =
+        post(conn, ~p"/login", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      assert html_response(conn, 429) =~ "Too many login attempts"
+      assert [retry_after] = get_resp_header(conn, "retry-after")
+      assert String.to_integer(retry_after) in 1..60
+      refute get_session(conn, :user_token)
+
+      # Other clients are not affected.
+      conn =
+        post(build_conn() |> Map.put(:remote_ip, unique_ip()), ~p"/login", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      assert redirected_to(conn) == ~p"/"
+    end
+
     test "rejects unknown users", %{conn: conn} do
       conn =
         post(conn, ~p"/login", %{

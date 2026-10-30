@@ -11,6 +11,16 @@ defmodule Sentinelix.MaintenanceTest do
 
   setup :reset_maintenance_cache
 
+  describe "default_timezone/1" do
+    test "uses a known time zone and falls back to UTC" do
+      assert Maintenance.default_timezone() == "Etc/UTC"
+      assert Maintenance.default_timezone("Europe/Oslo") == "Europe/Oslo"
+      assert Maintenance.default_timezone("Mars/Olympus_Mons") == "Etc/UTC"
+      assert Maintenance.default_timezone(nil) == "Etc/UTC"
+      assert Maintenance.new_window().timezone == "Etc/UTC"
+    end
+  end
+
   describe "CRUD" do
     test "create_window/1 attaches monitors" do
       a = monitor_fixture()

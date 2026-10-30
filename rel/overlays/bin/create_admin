@@ -1,0 +1,10 @@
+#!/bin/sh
+# Creates a local (break-glass) admin or resets its password:
+#
+#   ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='...' bin/create_admin
+#
+# See Sentinelix.Release.create_admin/1.
+set -eu
+
+cd -P -- "$(dirname -- "$0")"
+exec ./sentinelix eval Sentinelix.Release.create_admin

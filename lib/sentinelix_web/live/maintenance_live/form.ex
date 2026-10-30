@@ -198,7 +198,7 @@ defmodule SentinelixWeb.MaintenanceLive.Form do
   end
 
   defp apply_action(socket, :new, _params) do
-    window = %Window{monitors: []}
+    window = Maintenance.new_window()
 
     socket
     |> assign(page_title: "New maintenance window", window: window, monitor_ids: [])

@@ -6,8 +6,9 @@ defmodule SentinelixWeb.PushController do
 
   No authentication: the token identifies (and authorizes) the monitor. The
   lookup is a single indexed query, so the endpoint is cheap enough to be
-  put behind a rate limiter or hit frequently. Parameters can also be sent
-  as a form or JSON body with POST. See
+  hit frequently; requests are rate limited per client IP (`:push` bucket of
+  `Sentinelix.RateLimit`, `PUSH_RATE_LIMIT` in production). Parameters can
+  also be sent as a form or JSON body with POST. See
   `Sentinelix.Monitoring.receive_push/2`.
 
   Responses (JSON):
@@ -16,15 +17,34 @@ defmodule SentinelixWeb.PushController do
       monitor's resulting status (`up`, `down`, `pending` or `maintenance`)
     * `400` – invalid `status` parameter
     * `404` – unknown token or the monitor is disabled
+    * `429` – rate limit exceeded (with a `retry-after` header)
     * `503` – the monitoring engine isn't running the monitor
   """
 
   use SentinelixWeb, :controller
 
-  alias Sentinelix.Monitoring
+  alias Sentinelix.{Monitoring, RateLimit}
 
   def push(conn, %{"token" => token} = params) do
-    case Monitoring.receive_push(token, Map.delete(params, "token")) do
+    with :ok <- rate_limit(conn) do
+      receive_push(conn, token, Map.delete(params, "token"))
+    end
+  end
+
+  defp rate_limit(conn) do
+    case RateLimit.check(:push, conn.remote_ip) do
+      :ok ->
+        :ok
+
+      {:error, retry_after_ms} ->
+        conn
+        |> put_resp_header("retry-after", Integer.to_string(div(retry_after_ms + 999, 1000)))
+        |> error(:too_many_requests, "Rate limit exceeded")
+    end
+  end
+
+  defp receive_push(conn, token, params) do
+    case Monitoring.receive_push(token, params) do
       {:ok, result} ->
         json(conn, %{ok: true, status: result && result.status})
 

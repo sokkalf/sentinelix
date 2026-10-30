@@ -8,7 +8,8 @@ defmodule Sentinelix.Notifications.Providers.Email do
       config :sentinelix, Sentinelix.Notifications, email_from: {"Sentinelix", "alerts@example.com"}
 
   (`NOTIFICATIONS_EMAIL_FROM` in production, see config/runtime.exs). The
-  mailer adapter itself is configured on `Sentinelix.Mailer`.
+  mailer adapter itself is configured on `Sentinelix.Mailer` (SMTP in
+  production); sends fail with an error while none is configured.
   """
 
   use Sentinelix.Notifications.Provider
@@ -36,6 +37,12 @@ defmodule Sentinelix.Notifications.Providers.Email do
 
   @impl true
   def send(channel, event) do
+    if Sentinelix.Mailer.configured?(),
+      do: deliver(channel, event),
+      else: {:error, "no mail adapter is configured (set SMTP_HOST)"}
+  end
+
+  defp deliver(channel, event) do
     email =
       new()
       |> to(Provider.split_list(channel.config["to"]))

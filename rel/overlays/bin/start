@@ -1,0 +1,13 @@
+#!/bin/sh
+# Container entrypoint: runs pending migrations, then starts the server.
+# Set SKIP_MIGRATIONS=true to only start the server.
+set -eu
+
+cd -P -- "$(dirname -- "$0")"
+
+case "${SKIP_MIGRATIONS:-false}" in
+  true | 1 | yes) ;;
+  *) ./migrate ;;
+esac
+
+exec ./server
