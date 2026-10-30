@@ -19,29 +19,39 @@ defmodule SentinelixWeb.PostgresPasswordTest do
 
   @engine __MODULE__.Engine
 
-  setup do
-    level = Logger.level()
-    Logger.configure(level: :debug)
-    on_exit(fn -> Logger.configure(level: level) end)
+  setup :register_and_log_in_user
 
+  setup do
     start_supervised!(
       {Engine, name: @engine, manager: false, jitter: 0, checks: %{postgres: Checks.Postgres}}
     )
 
     handler = {__MODULE__, self()}
-    test_pid = self()
 
     :telemetry.attach_many(
       handler,
       [[:sentinelix, :check, :stop], [:sentinelix, :monitor, :status_changed]],
-      fn event, measurements, metadata, _ ->
-        send(test_pid, {:telemetry, event, measurements, metadata})
-      end,
-      nil
+      &__MODULE__.forward_telemetry/4,
+      self()
     )
 
     on_exit(fn -> :telemetry.detach(handler) end)
     :ok
+  end
+
+  def forward_telemetry(event, measurements, metadata, test_pid),
+    do: send(test_pid, {:telemetry, event, measurements, metadata})
+
+  # Logs everything (including Ecto's queries) while `fun` runs.
+  defp capture_debug_log(fun) do
+    level = Logger.level()
+    Logger.configure(level: :debug)
+
+    try do
+      capture_log([level: :debug], fun)
+    after
+      Logger.configure(level: level)
+    end
   end
 
   defp postgres_monitor(password, settings) do
@@ -81,14 +91,11 @@ defmodule SentinelixWeb.PostgresPasswordTest do
     {result, [stop_metadata, incident, changed, changed_metadata]}
   end
 
-  setup :register_and_log_in_user
-
   test "a failed check doesn't leak the password", %{conn: conn} do
     password = "pw-CANARY-#{System.unique_integer([:positive])}"
 
-    # Everything is logged at debug level, including Ecto's queries.
     log =
-      capture_log([level: :debug], fn ->
+      capture_debug_log(fn ->
         for settings <- [
               # Authentication fails with the server's message.
               %{},
