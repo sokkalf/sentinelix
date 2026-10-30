@@ -32,6 +32,7 @@ defmodule SentinelixWeb.ConnCase do
       import Plug.Conn
       import Phoenix.ConnTest
       import SentinelixWeb.ConnCase
+      import Sentinelix.RateLimitHelpers
     end
   end
 

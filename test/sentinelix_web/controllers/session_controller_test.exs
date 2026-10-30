@@ -83,6 +83,7 @@ defmodule SentinelixWeb.SessionControllerTest do
 
     test "rate limits attempts per client IP", %{conn: conn, user: user} do
       {limit, _period} = Application.fetch_env!(:sentinelix, Sentinelix.RateLimit)[:login]
+      await_rate_limit_window(:login)
       wrong = %{"user" => %{"email" => user.email, "password" => "wrong"}}
 
       for _ <- 1..limit do

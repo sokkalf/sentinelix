@@ -1,11 +1,14 @@
 defmodule Sentinelix.RateLimitTest do
   use ExUnit.Case, async: true
 
+  import Sentinelix.RateLimitHelpers
+
   alias Sentinelix.RateLimit
 
   test "allows requests up to the bucket's limit" do
     key = make_ref()
     {limit, _period} = Application.fetch_env!(:sentinelix, RateLimit)[:login]
+    await_rate_limit_window(:login)
 
     for _ <- 1..limit, do: assert(RateLimit.check(:login, key) == :ok)
 
