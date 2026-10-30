@@ -20,10 +20,16 @@ defmodule SentinelixWeb.Router do
 
   ## Public routes – NO authentication.
   #
-  # Reserved for later issues; keep everything here free of auth plugs:
-  #   * public status pages (#10), e.g. `live "/status/:slug", StatusPageLive`
-  #     (browser pipeline, in its own `live_session :public` without the
-  #     `:require_authenticated` hook)
+  # Keep everything here free of auth plugs and hooks.
+
+  scope "/", SentinelixWeb do
+    pipe_through :browser
+
+    # Public status pages (#10): only published pages, see StatusPageLive.Public.
+    live_session :public do
+      live "/status/:slug", StatusPageLive.Public
+    end
+  end
 
   # Push/heartbeat endpoint for push monitors (#6); the token is the credential.
   scope "/api", SentinelixWeb do
@@ -77,6 +83,11 @@ defmodule SentinelixWeb.Router do
       live "/maintenance/new", MaintenanceLive.Form, :new
       live "/maintenance/:id/edit", MaintenanceLive.Form, :edit
       live "/settings/users", Settings.UsersLive
+
+      live "/status-pages", StatusPageLive.Index, :index
+      live "/status-pages/new", StatusPageLive.Index, :new
+      live "/status-pages/:id", StatusPageLive.Show, :show
+      live "/status-pages/:id/edit", StatusPageLive.Show, :edit
 
       live "/settings/notifications", Live.NotificationSettings, :index
       live "/settings/notifications/new", Live.NotificationSettings, :new

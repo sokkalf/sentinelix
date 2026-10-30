@@ -124,6 +124,56 @@ defmodule SentinelixWeb.Layouts do
     """
   end
 
+  @doc """
+  Renders the minimal layout of public pages (status pages): no navigation
+  and no user information, just a title bar with the theme toggle, the
+  content and a footer.
+
+  ## Examples
+
+      <Layouts.public flash={@flash} title="Acme status">
+        <h1>Content</h1>
+        <:footer>Questions? support@example.com</:footer>
+      </Layouts.public>
+
+  """
+  attr :flash, :map, required: true, doc: "the map of flash messages"
+  attr :title, :string, required: true
+  slot :inner_block, required: true
+  slot :footer
+
+  def public(assigns) do
+    ~H"""
+    <div class="flex min-h-screen flex-col bg-base-200/40">
+      <header class="border-b border-base-300 bg-base-100">
+        <div class="mx-auto flex max-w-4xl items-center gap-4 px-4 py-4 sm:px-6">
+          <h1 id="page-title" class="min-w-0 flex-1 truncate text-xl font-semibold tracking-tight">
+            {@title}
+          </h1>
+          <.theme_toggle />
+        </div>
+      </header>
+
+      <main class="flex-1 px-4 py-8 sm:px-6">
+        <div class="mx-auto max-w-4xl space-y-8">
+          {render_slot(@inner_block)}
+        </div>
+      </main>
+
+      <footer class="border-t border-base-300 bg-base-100">
+        <div class="mx-auto max-w-4xl space-y-1 px-4 py-6 text-center text-sm text-base-content/60 sm:px-6">
+          <div :if={@footer != []} id="page-footer" class="whitespace-pre-line">
+            {render_slot(@footer)}
+          </div>
+          <div class="text-xs">Powered by Sentinelix</div>
+        </div>
+      </footer>
+    </div>
+
+    <.flash_group flash={@flash} />
+    """
+  end
+
   # The sidebar navigation: a list of `{section_title, items}`. Later
   # features add their entries here (status pages, maintenance windows,
   # notification settings, ...); only link to routes that exist.
@@ -133,6 +183,12 @@ defmodule SentinelixWeb.Layouts do
        [
          %{key: :dashboard, label: "Dashboard", icon: "hero-squares-2x2", path: ~p"/"},
          %{key: :monitors, label: "Monitors", icon: "hero-signal", path: ~p"/monitors"},
+         %{
+           key: :status_pages,
+           label: "Status pages",
+           icon: "hero-globe-alt",
+           path: ~p"/status-pages"
+         },
          %{
            key: :maintenance,
            label: "Maintenance",

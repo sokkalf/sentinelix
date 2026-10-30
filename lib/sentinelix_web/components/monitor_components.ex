@@ -267,6 +267,49 @@ defmodule SentinelixWeb.MonitorComponents do
   end
 
   @doc """
+  A daily uptime bar: one bar per day (oldest first, as returned by
+  `Sentinelix.Stats.daily_uptime/3`), colored by the day's uptime. Older
+  days are cut off on narrow screens.
+  """
+  attr :id, :string, required: true
+  attr :days, :list, required: true, doc: "`%{date, uptime, maintenance}` maps, oldest first"
+  attr :class, :any, default: nil
+
+  def daily_uptime_bar(assigns) do
+    assigns = assign(assigns, :bars, Enum.reverse(assigns.days))
+
+    ~H"""
+    <div
+      id={@id}
+      class={[
+        "flex h-8 flex-row-reverse items-stretch justify-start gap-[2px] overflow-hidden",
+        @class
+      ]}
+      aria-label="Daily uptime"
+    >
+      <span
+        :for={day <- @bars}
+        class={["w-1.5 shrink-0 rounded-sm sm:w-auto sm:flex-1", day_class(day)]}
+        title={day_title(day)}
+        data-date={Date.to_iso8601(day.date)}
+      />
+    </div>
+    """
+  end
+
+  defp day_class(%{uptime: nil, maintenance: n}) when n > 0, do: "bg-info"
+  defp day_class(%{uptime: nil}), do: "bg-base-content/10"
+  defp day_class(%{uptime: uptime}) when uptime >= 99, do: "bg-success"
+  defp day_class(%{uptime: uptime}) when uptime >= 95, do: "bg-warning"
+  defp day_class(_day), do: "bg-error"
+
+  defp day_title(%{date: date, uptime: nil, maintenance: n}) when n > 0,
+    do: "#{date} · Maintenance"
+
+  defp day_title(%{date: date, uptime: nil}), do: "#{date} · No data"
+  defp day_title(%{date: date, uptime: uptime}), do: "#{date} · #{format_uptime(uptime)} uptime"
+
+  @doc """
   A stat tile with a title, a value and an optional description.
   """
   attr :title, :string, required: true
