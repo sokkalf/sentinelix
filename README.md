@@ -136,6 +136,25 @@ unprivileged ICMP sockets, which need the group of the process (`nobody` is
 `0 2147483647` by default, on Kubernetes set the sysctl in the pod's
 `securityContext` or keep `NET_RAW`.
 
+### Prebuilt images
+
+Pushing a `v*` tag makes CI ([`.forgejo/workflows/docker.yml`](.forgejo/workflows/docker.yml))
+build the image with Buildah and push it to the Forgejo container registry as
+the tag and as `latest`:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+docker pull git.helsinki.internal.tynn.is/sokkalf/sentinelix:latest
+```
+
+To run it with the compose file, set
+`SENTINELIX_IMAGE=git.helsinki.internal.tynn.is/sokkalf/sentinelix:latest` in
+`.env` and run `docker compose pull && docker compose up -d --no-build`.
+Pushing needs a `PUSH_TOKEN` repository secret (an access token with
+`write:package` scope). Pull requests and pushes to master that touch the
+Dockerfile, `mix.exs`/`mix.lock`, `config/` or `rel/` only build the image, to
+check that it still builds.
+
 ### Release without Docker
 
 ```sh

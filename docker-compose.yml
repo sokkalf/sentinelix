@@ -8,7 +8,9 @@
 services:
   app:
     build: .
-    image: sentinelix:latest
+    # Set SENTINELIX_IMAGE to a registry image (see README) to pull instead of
+    # building locally: docker compose pull && docker compose up -d --no-build
+    image: ${SENTINELIX_IMAGE:-sentinelix:latest}
     restart: unless-stopped
     depends_on:
       db:
