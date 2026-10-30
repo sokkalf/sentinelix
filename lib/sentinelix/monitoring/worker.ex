@@ -70,7 +70,8 @@ defmodule Sentinelix.Monitoring.Worker do
   `active?(monitor, now)` is consulted after each check. While it returns
   `true` the result is recorded as `:maintenance`, the status, retries and
   incidents are left untouched and no events are broadcast; normal
-  evaluation resumes with the next check after the window.
+  evaluation resumes with the next check after the window. The application
+  configures `Sentinelix.Maintenance` (maintenance windows) as that module.
 
   ## Telemetry
 
