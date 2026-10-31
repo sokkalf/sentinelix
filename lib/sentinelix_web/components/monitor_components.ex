@@ -1,12 +1,12 @@
 defmodule SentinelixWeb.MonitorComponents do
   @moduledoc """
-  Components and formatting helpers for monitors: status badges, heartbeat
-  bars, uptime and response time values.
+  Components and formatting helpers for monitors: status and label badges,
+  heartbeat bars, uptime and response time values.
   """
 
   use SentinelixWeb, :html
 
-  alias Sentinelix.Monitoring.{CheckResult, Monitor}
+  alias Sentinelix.Monitoring.{CheckResult, Labels, Monitor}
 
   @type display_status :: :up | :down | :pending | :maintenance | :paused
 
@@ -185,6 +185,63 @@ defmodule SentinelixWeb.MonitorComponents do
       <.icon name="hero-wrench-screwdriver-micro" class="size-3" /> Maintenance
     </span>
     """
+  end
+
+  @doc """
+  A monitor's labels as `key=value` badges (just `key` for a label without
+  a value), sorted by key. Renders nothing without labels. With `patch`, a
+  function of the `{key, value}` label returning a path, each badge links
+  there (e.g. to filter by the label).
+  """
+  attr :labels, :map, required: true
+  attr :class, :any, default: "badge-xs"
+  attr :patch, :any, default: nil, doc: "fn {key, value} -> path end"
+
+  def label_badges(assigns) do
+    ~H"""
+    <%= for {key, value} = label <- Labels.to_list(@labels) do %>
+      <.link
+        :if={@patch}
+        patch={@patch.(label)}
+        class={["badge badge-ghost gap-0 font-mono hover:badge-neutral", @class]}
+        title={"Filter by #{Labels.format(label)}"}
+        data-label={Labels.format(label)}
+      >
+        <.label_text key={key} value={value} />
+      </.link>
+      <span
+        :if={!@patch}
+        class={["badge badge-ghost gap-0 font-mono", @class]}
+        data-label={Labels.format(label)}
+      >
+        <.label_text key={key} value={value} />
+      </span>
+    <% end %>
+    """
+  end
+
+  attr :key, :string, required: true
+  attr :value, :string, required: true
+
+  defp label_text(assigns) do
+    ~H"""
+    <span class={@value != "" && "opacity-70"}>{@key}</span><span :if={@value != ""}>={@value}</span>
+    """
+  end
+
+  @doc """
+  Whether a monitor matches a free-text search (case-insensitive) on its
+  name, target or labels (written as `key=value`).
+  """
+  @spec matches_search?(Monitor.t(), String.t()) :: boolean()
+  def matches_search?(_monitor, ""), do: true
+
+  def matches_search?(monitor, query) do
+    query = String.downcase(query)
+
+    [monitor.name, target(monitor) | Labels.format(monitor.labels)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.any?(&String.contains?(String.downcase(&1), query))
   end
 
   @doc "A human readable status label."

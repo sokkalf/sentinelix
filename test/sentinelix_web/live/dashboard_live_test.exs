@@ -29,7 +29,7 @@ defmodule SentinelixWeb.DashboardLiveTest do
     end
 
     test "lists monitors with status, heartbeats and uptime", %{conn: conn} do
-      monitor = monitor_fixture(:http, %{name: "Homepage", tags: ["prod"]})
+      monitor = monitor_fixture(:http, %{name: "Homepage", labels: %{"env" => "prod"}})
       paused = monitor_fixture(:http, %{name: "Paused one", enabled: false})
       empty = monitor_fixture(:tcp, %{name: "No results"})
 
@@ -43,7 +43,7 @@ defmodule SentinelixWeb.DashboardLiveTest do
       assert row =~ "Down"
       assert row =~ "99 ms"
       assert row =~ "50.00%"
-      assert row =~ "prod"
+      assert has_element?(view, "#monitor-#{monitor.id} [data-label='env=prod']")
       assert has_element?(view, "#heartbeats-#{monitor.id} [data-status=up]")
       assert has_element?(view, "#heartbeats-#{monitor.id} [data-status=down]")
 
@@ -83,9 +83,9 @@ defmodule SentinelixWeb.DashboardLiveTest do
       refute has_element?(view, "#monitor-#{other.id}")
     end
 
-    test "filters by search, status and tag", %{conn: conn} do
-      web = monitor_fixture(:http, %{name: "Web", tags: ["prod"]})
-      db = monitor_fixture(:tcp, %{name: "Database", tags: ["internal"]})
+    test "filters by search, status and label", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod", "legacy" => ""}})
+      db = monitor_fixture(:tcp, %{name: "Database", labels: %{"env" => "internal"}})
       check_result_fixture(db, %{status: :down})
 
       {:ok, view, _html} = live(conn, ~p"/")
@@ -104,7 +104,32 @@ defmodule SentinelixWeb.DashboardLiveTest do
       refute has_element?(view, "#monitor-#{db.id}")
       assert has_element?(view, "#monitors-empty")
 
-      {:ok, view, _html} = live(conn, ~p"/?tag=prod")
+      # Search matches labels written as key=value.
+      {:ok, view, _html} = live(conn, ~p"/?q=env%3Dintern")
+      refute has_element?(view, "#monitor-#{web.id}")
+      assert has_element?(view, "#monitor-#{db.id}")
+
+      {:ok, view, _html} = live(conn, ~p"/?label=env=prod")
+      assert has_element?(view, "#monitor-#{web.id}")
+      refute has_element?(view, "#monitor-#{db.id}")
+
+      # A label without a value matches any value of its key.
+      {:ok, view, _html} = live(conn, ~p"/?label=env")
+      assert has_element?(view, "#monitor-#{web.id}")
+      assert has_element?(view, "#monitor-#{db.id}")
+
+      view |> form("#filter-form", %{label: "env=internal"}) |> render_change()
+      assert_patch(view, ~p"/?#{[label: "env=internal"]}")
+      refute has_element?(view, "#monitor-#{web.id}")
+
+      # Clicking a label badge filters by it.
+      {:ok, view, _html} = live(conn, ~p"/")
+      view |> element("#monitor-#{web.id} a[data-label=legacy]") |> render_click()
+      assert_patch(view, ~p"/?label=legacy")
+      refute has_element?(view, "#monitor-#{db.id}")
+
+      # Links of the tag filter labels replaced keep working.
+      {:ok, view, _html} = live(conn, ~p"/?tag=legacy")
       assert has_element?(view, "#monitor-#{web.id}")
       refute has_element?(view, "#monitor-#{db.id}")
 

@@ -37,7 +37,7 @@ defmodule SentinelixWeb.MonitorLive.Index do
               type="search"
               name="q"
               value={@q}
-              placeholder="Search by name, target or tag"
+              placeholder="Search by name, target or label"
               phx-debounce="200"
               autocomplete="off"
             />
@@ -71,11 +71,11 @@ defmodule SentinelixWeb.MonitorLive.Index do
                     {row.monitor.name}
                   </.link>
                   <div
-                    :if={row.monitor.tags != [] or row.maintenance != []}
+                    :if={row.monitor.labels != %{} or row.maintenance != []}
                     class="mt-1 flex flex-wrap gap-1"
                   >
                     <.maintenance_badge id={"maintenance-#{row.id}"} windows={row.maintenance} />
-                    <span :for={tag <- row.monitor.tags} class="badge badge-ghost badge-xs">{tag}</span>
+                    <.label_badges labels={row.monitor.labels} />
                   </div>
                 </td>
                 <td class="hidden whitespace-nowrap md:table-cell">{type_label(row.monitor.type)}</td>
@@ -203,7 +203,7 @@ defmodule SentinelixWeb.MonitorLive.Index do
 
     rows =
       monitors
-      |> Enum.filter(&matches?(&1, socket.assigns.q))
+      |> Enum.filter(&matches_search?(&1, socket.assigns.q))
       |> Enum.map(&row(&1, display_status(&1, latest[&1.id]), Map.get(maintenance, &1.id, [])))
 
     socket
@@ -212,7 +212,7 @@ defmodule SentinelixWeb.MonitorLive.Index do
   end
 
   defp upsert(socket, monitor, status) do
-    if matches?(monitor, socket.assigns.q) do
+    if matches_search?(monitor, socket.assigns.q) do
       stream_insert(socket, :monitors, row(monitor, status))
     else
       stream_delete_by_dom_id(socket, :monitors, "monitor-#{monitor.id}")
@@ -228,16 +228,6 @@ defmodule SentinelixWeb.MonitorLive.Index do
 
   defp current_status(monitor),
     do: display_status(monitor, Monitoring.get_latest_result(monitor))
-
-  defp matches?(_monitor, ""), do: true
-
-  defp matches?(monitor, q) do
-    q = String.downcase(q)
-
-    [monitor.name, target(monitor) | monitor.tags]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.any?(&String.contains?(String.downcase(&1), q))
-  end
 
   defp get_monitor(id) do
     case Integer.parse(to_string(id)) do

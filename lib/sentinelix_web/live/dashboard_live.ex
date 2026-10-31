@@ -14,7 +14,7 @@ defmodule SentinelixWeb.DashboardLive do
   import SentinelixWeb.MonitorComponents
 
   alias Sentinelix.{Maintenance, Monitoring}
-  alias Sentinelix.Monitoring.History
+  alias Sentinelix.Monitoring.{History, Labels}
   alias Sentinelix.Stats
 
   @heartbeats 50
@@ -97,15 +97,15 @@ defmodule SentinelixWeb.DashboardLive do
             )}
           </select>
           <select
-            :if={@tags != []}
-            name="tag"
-            class="select select-sm w-full sm:w-40"
-            aria-label="Tag"
+            :if={@labels != []}
+            name="label"
+            class="select select-sm w-full font-mono sm:w-48"
+            aria-label="Label"
           >
-            {Phoenix.HTML.Form.options_for_select([{"All tags", ""} | @tags], @filters.tag)}
+            {Phoenix.HTML.Form.options_for_select([{"All labels", ""} | @labels], @filters.label)}
           </select>
           <.link
-            :if={@filters != %{q: "", status: nil, tag: nil}}
+            :if={@filters != %{q: "", status: nil, label: nil}}
             patch={~p"/"}
             class="btn btn-ghost btn-sm"
             id="clear-filters"
@@ -148,7 +148,10 @@ defmodule SentinelixWeb.DashboardLive do
                   <span :if={target(row.monitor)} class="max-w-xs truncate">
                     · {target(row.monitor)}
                   </span>
-                  <span :for={tag <- row.monitor.tags} class="badge badge-ghost badge-xs">{tag}</span>
+                  <.label_badges
+                    labels={row.monitor.labels}
+                    patch={&filter_path(@filters, label: Labels.format(&1))}
+                  />
                   <span
                     :if={row.warning}
                     class="badge badge-warning badge-xs gap-1"
@@ -205,7 +208,7 @@ defmodule SentinelixWeb.DashboardLive do
     socket =
       socket
       |> assign(page_title: "Dashboard", statuses: @statuses, index: index)
-      |> assign(filters: %{q: "", status: nil, tag: nil})
+      |> assign(filters: %{q: "", status: nil, label: nil})
       |> stream_configure(:monitors, dom_id: &"monitor-#{&1.id}")
       |> assign_summary()
 
@@ -217,7 +220,8 @@ defmodule SentinelixWeb.DashboardLive do
     filters = %{
       q: params |> Map.get("q", "") |> String.trim(),
       status: parse_status(params["status"]),
-      tag: blank_to_nil(params["tag"])
+      # `tag` is the parameter of the tag filter that labels replaced.
+      label: parse_label(params["label"] || params["tag"])
     }
 
     socket =
@@ -233,7 +237,7 @@ defmodule SentinelixWeb.DashboardLive do
     filters = %{
       q: String.trim(params["q"] || ""),
       status: parse_status(params["status"]),
-      tag: blank_to_nil(params["tag"])
+      label: parse_label(params["label"])
     }
 
     {:noreply, push_patch(socket, to: filter_path(filters, []))}
@@ -331,19 +335,23 @@ defmodule SentinelixWeb.DashboardLive do
     entries = Map.values(socket.assigns.index)
     counts = Map.merge(Map.new(@statuses, &{&1, 0}), Enum.frequencies_by(entries, & &1.status))
 
-    tags =
+    labels =
       entries
-      |> Enum.flat_map(& &1.monitor.tags)
+      |> Enum.flat_map(&Labels.to_list(&1.monitor.labels))
       |> Enum.uniq()
-      |> Enum.sort_by(&String.downcase/1)
+      |> Enum.sort()
+      |> Enum.map(&Labels.format/1)
 
-    assign(socket, counts: counts, tags: tags, total: length(entries))
+    assign(socket, counts: counts, labels: labels, total: length(entries))
   end
 
   defp visible_entries(socket) do
+    filters = socket.assigns.filters
+    label = filters.label && elem(Labels.parse(filters.label), 1)
+
     socket.assigns.index
     |> Map.values()
-    |> Enum.filter(&matches?(&1, socket.assigns.filters))
+    |> Enum.filter(&matches?(&1, filters, label))
     |> Enum.sort_by(&{String.downcase(&1.monitor.name), &1.monitor.id})
   end
 
@@ -392,30 +400,27 @@ defmodule SentinelixWeb.DashboardLive do
 
   ## Filtering
 
-  defp matches?(entry, filters) do
+  defp matches?(entry, filters, label) do
     (filters.status == nil or entry.status == filters.status) and
-      (filters.tag == nil or filters.tag in entry.monitor.tags) and
-      matches_query?(entry.monitor, filters.q)
+      (label == nil or Labels.has?(entry.monitor.labels, label)) and
+      matches_search?(entry.monitor, filters.q)
   end
 
-  defp matches_query?(_monitor, ""), do: true
-
-  defp matches_query?(monitor, q) do
-    q = String.downcase(q)
-
-    [monitor.name, target(monitor) | monitor.tags]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.any?(&String.contains?(String.downcase(&1), q))
+  # The label filter, normalized ("Env = prod" -> "env=prod"), or nil.
+  defp parse_label(value) when is_binary(value) and value != "" do
+    case Labels.parse(value) do
+      {:ok, label} -> Labels.format(label)
+      {:error, _message} -> nil
+    end
   end
+
+  defp parse_label(_value), do: nil
 
   defp parse_status(status) when is_binary(status) do
     Enum.find(@statuses, &(Atom.to_string(&1) == status))
   end
 
   defp parse_status(_status), do: nil
-
-  defp blank_to_nil(value) when value in [nil, ""], do: nil
-  defp blank_to_nil(value), do: value
 
   defp toggle(current, status) when current == status, do: nil
   defp toggle(_current, status), do: status
