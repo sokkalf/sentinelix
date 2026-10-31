@@ -4,18 +4,36 @@ defmodule SentinelixWeb.DashboardLive do
   status, a heartbeat bar of the latest checks, the 24h uptime and the
   latest response time. Updates in real time.
 
-  The monitor rows are a stream; the LiveView only keeps a small index
-  (monitor + status per id) for the counters and filtering. A check result
-  re-renders just the affected row.
+  The LiveView keeps a small index (monitor, status and 24h check counts
+  per id) for the counters, filtering and grouping. The rows are streams
+  in `SentinelixWeb.DashboardLive.Rows` components, one per group, which
+  only re-render the rows that changed: a check result re-renders one row
+  and the headers of its groups.
 
-  ## Filtering
+  ## The view
 
-  The monitors are filtered by a selector (`Sentinelix.Monitoring.Selector`)
-  kept in the URL (`?selector=env=prod,status=down`) and evaluated on the
-  index, with the status shown, so rows come and go as statuses change.
-  The status counters toggle a `status=` term, label badges add a term.
-  Links from before selectors keep working: `?q=` becomes `name~`, and
-  `?status=`, `?label=` and `?tag=` become terms too.
+  What is shown is a `Sentinelix.Monitoring.View` kept in the URL
+  (`?selector=env=prod&group=service,site&sort=name`):
+
+    * The **selector** (`Sentinelix.Monitoring.Selector`) is evaluated on
+      the index, with the status shown, so rows come and go as statuses
+      change. The status counters toggle a `status=` term, label badges add
+      a term. Links from before selectors keep working, see the view.
+    * **Group by** one label key or two (nested), automatic ones included,
+      with `Sentinelix.Monitoring.Grouping`. Each group has a header with
+      its worst status, counts and 24h uptime.
+    * **Sort** orders the groups: problems first (default) or by name.
+
+  ## Expanded groups
+
+  Groups with problems (down, unreachable or pending) are expanded, the
+  others collapsed; a collapsed group renders no rows. Expanding or
+  collapsing a group overrides that until the group's problem state
+  changes (a group collapsed while red expands again when it turns red
+  after recovering). The overrides are kept in the browser's
+  `sessionStorage` (pushed with the `dashboard:groups` event) and sent
+  back as the `dashboard_groups` connect parameter, so they survive
+  reloads and reconnects for the session.
   """
 
   use SentinelixWeb, :live_view
@@ -23,13 +41,13 @@ defmodule SentinelixWeb.DashboardLive do
   import SentinelixWeb.MonitorComponents
   import SentinelixWeb.SelectorComponents
 
-  alias Sentinelix.{Maintenance, Monitoring}
-  alias Sentinelix.Monitoring.{History, Labels, Selector}
-  alias Sentinelix.Stats
+  alias Sentinelix.{Maintenance, Monitoring, Stats}
+  alias Sentinelix.Monitoring.{Grouping, Selector, View}
+  alias SentinelixWeb.DashboardLive.Rows
 
-  @heartbeats 50
   @uptime_window {24, :hour}
   @statuses ~w(up down pending unreachable maintenance paused)a
+  @max_overrides 500
 
   @impl true
   def render(assigns) do
@@ -49,10 +67,10 @@ defmodule SentinelixWeb.DashboardLive do
         <.link
           :for={status <- @statuses}
           id={"counter-#{status}"}
-          patch={filter_path(toggle_status(@selector, status))}
+          patch={view_path(%{@view | selector: toggle_status(@view.selector, status)})}
           class={[
             "rounded-box border bg-base-100 p-4 transition hover:border-base-content/30",
-            if(status_selected?(@selector, status),
+            if(status_selected?(@view.selector, status),
               do: "border-base-content/40 ring-1 ring-base-content/20",
               else: "border-base-300"
             )
@@ -88,18 +106,43 @@ defmodule SentinelixWeb.DashboardLive do
           id="filter-form"
           phx-change="filter"
           phx-submit="filter"
-          class="flex items-start gap-2 border-b border-base-300 p-3"
+          class="flex flex-wrap items-start gap-2 border-b border-base-300 p-3"
         >
           <.selector_input
             id="selector"
             value={@selector_text}
             error={@selector_error}
             suggestions={@suggestions}
-            class="sm:max-w-xl"
+            class="min-w-64 flex-1 sm:max-w-xl"
           />
+          <.group_by_select
+            id="group-by-0"
+            label="Group by"
+            empty="No grouping"
+            value={Enum.at(@view.group_by, 0)}
+            keys={@group_keys}
+          />
+          <.group_by_select
+            :if={View.grouped?(@view)}
+            id="group-by-1"
+            label="then by"
+            empty="No nesting"
+            value={Enum.at(@view.group_by, 1)}
+            keys={@group_keys -- Enum.take(@view.group_by, 1)}
+          />
+          <select
+            :if={View.grouped?(@view)}
+            id="sort"
+            name="sort"
+            aria-label="Sort groups"
+            class="select select-sm w-auto"
+          >
+            <option value="problems" selected={@view.sort == :problems}>Problems first</option>
+            <option value="name" selected={@view.sort == :name}>By name</option>
+          </select>
           <.link
             :if={@selector_text != ""}
-            patch={~p"/"}
+            patch={view_path(%{@view | selector: %Selector{}})}
             class="btn btn-ghost btn-sm"
             id="clear-filters"
           >
@@ -107,75 +150,182 @@ defmodule SentinelixWeb.DashboardLive do
           </.link>
         </form>
 
-        <div id="monitors" phx-update="stream" class="divide-y divide-base-300">
-          <div
-            id="monitors-empty"
-            class="hidden px-6 py-10 text-center text-sm text-base-content/60 only:block"
+        <div
+          :if={View.grouped?(@view) and @groups != []}
+          class="flex items-center justify-end gap-1 border-b border-base-300 px-3 py-1"
+        >
+          <button type="button" id="expand-all" phx-click="expand_all" class="btn btn-ghost btn-xs">
+            Expand all
+          </button>
+          <button
+            type="button"
+            id="collapse-all"
+            phx-click="collapse_all"
+            class="btn btn-ghost btn-xs"
           >
-            No monitors match your filters.
-          </div>
-          <div
-            :for={{dom_id, row} <- @streams.monitors}
-            id={dom_id}
-            class="flex flex-col gap-3 px-4 py-3 transition hover:bg-base-200/50 md:flex-row md:items-center"
-          >
-            <div class="flex min-w-0 flex-1 items-center gap-3">
-              <span
-                class={[
-                  "badge badge-sm w-16 shrink-0 justify-center font-semibold tabular-nums",
-                  uptime_class(row)
-                ]}
-                title="Uptime (24h)"
-              >
-                {format_uptime(row.uptime)}
-              </span>
-              <div class="min-w-0">
-                <.link
-                  navigate={~p"/monitors/#{row.monitor.id}"}
-                  class="block truncate font-medium hover:underline"
-                >
-                  {row.monitor.name}
-                </.link>
-                <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-base-content/60">
-                  <span>{type_label(row.monitor.type)}</span>
-                  <span :if={target(row.monitor)} class="max-w-xs truncate">
-                    · {target(row.monitor)}
-                  </span>
-                  <.label_badges
-                    labels={row.monitor.labels}
-                    patch={
-                      &filter_path(Selector.add(@selector || %Selector{}, Selector.label_term(&1)))
-                    }
-                  />
-                  <span
-                    :if={row.warning}
-                    class="badge badge-warning badge-xs gap-1"
-                    title={row.latest && row.latest.message}
-                  >
-                    <.icon name="hero-exclamation-triangle-micro" class="size-3" /> Warning
-                  </span>
-                  <.maintenance_badge id={"maintenance-#{row.id}"} windows={row.maintenance} />
-                </div>
-              </div>
-            </div>
-            <div class="flex items-center gap-3 md:w-[30rem]">
-              <.heartbeat_bar
-                id={"heartbeats-#{row.id}"}
-                results={row.results}
-                slots={heartbeats()}
-                class="min-w-0 flex-1"
-              />
-              <div class="flex w-24 shrink-0 flex-col items-end gap-1">
-                <.status_badge status={row.status} />
-                <span class="text-xs tabular-nums text-base-content/60">
-                  {format_ms(row.latest && row.latest.response_time_ms)}
-                </span>
-              </div>
-            </div>
-          </div>
+            Collapse all
+          </button>
         </div>
+
+        <div
+          :if={@groups == []}
+          id="monitors-empty"
+          class="px-6 py-10 text-center text-sm text-base-content/60"
+        >
+          No monitors match your filters.
+        </div>
+
+        <div :if={View.grouped?(@view)} id="groups" class="divide-y divide-base-300">
+          <.group_section
+            :for={group <- @groups}
+            :key={group.id}
+            group={group}
+            overrides={@overrides}
+            view={@view}
+          />
+        </div>
+
+        <.live_component
+          :for={group <- @groups}
+          :if={not View.grouped?(@view)}
+          module={Rows}
+          id="rows"
+          dom_id="monitors"
+          entries={group.entries}
+          view={@view}
+        />
       </div>
     </Layouts.app>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :empty, :string, required: true
+  attr :value, :string, default: nil
+  attr :keys, :list, required: true
+
+  defp group_by_select(assigns) do
+    ~H"""
+    <select id={@id} name="group[]" aria-label={@label} class="select select-sm w-auto">
+      <option value="">{@empty}</option>
+      <option :for={key <- @keys} value={key} selected={key == @value}>
+        {@label} {key}
+      </option>
+    </select>
+    """
+  end
+
+  attr :group, Grouping.Group, required: true
+  attr :overrides, :map, required: true
+  attr :view, View, required: true
+  attr :level, :integer, default: 0
+
+  defp group_section(assigns) do
+    assigns =
+      assign(assigns,
+        open: expanded?(assigns.overrides, assigns.group),
+        dom_id: group_dom_id(assigns.group)
+      )
+
+    ~H"""
+    <section id={@dom_id} data-group={@group.id} data-open={to_string(@open)}>
+      <.group_header group={@group} open={@open} level={@level} dom_id={@dom_id} />
+      <div :if={@open} id={@dom_id <> "-body"} class="border-t border-base-300">
+        <div :if={@group.groups != []} class="divide-y divide-base-300">
+          <.group_section
+            :for={child <- @group.groups}
+            :key={child.id}
+            group={child}
+            overrides={@overrides}
+            view={@view}
+            level={@level + 1}
+          />
+        </div>
+        <.live_component
+          :if={@group.groups == []}
+          module={Rows}
+          id={@dom_id <> "-rows"}
+          dom_id={@dom_id <> "-rows"}
+          entries={@group.entries}
+          view={@view}
+        />
+      </div>
+    </section>
+    """
+  end
+
+  attr :group, Grouping.Group, required: true
+  attr :open, :boolean, required: true
+  attr :level, :integer, required: true
+  attr :dom_id, :string, required: true
+
+  defp group_header(assigns) do
+    assigns =
+      assign(assigns,
+        others: Enum.filter(Grouping.severity(), &(&1 != :up and assigns.group.counts[&1] > 0))
+      )
+
+    ~H"""
+    <div class={[
+      "flex flex-wrap items-center gap-x-3 gap-y-1 border-l-4 py-2 pr-4",
+      if(@level == 0, do: "bg-base-200/40 pl-3", else: "pl-8"),
+      if(@group.problems, do: "border-error", else: "border-transparent")
+    ]}>
+      <button
+        type="button"
+        phx-click="toggle_group"
+        phx-value-group={@group.id}
+        aria-expanded={to_string(@open)}
+        aria-controls={@dom_id <> "-body"}
+        class="flex min-w-0 flex-1 items-center gap-2 text-left hover:underline"
+      >
+        <.icon
+          name="hero-chevron-right-mini"
+          class={["size-4 shrink-0 transition-transform", @open && "rotate-90"]}
+        />
+        <span class="truncate font-mono text-sm font-medium">
+          <.group_name group={@group} />
+        </span>
+      </button>
+      <.status_badge status={@group.worst} data-role="worst" />
+      <span class="text-sm tabular-nums" data-role="up">
+        {@group.counts.up}/{@group.total} up
+      </span>
+      <span
+        :for={status <- @others}
+        class={["text-xs font-medium tabular-nums", status_text_class(status)]}
+        data-role={status}
+      >
+        {@group.counts[status]} {String.downcase(status_label(status))}
+      </span>
+      <span
+        class={[
+          "badge badge-sm w-16 justify-center font-semibold tabular-nums",
+          uptime_class(@group.uptime)
+        ]}
+        title="Uptime (24h)"
+        data-role="uptime"
+      >
+        {format_uptime(@group.uptime)}
+      </span>
+    </div>
+    """
+  end
+
+  attr :group, Grouping.Group, required: true
+
+  defp group_name(%{group: %{value: nil}} = assigns) do
+    ~H"""
+    <span class="opacity-60">{@group.key}:</span> <span class="italic">(none)</span>
+    """
+  end
+
+  defp group_name(%{group: %{value: ""}} = assigns), do: ~H"{@group.key}"
+
+  defp group_name(assigns) do
+    ~H"""
+    <span class="opacity-60">{@group.key}=</span>{@group.value}
     """
   end
 
@@ -189,13 +339,20 @@ defmodule SentinelixWeb.DashboardLive do
       Maintenance.subscribe()
     end
 
+    ids = Enum.map(monitors, & &1.id)
     latest = Monitoring.latest_result_per_monitor()
-    maintenance = Maintenance.active_windows_for(Enum.map(monitors, & &1.id))
+    maintenance = Maintenance.active_windows_for(ids)
+    checks = Stats.summaries(ids, @uptime_window)
 
     index =
       Map.new(monitors, fn monitor ->
         entry =
-          index_entry(monitor, Map.get(latest, monitor.id), Map.get(maintenance, monitor.id, []))
+          index_entry(
+            monitor,
+            Map.get(latest, monitor.id),
+            Map.get(maintenance, monitor.id, []),
+            checks |> Map.get(monitor.id) |> check_counts()
+          )
 
         {monitor.id, entry}
       end)
@@ -203,8 +360,8 @@ defmodule SentinelixWeb.DashboardLive do
     socket =
       socket
       |> assign(page_title: "Dashboard", statuses: @statuses, index: index)
-      |> assign(selector: %Selector{}, selector_text: "", selector_error: nil, suggestions: [])
-      |> stream_configure(:monitors, dom_id: &"monitor-#{&1.id}")
+      |> assign(view: %View{}, selector_text: "", selector_error: nil, suggestions: [])
+      |> assign(overrides: restore_overrides(socket), groups: [])
       |> assign_summary()
 
     {:ok, socket}
@@ -213,35 +370,58 @@ defmodule SentinelixWeb.DashboardLive do
   @impl true
   def handle_params(params, _uri, socket) do
     socket =
-      case params_selector(params) do
-        {:ok, selector} ->
+      case View.from_params(params) do
+        {:ok, view} ->
           # Keep the text as typed while it means the same.
           text =
-            if Selector.parse(socket.assigns.selector_text) == {:ok, selector},
+            if Selector.parse(socket.assigns.selector_text) == {:ok, view.selector},
               do: socket.assigns.selector_text,
-              else: Selector.to_string(selector)
+              else: Selector.to_string(view.selector)
 
-          assign(socket, selector: selector, selector_text: text, selector_error: nil)
+          assign(socket, view: view, selector_text: text, selector_error: nil)
 
-        {:error, text, error} ->
-          assign(socket, selector: nil, selector_text: text, selector_error: error)
+        {:error, view, text, error} ->
+          assign(socket, view: view, selector_text: text, selector_error: error)
       end
 
-    {:noreply, socket |> assign_suggestions() |> stream_rows(reset: true)}
+    {:noreply, socket |> assign_suggestions() |> assign_groups()}
   end
 
   @impl true
-  def handle_event("filter", %{"selector" => text}, socket) do
-    socket = assign(socket, selector_text: text)
+  def handle_event("filter", params, socket) do
+    socket = assign(socket, selector_text: Map.get(params, "selector", ""))
 
-    case Selector.parse(text) do
-      {:ok, selector} ->
-        {:noreply, socket |> assign_suggestions() |> push_patch(to: filter_path(selector))}
+    case View.from_params(Map.take(params, ~w(selector group sort))) do
+      {:ok, view} ->
+        {:noreply, socket |> assign_suggestions() |> push_patch(to: view_path(view))}
 
-      # Shown inline; the list keeps showing the last valid selector's monitors.
-      {:error, error} ->
-        {:noreply, socket |> assign(selector_error: error) |> assign_suggestions()}
+      # Shown inline; the list keeps showing the last valid selector's
+      # monitors (regrouped when the grouping changed).
+      {:error, view, _text, error} ->
+        socket = socket |> assign(selector_error: error) |> assign_suggestions()
+        current = socket.assigns.view
+
+        if {view.group_by, view.sort} == {current.group_by, current.sort},
+          do: {:noreply, socket},
+          else:
+            {:noreply, push_patch(socket, to: view_path(%{view | selector: current.selector}))}
     end
+  end
+
+  def handle_event("toggle_group", %{"group" => id}, socket) do
+    case Enum.find(Grouping.flatten(socket.assigns.groups), &(&1.id == id)) do
+      nil ->
+        {:noreply, socket}
+
+      group ->
+        expanded = not expanded?(socket.assigns.overrides, group)
+        {:noreply, put_overrides(socket, [group], expanded)}
+    end
+  end
+
+  def handle_event(event, _params, socket) when event in ["expand_all", "collapse_all"] do
+    groups = Grouping.flatten(socket.assigns.groups)
+    {:noreply, put_overrides(socket, groups, event == "expand_all")}
   end
 
   @impl true
@@ -249,8 +429,8 @@ defmodule SentinelixWeb.DashboardLive do
     Monitoring.subscribe_monitor(monitor)
 
     maintenance = Maintenance.active_windows_for([monitor.id])
-    entry = index_entry(monitor, nil, Map.get(maintenance, monitor.id, []))
-    {:noreply, socket |> put_index(monitor.id, entry) |> refresh_row(monitor.id)}
+    entry = index_entry(monitor, nil, Map.get(maintenance, monitor.id, []), nil)
+    {:noreply, put_index(socket, monitor.id, entry)}
   end
 
   def handle_info({:monitor_updated, monitor}, socket) do
@@ -267,7 +447,7 @@ defmodule SentinelixWeb.DashboardLive do
       socket
       |> assign(index: Map.delete(socket.assigns.index, monitor.id))
       |> assign_summary()
-      |> stream_delete_by_dom_id(:monitors, "monitor-#{monitor.id}")
+      |> assign_groups()
 
     {:noreply, socket}
   end
@@ -275,7 +455,14 @@ defmodule SentinelixWeb.DashboardLive do
   def handle_info({:check_result, result}, socket) do
     {:noreply,
      update_entry(socket, result.monitor_id, fn entry ->
-       %{entry | latest: result, status: display_status(entry.monitor, result)}
+       checks = Stats.summaries([result.monitor_id], @uptime_window)[result.monitor_id]
+
+       %{
+         entry
+         | latest: result,
+           status: display_status(entry.monitor, result),
+           checks: check_counts(checks)
+       }
      end)}
   end
 
@@ -292,23 +479,45 @@ defmodule SentinelixWeb.DashboardLive do
         {id, %{entry | maintenance: Map.get(maintenance, id, [])}}
       end)
 
-    {:noreply, socket |> assign(index: index) |> stream_rows(reset: true)}
+    {:noreply, socket |> assign(index: index) |> assign_groups()}
   end
 
   # Status changes are covered by the check result that caused them.
   def handle_info(_message, socket), do: {:noreply, socket}
 
-  ## Index and rows
+  ## Paths
 
-  defp index_entry(monitor, latest, maintenance) do
+  @doc """
+  The dashboard path of a view (see `Sentinelix.Monitoring.View.to_params/1`).
+  """
+  @spec view_path(View.t()) :: String.t()
+  def view_path(%View{} = view) do
+    case View.to_params(view) do
+      [] -> ~p"/"
+      params -> ~p"/?#{params}"
+    end
+  end
+
+  @doc "The dashboard path of a view with a selector term added."
+  @spec add_term_path(View.t(), Selector.Term.t()) :: String.t()
+  def add_term_path(%View{} = view, term),
+    do: view_path(%{view | selector: Selector.add(view.selector || %Selector{}, term)})
+
+  ## Index
+
+  defp index_entry(monitor, latest, maintenance, checks) do
     %{
       monitor: monitor,
       latest: latest,
       status: display_status(monitor, latest),
       warning: warning?(monitor),
-      maintenance: maintenance
+      maintenance: maintenance,
+      checks: checks
     }
   end
+
+  defp check_counts(nil), do: nil
+  defp check_counts(summary), do: Map.take(summary, [:up, :down, :unreachable])
 
   defp warning?(%{enabled: false}), do: false
 
@@ -321,7 +530,7 @@ defmodule SentinelixWeb.DashboardLive do
 
   defp update_entry(socket, id, fun) do
     case Map.fetch(socket.assigns.index, id) do
-      {:ok, entry} -> socket |> put_index(id, fun.(entry)) |> refresh_row(id)
+      {:ok, entry} -> put_index(socket, id, fun.(entry))
       :error -> socket
     end
   end
@@ -330,6 +539,7 @@ defmodule SentinelixWeb.DashboardLive do
     socket
     |> assign(index: Map.put(socket.assigns.index, id, entry))
     |> assign_summary()
+    |> assign_groups()
   end
 
   defp assign_summary(socket) do
@@ -338,117 +548,117 @@ defmodule SentinelixWeb.DashboardLive do
     assign(socket, counts: counts, total: length(entries))
   end
 
-  # Completions of the selector being typed, from the labels of the
-  # monitors in the index (user and automatic).
+  # The groups of the monitors the selector shows (one group of all of
+  # them without grouping); the Rows components stream what changed. An
+  # invalid selector (only from a hand-edited URL) shows no monitors.
+  defp assign_groups(socket) do
+    %{view: view, index: index} = socket.assigns
+
+    entries =
+      if view.selector,
+        do: index |> Map.values() |> Enum.filter(&visible?(view.selector, &1)),
+        else: []
+
+    assign(socket, groups: Grouping.group(entries, view.group_by, sort: view.sort))
+  end
+
+  defp visible?(selector, entry),
+    do: Selector.matches?(selector, entry.monitor, status: entry.status)
+
+  # Completions of the selector being typed and the keys to group by, from
+  # the labels of the monitors in the index (user and automatic).
   defp assign_suggestions(socket) do
-    values =
+    label_values =
       socket.assigns.index
       |> Map.values()
       |> Enum.map(& &1.monitor)
       |> label_values()
-      |> completion_values()
 
-    assign(socket, suggestions: suggestions(socket.assigns.selector_text, values))
+    keys =
+      label_values
+      |> Map.keys()
+      |> Kernel.++(socket.assigns.view.group_by)
+      |> Enum.reject(&(&1 in Selector.pseudo_keys()))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    assign(socket,
+      suggestions: suggestions(socket.assigns.selector_text, completion_values(label_values)),
+      group_keys: keys
+    )
   end
 
-  # An invalid selector (only from a hand-edited URL) shows no monitors.
-  defp visible_entries(%{assigns: %{selector: nil}}), do: []
+  ## Expanded groups
 
-  defp visible_entries(socket) do
-    selector = socket.assigns.selector
+  # `overrides` maps group ids to `{expanded, problems}`: expanded or
+  # collapsed by the user while the group had problems or not. It applies
+  # while the group's problem state is the same; otherwise groups with
+  # problems are expanded.
+  defp expanded?(_overrides, %Grouping.Group{key: nil}), do: true
 
-    socket.assigns.index
-    |> Map.values()
-    |> Enum.filter(&Selector.matches?(selector, &1.monitor, status: &1.status))
-    |> Enum.sort_by(&{String.downcase(&1.monitor.name), &1.monitor.id})
-  end
-
-  defp stream_rows(socket, opts) do
-    entries = visible_entries(socket)
-    ids = Enum.map(entries, & &1.monitor.id)
-    results = History.recent_results_by_monitor(@heartbeats, ids)
-    uptime = Stats.uptimes(ids, @uptime_window)
-
-    rows =
-      Enum.map(entries, fn entry ->
-        build_row(
-          entry,
-          Map.get(results, entry.monitor.id, []),
-          Map.get(uptime, entry.monitor.id)
-        )
-      end)
-
-    stream(socket, :monitors, rows, opts)
-  end
-
-  defp refresh_row(socket, id) do
-    entries = visible_entries(socket)
-
-    case Enum.find_index(entries, &(&1.monitor.id == id)) do
-      nil ->
-        stream_delete_by_dom_id(socket, :monitors, "monitor-#{id}")
-
-      position ->
-        results = History.recent_results_by_monitor(@heartbeats, [id])
-
-        row =
-          build_row(
-            Enum.at(entries, position),
-            Map.get(results, id, []),
-            Stats.uptime(id, @uptime_window)
-          )
-
-        stream_insert(socket, :monitors, row, at: position)
+  defp expanded?(overrides, %Grouping.Group{id: id, problems: problems}) do
+    case Map.fetch(overrides, id) do
+      {:ok, {expanded, ^problems}} -> expanded
+      _default -> problems
     end
   end
 
-  defp build_row(entry, results, uptime) do
-    Map.merge(entry, %{id: entry.monitor.id, results: results, uptime: uptime})
+  defp put_overrides(socket, groups, expanded) do
+    overrides =
+      groups
+      |> Enum.reduce(socket.assigns.overrides, fn group, overrides ->
+        if expanded == group.problems,
+          do: Map.delete(overrides, group.id),
+          else: Map.put(overrides, group.id, {expanded, group.problems})
+      end)
+      |> limit_overrides(socket.assigns.groups)
+
+    socket
+    |> assign(overrides: overrides)
+    |> push_event("dashboard:groups", %{groups: encode_overrides(overrides)})
   end
+
+  # Past the limit, the overrides of groups not shown are dropped.
+  defp limit_overrides(overrides, _groups) when map_size(overrides) <= @max_overrides,
+    do: overrides
+
+  defp limit_overrides(overrides, groups) do
+    overrides
+    |> Map.take(groups |> Grouping.flatten() |> Enum.map(& &1.id))
+    |> Enum.take(@max_overrides)
+    |> Map.new()
+  end
+
+  defp encode_overrides(overrides) do
+    Map.new(overrides, fn {id, {expanded, problems}} ->
+      {id, %{"open" => expanded, "problems" => problems}}
+    end)
+  end
+
+  # From the `dashboard_groups` connect parameter (as `encode_overrides/1`
+  # writes it), which comes from the browser: anything unexpected is
+  # ignored.
+  defp restore_overrides(socket) do
+    case connected?(socket) && get_connect_params(socket) do
+      %{"dashboard_groups" => groups} when is_map(groups) ->
+        groups
+        |> Enum.flat_map(&restore_override/1)
+        |> Enum.take(@max_overrides)
+        |> Map.new()
+
+      _none ->
+        %{}
+    end
+  end
+
+  defp restore_override({id, %{"open" => open, "problems" => problems}})
+       when is_binary(id) and byte_size(id) <= 1024 and is_boolean(open) and
+              is_boolean(problems),
+       do: [{id, {open, problems}}]
+
+  defp restore_override(_other), do: []
 
   ## Filtering
-
-  # The selector of the URL (`?selector=`), plus the filters of older links
-  # translated to terms: `?q=` (search, now `name~`), `?status=`,
-  # `?label=` and `?tag=` (the filter that labels replaced).
-  defp params_selector(params) do
-    text = selector_param(params)
-
-    case Selector.parse(text) do
-      {:ok, selector} -> {:ok, Enum.reduce(legacy_terms(params), selector, &Selector.add(&2, &1))}
-      {:error, error} -> {:error, text, error}
-    end
-  end
-
-  defp legacy_terms(params) do
-    search_term(params["q"]) ++
-      status_term(params["status"]) ++ label_term(params["label"] || params["tag"])
-  end
-
-  defp search_term(text) when is_binary(text) do
-    case String.trim(text) do
-      "" -> []
-      text -> [Selector.name_term(text)]
-    end
-  end
-
-  defp search_term(_text), do: []
-
-  defp status_term(status) do
-    case Enum.find(@statuses, &(Atom.to_string(&1) == status)) do
-      nil -> []
-      status -> [Selector.status_term(status)]
-    end
-  end
-
-  defp label_term(label) when is_binary(label) do
-    case Labels.parse(label) do
-      {:ok, label} -> [Selector.label_term(label)]
-      {:error, _message} -> []
-    end
-  end
-
-  defp label_term(_label), do: []
 
   defp status_selected?(nil, _status), do: false
 
@@ -465,19 +675,9 @@ defmodule SentinelixWeb.DashboardLive do
         selector |> Selector.delete_key("status") |> Selector.add(Selector.status_term(status))
   end
 
-  defp filter_path(selector) do
-    if Selector.empty?(selector),
-      do: ~p"/",
-      else: ~p"/?#{[selector: Selector.to_string(selector)]}"
-  end
-
-  defp heartbeats, do: @heartbeats
+  defp group_dom_id(%Grouping.Group{id: id}),
+    do: "group-" <> Base.url_encode64(id, padding: false)
 
   defp count_class(:down, %{down: n}) when n > 0, do: "text-error"
   defp count_class(_status, _counts), do: nil
-
-  defp uptime_class(%{uptime: nil}), do: "badge-ghost"
-  defp uptime_class(%{uptime: uptime}) when uptime >= 99, do: "badge-success"
-  defp uptime_class(%{uptime: uptime}) when uptime >= 95, do: "badge-warning"
-  defp uptime_class(_row), do: "badge-error"
 end

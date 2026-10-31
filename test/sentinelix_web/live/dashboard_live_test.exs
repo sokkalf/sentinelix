@@ -219,4 +219,245 @@ defmodule SentinelixWeb.DashboardLiveTest do
       refute has_element?(view, "#monitor-#{db.id}")
     end
   end
+
+  describe "grouping" do
+    setup :register_and_log_in_user
+
+    defp group(id), do: "#groups section[data-group='#{id}']"
+    defp header(id), do: group(id) <> " > div:first-child"
+
+    defp group_ids(view) do
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#groups > section")
+      |> LazyHTML.attribute("data-group")
+    end
+
+    test "groups by a label with summaries, problems first and expanded", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      api = monitor_fixture(:http, %{name: "API", labels: %{"env" => "prod"}})
+      dev = monitor_fixture(:http, %{name: "Dev", labels: %{"env" => "dev"}})
+      loose = monitor_fixture(:tcp, %{name: "Loose"})
+
+      check_result_fixture(web, %{status: :up})
+      check_result_fixture(api, %{status: :up})
+      check_result_fixture(api, %{status: :down})
+      check_result_fixture(dev, %{status: :up})
+      check_result_fixture(loose, %{status: :up})
+
+      {:ok, view, _html} = live(conn, ~p"/?group=env")
+
+      assert group_ids(view) == ["env=prod", "env=dev", "!env"]
+
+      # The problem group: expanded, with its worst status, counts and uptime.
+      assert has_element?(view, group("env=prod") <> "[data-open=true]")
+      assert has_element?(view, header("env=prod") <> " [data-role=worst]", "Down")
+      assert has_element?(view, header("env=prod") <> " [data-role=up]", "1/2 up")
+      assert has_element?(view, header("env=prod") <> " [data-role=down]", "1 down")
+      assert has_element?(view, header("env=prod") <> " [data-role=uptime]", "66.67%")
+      assert has_element?(view, header("env=prod") <> " button[aria-expanded=true]")
+      assert has_element?(view, group("env=prod") <> " #monitor-#{web.id}")
+      assert has_element?(view, group("env=prod") <> " #monitor-#{api.id}")
+
+      # All green: collapsed, without rows.
+      assert has_element?(view, group("env=dev") <> "[data-open=false]")
+      assert has_element?(view, header("env=dev") <> " [data-role=up]", "1/1 up")
+      assert has_element?(view, header("env=dev") <> " button[aria-expanded=false]")
+      refute has_element?(view, "#monitor-#{dev.id}")
+      assert has_element?(view, header("!env"), "(none)")
+      refute has_element?(view, "#monitor-#{loose.id}")
+
+      # Automatic labels, sorted by name.
+      {:ok, view, _html} = live(conn, ~p"/?group=type&sort=name")
+      assert group_ids(view) == ["type=http", "type=tcp"]
+    end
+
+    test "nests groups by a second key", %{conn: conn} do
+      a = monitor_fixture(:http, %{name: "A", labels: %{"service" => "api", "site" => "oslo"}})
+      b = monitor_fixture(:http, %{name: "B", labels: %{"service" => "api", "site" => "bergen"}})
+      check_result_fixture(a, %{status: :up})
+      check_result_fixture(b, %{status: :pending})
+
+      {:ok, view, _html} = live(conn, ~p"/?group=service,site")
+
+      assert has_element?(view, header("service=api") <> " [data-role=pending]", "1 pending")
+      assert has_element?(view, group("service=api,site=bergen") <> " #monitor-#{b.id}")
+      assert has_element?(view, group("service=api,site=oslo") <> "[data-open=false]")
+      refute has_element?(view, "#monitor-#{a.id}")
+    end
+
+    test "group-by and sort are kept in the URL with the selector", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod", "site" => "oslo"}})
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert has_element?(view, "#monitors #monitor-#{web.id}")
+      assert has_element?(view, "#group-by-0 option[value=site]")
+      assert has_element?(view, "#group-by-0 option[value=host]")
+      refute has_element?(view, "#group-by-1")
+
+      view |> form("#filter-form", %{selector: "env", group: ["site"]}) |> render_change()
+      assert_patch(view, ~p"/?#{[selector: "env", group: "site"]}")
+      assert has_element?(view, group("site=oslo"))
+
+      view
+      |> form("#filter-form", %{selector: "env", group: ["site", "env"], sort: "name"})
+      |> render_change()
+
+      assert_patch(view, ~p"/?#{[selector: "env", group: "site,env", sort: "name"]}")
+      assert has_element?(view, group("site=oslo,env=prod"))
+
+      # Counters, badges and Clear keep the grouping.
+      view |> element("#counter-up") |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "env, status=up", group: "site,env", sort: "name"]}")
+
+      view |> element("#clear-filters") |> render_click()
+      assert_patch(view, ~p"/?#{[group: "site,env", sort: "name"]}")
+
+      # Regrouping while the selector being typed is invalid.
+      view |> form("#filter-form", %{selector: "env=", group: ["env"]}) |> render_change()
+      assert_patch(view, ~p"/?#{[group: "env", sort: "name"]}")
+
+      view |> form("#filter-form", %{selector: "", group: [""]}) |> render_change()
+      assert_patch(view, ~p"/")
+      assert has_element?(view, "#monitors #monitor-#{web.id}")
+    end
+
+    test "groups expand and collapse, remembered in the browser", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      dev = monitor_fixture(:http, %{name: "Dev", labels: %{"env" => "dev"}})
+      check_result_fixture(web, %{status: :up})
+      check_result_fixture(dev, %{status: :down})
+
+      {:ok, view, _html} = live(conn, ~p"/?group=env")
+      refute has_element?(view, "#monitor-#{web.id}")
+
+      view |> element(header("env=prod") <> " button") |> render_click()
+      assert has_element?(view, group("env=prod") <> " #monitor-#{web.id}")
+
+      assert_push_event(view, "dashboard:groups", %{
+        groups: %{"env=prod" => %{"open" => true, "problems" => false}}
+      })
+
+      view |> element(header("env=dev") <> " button") |> render_click()
+      refute has_element?(view, "#monitor-#{dev.id}")
+
+      assert_push_event(view, "dashboard:groups", %{groups: groups})
+      assert groups["env=dev"] == %{"open" => false, "problems" => true}
+
+      view |> element("#expand-all") |> render_click()
+      assert has_element?(view, "#monitor-#{dev.id}")
+      assert_push_event(view, "dashboard:groups", %{groups: %{"env=prod" => _}})
+
+      view |> element("#collapse-all") |> render_click()
+      refute has_element?(view, "#monitor-#{web.id}")
+      refute has_element?(view, "#monitor-#{dev.id}")
+
+      # Restored when (re)connecting; invalid entries are ignored, and an
+      # override set while the problem state was different doesn't apply.
+      conn =
+        put_connect_params(conn, %{
+          "dashboard_groups" => %{
+            "env=prod" => %{"open" => true, "problems" => false},
+            "env=dev" => %{"open" => false, "problems" => false},
+            "bogus" => "yes"
+          }
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/?group=env")
+      assert has_element?(view, "#monitor-#{web.id}")
+      assert has_element?(view, "#monitor-#{dev.id}")
+    end
+
+    test "group headers and order follow status changes", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      api = monitor_fixture(:http, %{name: "API", labels: %{"env" => "prod"}})
+      dev = monitor_fixture(:http, %{name: "Dev", labels: %{"env" => "dev"}})
+      Enum.each([web, api, dev], &check_result_fixture(&1, %{status: :up}))
+
+      {:ok, view, _html} = live(conn, ~p"/?group=env")
+      assert group_ids(view) == ["env=dev", "env=prod"]
+      refute has_element?(view, "#monitor-#{web.id}")
+
+      check_result_fixture(web, %{status: :unreachable})
+      assert group_ids(view) == ["env=prod", "env=dev"]
+      assert has_element?(view, header("env=prod") <> " [data-role=worst]", "Unreachable")
+      assert has_element?(view, header("env=prod") <> " [data-role=up]", "1/2 up")
+      assert has_element?(view, header("env=prod") <> " [data-role=unreachable]", "1 unreachable")
+      assert has_element?(view, header("env=prod") <> " [data-role=uptime]", "66.67%")
+      assert has_element?(view, group("env=prod") <> " #monitor-#{web.id}", "Unreachable")
+
+      check_result_fixture(web, %{status: :up})
+      assert group_ids(view) == ["env=dev", "env=prod"]
+      refute has_element?(view, "#monitor-#{web.id}")
+
+      # A monitor whose label changes moves to its new group.
+      view |> element("#expand-all") |> render_click()
+      {:ok, _} = Monitoring.update_monitor(api, %{labels: %{"env" => "dev"}})
+      assert has_element?(view, group("env=dev") <> " #monitor-#{api.id}")
+      refute has_element?(view, group("env=prod") <> " #monitor-#{api.id}")
+      assert has_element?(view, header("env=dev") <> " [data-role=up]", "2/2 up")
+
+      {:ok, _} = Monitoring.delete_monitor(api)
+      refute has_element?(view, "#monitor-#{api.id}")
+      assert has_element?(view, header("env=dev") <> " [data-role=up]", "1/1 up")
+    end
+
+    # The LiveViewTest client re-renders its whole page per diff, which is
+    # slow with hundreds of rows; the server side takes a few milliseconds
+    # per check result here. So most of this runs with collapsed groups.
+    test "many monitors: collapsed groups render no rows", %{conn: conn} do
+      monitors =
+        for i <- 1..250 do
+          monitor_fixture(:http, %{
+            name: "Monitor #{i}",
+            labels: %{"site" => "site-#{rem(i, 25)}"}
+          })
+        end
+
+      down = Enum.at(monitors, 7)
+      other = Enum.at(monitors, 2)
+
+      for monitor <- monitors do
+        check_result_fixture(monitor, %{status: if(monitor == down, do: :down, else: :up)})
+      end
+
+      {:ok, view, _html} = live(conn, ~p"/?group=site")
+
+      # Only the group with the down monitor is expanded and first.
+      assert length(group_ids(view)) == 25
+      assert hd(group_ids(view)) == "site=site-8"
+      assert row_count(view) == 10
+      assert has_element?(view, header("site=site-8") <> " [data-role=up]", "9/10 up")
+
+      view |> element("#expand-all") |> render_click()
+      assert row_count(view) == 250
+
+      view |> element("#collapse-all") |> render_click()
+      assert row_count(view) == 0
+
+      # A collapsed group's header stays live; a group that gets a problem
+      # expands and moves up.
+      check_result_fixture(down, %{status: :up})
+      assert has_element?(view, header("site=site-8") <> " [data-role=up]", "10/10 up")
+      assert has_element?(view, header("site=site-8") <> " [data-role=uptime]", "90.91%")
+
+      check_result_fixture(other, %{status: :down})
+      assert hd(group_ids(view)) == "site=site-3"
+      assert row_count(view) == 10
+      assert has_element?(view, group("site=site-3") <> " #monitor-#{other.id}", "Down")
+
+      check_result_fixture(other, %{status: :up})
+      assert row_count(view) == 0
+      assert has_element?(view, "#counter-up", "250")
+    end
+  end
+
+  defp row_count(view) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("[id^=monitor-]")
+    |> Enum.count()
+  end
 end
