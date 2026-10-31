@@ -3,13 +3,16 @@ defmodule SentinelixWeb.MonitorLiveTest do
   # which other (async) tests subscribe to.
   use SentinelixWeb.ConnCase, async: false
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
+  import Sentinelix.MaintenanceFixtures
   import Sentinelix.MonitoringFixtures
   import Sentinelix.NotificationsFixtures
+  import Sentinelix.StatusPagesFixtures
 
-  alias Sentinelix.Monitoring
+  alias Sentinelix.{Maintenance, Monitoring, Notifications, Repo}
   alias Sentinelix.Monitoring.{Monitor, Settings}
-  alias Sentinelix.Notifications
+  alias Sentinelix.StatusPages.PageMonitor
   alias SentinelixWeb.MonitorLive.Form
 
   setup :register_and_log_in_user
@@ -443,6 +446,123 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
     test "redirects for unknown monitors", %{conn: conn} do
       assert {:error, {:live_redirect, %{to: "/monitors"}}} = live(conn, ~p"/monitors/0/edit")
+      assert {:error, {:live_redirect, %{to: "/monitors"}}} = live(conn, ~p"/monitors/0/clone")
+    end
+
+    test "clones a monitor with its labels and notification channels", %{conn: conn} do
+      reset_maintenance_cache()
+      channel = channel_fixture(:slack, %{name: "Ops"})
+      default = channel_fixture(:webhook, %{name: "Default hook", default: true})
+
+      source =
+        monitor_fixture(:tcp, %{
+          name: "db1",
+          interval_seconds: 120,
+          max_retries: 3,
+          labels: %{"host" => "db1", "service" => "billing"},
+          settings: %{host: "db1.example.com", port: 5432}
+        })
+
+      :ok = Notifications.put_monitor_channels(source, [channel])
+      window = window_fixture(%{monitor_ids: [source.id]})
+      _page = published_page_fixture([source])
+
+      {:ok, view, html} = live(conn, ~p"/monitors/#{source}/clone")
+      assert html =~ "Clone monitor"
+      assert html =~ "Maintenance windows and status pages are not copied"
+      assert has_element?(view, "#monitor_name[value='db1 (copy)']")
+      assert has_element?(view, "#settings-fields[data-type=tcp]")
+      assert has_element?(view, "[name='monitor[settings][host]'][value='db1.example.com']")
+      assert has_element?(view, "#monitor_interval_seconds[value='120']")
+      assert has_element?(view, "#monitor_labels_0_key[value=host]")
+      assert has_element?(view, "#monitor_labels_0_value[value=db1]")
+      # The source's channels, not the defaults.
+      assert has_element?(view, "#channel-#{channel.id}[checked]")
+      refute has_element?(view, "#channel-#{default.id}[checked]")
+
+      {:ok, _view, html} =
+        view
+        |> form("#monitor-form",
+          monitor: %{
+            name: "db2",
+            settings: %{host: "db2.example.com"},
+            labels: %{"0" => %{key: "host", value: "db2"}, "1" => %{key: "service"}}
+          }
+        )
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      assert html =~ "Monitor created"
+
+      clone = Enum.find(Monitoring.list_monitors(), &(&1.name == "db2"))
+      assert clone.id != source.id
+
+      assert %{
+               type: :tcp,
+               interval_seconds: 120,
+               max_retries: 3,
+               labels: %{"host" => "db2", "service" => "billing"},
+               settings: %{host: "db2.example.com", port: 5432}
+             } = clone
+
+      assert Notifications.monitor_channel_ids(clone) == [channel.id]
+      assert Enum.map(Maintenance.get_window!(window.id).monitors, & &1.id) == [source.id]
+      assert Repo.all(from pm in PageMonitor, select: pm.monitor_id) == [source.id]
+
+      # The source is unchanged.
+      assert %{name: "db1", settings: %{host: "db1.example.com"}} =
+               Monitoring.get_monitor!(source.id)
+    end
+
+    test "a cloned postgres monitor needs its password entered again", %{conn: conn} do
+      source =
+        monitor_fixture(:postgres, %{name: "DB", secrets: %{password: "source-s3cret"}})
+
+      {:ok, view, html} = live(conn, ~p"/monitors/#{source}/clone")
+      refute html =~ "source-s3cret"
+      refute has_element?(view, "[name='monitor[secrets][password]'][placeholder*=unchanged]")
+      refute has_element?(view, "[name='monitor[secrets][clear_password]']")
+      assert has_element?(view, "#monitor_secrets_reenter_password", "enter the password again")
+
+      # A blank password doesn't keep the source's.
+      html =
+        view
+        |> form("#monitor-form", monitor: %{secrets: %{password: ""}})
+        |> render_submit()
+
+      refute html =~ "source-s3cret"
+      assert has_element?(view, "#settings-group-connection", "can't be blank")
+      assert [_source] = Monitoring.list_monitors()
+
+      {:ok, _view, html} =
+        view
+        |> form("#monitor-form", monitor: %{secrets: %{password: "clone-s3cret"}})
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      refute html =~ "s3cret"
+
+      clone = Enum.find(Monitoring.list_monitors(), &(&1.id != source.id))
+      assert clone.name == "DB (copy)"
+      assert clone.secrets == %{"password" => "clone-s3cret"}
+      assert Monitoring.get_monitor!(source.id).secrets == %{"password" => "source-s3cret"}
+    end
+
+    test "a cloned push monitor gets a new push token", %{conn: conn} do
+      source = monitor_fixture(:push)
+
+      {:ok, view, html} = live(conn, ~p"/monitors/#{source}/clone")
+      refute html =~ source.settings.push_token
+
+      {:ok, _view, _html} =
+        view
+        |> form("#monitor-form")
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      clone = Enum.find(Monitoring.list_monitors(), &(&1.id != source.id))
+      assert clone.type == :push
+      assert clone.settings.push_token != source.settings.push_token
     end
 
     test "edits labels with autocompletion of keys and values", %{conn: conn} do
