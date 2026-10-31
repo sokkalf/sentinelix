@@ -38,12 +38,20 @@ defmodule SentinelixWeb.ConnCase do
 
   setup tags do
     Sentinelix.DataCase.setup_sandbox(tags)
-    {:ok, conn: Phoenix.ConnTest.build_conn() |> Map.put(:remote_ip, unique_ip())}
+    ip = unique_ip()
+
+    conn =
+      Phoenix.ConnTest.build_conn()
+      |> Map.put(:remote_ip, ip)
+      |> Plug.Test.put_peer_data(%{address: ip, port: 40_000, ssl_cert: nil})
+
+    {:ok, conn: conn}
   end
 
   @doc """
   A client IP address unique to the calling test, so that per-IP rate limits
-  (`Sentinelix.RateLimit`) don't leak between tests.
+  (`Sentinelix.RateLimit`) don't leak between tests. It's also the peer
+  address, which connected LiveViews see (`:peer_data` connect info).
   """
   def unique_ip do
     <<a, b, c>> = <<System.unique_integer([:positive])::24>>

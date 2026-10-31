@@ -16,9 +16,13 @@ defmodule SentinelixWeb.Endpoint do
     max_age: 14 * 24 * 60 * 60
   ]
 
+  # Peer data and x-headers give wall displays (SentinelixWeb.WallLive)
+  # the client address for rate limiting, see SentinelixWeb.Plugs.ClientIP.
+  @connect_info [:peer_data, :x_headers, session: @session_options]
+
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]],
-    longpoll: [connect_info: [session: @session_options]]
+    websocket: [connect_info: @connect_info],
+    longpoll: [connect_info: @connect_info]
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -49,7 +53,7 @@ defmodule SentinelixWeb.Endpoint do
   plug SentinelixWeb.Plugs.ClientIP
 
   plug Plug.RequestId
-  plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint], log: {__MODULE__, :log_level, []}
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
@@ -60,4 +64,12 @@ defmodule SentinelixWeb.Endpoint do
   plug Plug.Head
   plug Plug.Session, @session_options
   plug SentinelixWeb.Router
+
+  @doc """
+  The level of the request log lines: none for wall displays, whose path
+  holds their token (`SentinelixWeb.WallAuth` logs them without it).
+  """
+  @spec log_level(Plug.Conn.t()) :: Logger.level() | false
+  def log_level(%Plug.Conn{path_info: ["wall" | _]}), do: false
+  def log_level(_conn), do: :info
 end

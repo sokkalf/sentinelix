@@ -28,20 +28,46 @@ defmodule SentinelixWeb.Plugs.ClientIP do
 
   @impl true
   def call(conn, opts) do
+    forwarded = Plug.Conn.get_req_header(conn, "x-forwarded-for")
+    %{conn | remote_ip: resolve(conn.remote_ip, forwarded, opts)}
+  end
+
+  @doc """
+  The client address of a request from `peer` with these `X-Forwarded-For`
+  header values, as `call/2` sets it. For LiveView sockets, from their
+  `:peer_data` and `:x_headers` connect info (see `from_connect_info/2`).
+  """
+  @spec resolve(:inet.ip_address(), [String.t()], keyword()) :: :inet.ip_address()
+  def resolve(peer, forwarded, opts \\ []) do
     proxies = Keyword.get_lazy(opts, :trusted_proxies, &trusted_proxies/0)
 
-    if proxies != [] and trusted?(conn.remote_ip, proxies) do
+    if proxies != [] and trusted?(peer, proxies) do
       forwarded =
-        conn
-        |> Plug.Conn.get_req_header("x-forwarded-for")
+        forwarded
         |> Enum.flat_map(&String.split(&1, ","))
         |> Enum.map(&String.trim/1)
 
-      %{conn | remote_ip: client_ip(Enum.reverse(forwarded), conn.remote_ip, proxies)}
+      client_ip(Enum.reverse(forwarded), peer, proxies)
     else
-      conn
+      peer
     end
   end
+
+  @doc """
+  The client address from a LiveView socket's `:peer_data` and
+  `:x_headers` connect info (`Phoenix.LiveView.get_connect_info/2`), or
+  nil without peer data. Options as for `resolve/3`.
+  """
+  @spec from_connect_info(map() | nil, [{String.t(), String.t()}] | nil, keyword()) ::
+          :inet.ip_address() | nil
+  def from_connect_info(peer_data, x_headers, opts \\ [])
+
+  def from_connect_info(%{address: peer}, x_headers, opts) do
+    forwarded = for {"x-forwarded-for", value} <- x_headers || [], do: value
+    resolve(peer, forwarded, opts)
+  end
+
+  def from_connect_info(_peer_data, _x_headers, _opts), do: nil
 
   # Walks the forwarded chain from the nearest hop outwards. `current` is the
   # last trusted hop; an unparsable entry ends the walk.
