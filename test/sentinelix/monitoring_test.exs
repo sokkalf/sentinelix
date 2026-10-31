@@ -596,6 +596,140 @@ defmodule Sentinelix.MonitoringTest do
     end
   end
 
+  describe "dependencies" do
+    test "a monitor can have a parent, deleting the parent detaches it" do
+      parent = monitor_fixture(:ping)
+      child = monitor_fixture(:http, %{parent_id: parent.id})
+
+      assert child.parent_id == parent.id
+      assert [%Monitor{id: id}] = Monitoring.list_children(parent)
+      assert id == child.id
+
+      :ok = Monitoring.subscribe_monitor(child)
+      {:ok, _} = Monitoring.delete_monitor(parent)
+      assert Monitoring.get_monitor!(child.id).parent_id == nil
+      assert_receive {:monitor_updated, %Monitor{id: ^id, parent_id: nil}}
+    end
+
+    test "deleting many monitors detaches their remaining children" do
+      [a, b] = [monitor_fixture(:ping), monitor_fixture(:ping)]
+      inner = monitor_fixture(:http, %{parent_id: a.id})
+      child = monitor_fixture(:http, %{parent_id: b.id})
+      :ok = Monitoring.subscribe_monitor(child)
+
+      {:ok, _} = Monitoring.delete_monitors([a, b, inner])
+      assert Monitoring.get_monitor!(child.id).parent_id == nil
+      child_id = child.id
+      assert_receive {:monitor_updated, %Monitor{id: ^child_id, parent_id: nil}}
+    end
+
+    test "the parent can be changed and removed" do
+      [a, b] = [monitor_fixture(:ping), monitor_fixture(:ping)]
+      child = monitor_fixture(:http, %{parent_id: a.id})
+
+      assert {:ok, %{parent_id: parent_id}} = Monitoring.update_monitor(child, %{parent_id: b.id})
+      assert parent_id == b.id
+
+      assert {:ok, %{parent_id: nil}} =
+               Monitoring.update_monitor(child, %{"parent_id" => ""})
+    end
+
+    test "rejects an unknown parent" do
+      assert {:error, changeset} =
+               Monitoring.create_monitor(valid_monitor_attrs(:http, %{parent_id: -1}))
+
+      assert "does not exist" in errors_on(changeset).parent_id
+    end
+
+    test "a monitor can't be its own parent" do
+      monitor = monitor_fixture(:http)
+
+      assert {:error, changeset} = Monitoring.update_monitor(monitor, %{parent_id: monitor.id})
+      assert "can't be the monitor itself" in errors_on(changeset).parent_id
+    end
+
+    test "rejects direct and indirect cycles" do
+      a = monitor_fixture(:ping)
+      b = monitor_fixture(:tcp, %{parent_id: a.id})
+      c = monitor_fixture(:http, %{parent_id: b.id})
+
+      assert {:error, changeset} = Monitoring.update_monitor(a, %{parent_id: b.id})
+      assert "would create a dependency cycle" in errors_on(changeset).parent_id
+
+      assert {:error, changeset} = Monitoring.update_monitor(a, %{parent_id: c.id})
+      assert "would create a dependency cycle" in errors_on(changeset).parent_id
+      assert Monitoring.get_monitor!(a.id).parent_id == nil
+
+      # Not a cycle: c moves up next to b.
+      assert {:ok, %{parent_id: parent_id}} = Monitoring.update_monitor(c, %{parent_id: a.id})
+      assert parent_id == a.id
+    end
+
+    test "ancestor_ids/1 and descendant_ids/1 follow the chain, nearest first" do
+      a = monitor_fixture(:ping)
+      b = monitor_fixture(:tcp, %{parent_id: a.id})
+      c = monitor_fixture(:http, %{parent_id: b.id})
+      d = monitor_fixture(:http, %{parent_id: b.id})
+
+      assert Monitoring.ancestor_ids(c) == [b.id, a.id]
+      assert Monitoring.ancestor_ids(c.id) == [b.id, a.id]
+      assert Monitoring.ancestor_ids(a) == []
+      assert Monitoring.ancestor_ids(nil) == []
+
+      assert Monitoring.descendant_ids(a) == [b.id | Enum.sort([c.id, d.id])]
+      assert Monitoring.descendant_ids(c) == []
+    end
+
+    test "suggest_parent/1 suggests the ping or TCP monitor of the same host" do
+      ping = monitor_fixture(:ping, %{name: "web1 ping", settings: %{host: "web1.example.com"}})
+
+      tcp =
+        monitor_fixture(:tcp, %{name: "web1 ssh", settings: %{host: "web1.example.com", port: 22}})
+
+      _other = monitor_fixture(:ping, %{settings: %{host: "web2.example.com"}})
+
+      http = monitor_fixture(:http, %{settings: %{url: "https://WEB1.example.com/health"}})
+      assert Monitoring.suggest_parent(http).id == ping.id
+      # TCP monitors only get ping monitors, ping monitors nothing.
+      assert Monitoring.suggest_parent(tcp).id == ping.id
+      assert Monitoring.suggest_parent(ping) == nil
+
+      # Unsaved monitors, e.g. while filling in the form.
+      unsaved =
+        %Monitor{}
+        |> Monitoring.change_monitor(
+          valid_monitor_attrs(:cert, %{settings: %{host: "web1.example.com"}})
+        )
+        |> Ecto.Changeset.apply_changes()
+
+      assert Monitoring.suggest_parent(unsaved).id == ping.id
+
+      # Without a ping monitor the TCP monitor is suggested.
+      {:ok, _} = Monitoring.delete_monitor(ping)
+      assert Monitoring.suggest_parent(http).id == tcp.id
+
+      assert Monitoring.suggest_parent(monitor_fixture(:push)) == nil
+
+      assert Monitoring.suggest_parent(
+               monitor_fixture(:http, %{settings: %{url: "https://nope.example.com"}})
+             ) == nil
+    end
+
+    test "suggest_parent/1 doesn't suggest a monitor that depends on the monitor" do
+      tcp = monitor_fixture(:tcp, %{settings: %{host: "db1.example.com", port: 5432}})
+      _ping = monitor_fixture(:ping, %{settings: %{host: "db1.example.com"}, parent_id: tcp.id})
+
+      assert Monitoring.suggest_parent(tcp) == nil
+    end
+
+    test "clones keep the parent" do
+      parent = monitor_fixture(:ping)
+      source = monitor_fixture(:http, %{parent_id: parent.id})
+
+      assert Monitoring.clone_monitor(source).parent_id == parent.id
+    end
+  end
+
   describe "get_monitor_by_push_token/1" do
     test "finds push monitors by token" do
       monitor = monitor_fixture(:push)

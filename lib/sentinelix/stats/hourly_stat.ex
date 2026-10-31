@@ -19,6 +19,7 @@ defmodule Sentinelix.Stats.HourlyStat do
     field :down_count, :integer, default: 0
     field :pending_count, :integer, default: 0
     field :maintenance_count, :integer, default: 0
+    field :unreachable_count, :integer, default: 0
     field :response_count, :integer, default: 0
     field :avg_ms, :float
     field :min_ms, :integer

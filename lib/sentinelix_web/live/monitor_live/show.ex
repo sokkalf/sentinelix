@@ -1,7 +1,8 @@
 defmodule SentinelixWeb.MonitorLive.Show do
   @moduledoc """
   Monitor detail page: current status, heartbeats, uptime, a response time
-  chart with selectable range, incidents and the monitor's runtime state.
+  chart with selectable range, incidents, dependencies (the parent and the
+  dependents) and the monitor's runtime state.
   """
 
   use SentinelixWeb, :live_view
@@ -183,6 +184,17 @@ defmodule SentinelixWeb.MonitorLive.Show do
         >
           {@latest.message}
         </p>
+        <p
+          :if={@status == :unreachable}
+          id="unreachable-notice"
+          class="mt-2 flex items-center gap-2 text-sm text-base-content/70"
+        >
+          <.icon name="hero-link-slash-micro" class="size-4" />
+          <span :if={@parent}>
+            {@parent.monitor.name} is down: this monitor's failures don't alert until it is back.
+          </span>
+          <span :if={!@parent}>The monitor it depends on was down.</span>
+        </p>
       </div>
 
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -300,28 +312,66 @@ defmodule SentinelixWeb.MonitorLive.Show do
           </div>
         </div>
 
-        <div class="rounded-box border border-base-300 bg-base-100 p-4">
-          <div class="mb-2 text-sm font-medium">Configuration</div>
-          <dl id="monitor-config" class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-            <dt class="text-base-content/60">Interval</dt>
-            <dd>{format_duration(@monitor.interval_seconds)}</dd>
-            <dt class="text-base-content/60">Retry interval</dt>
-            <dd>{format_duration(@monitor.retry_interval_seconds)}</dd>
-            <dt class="text-base-content/60">Retries</dt>
-            <dd>
-              {if @worker,
-                do: "#{@worker.retries} / #{@monitor.max_retries}",
-                else: @monitor.max_retries}
-            </dd>
-            <dt class="text-base-content/60">Timeout</dt>
-            <dd>{format_ms(@monitor.timeout_ms)}</dd>
-            <dt class="text-base-content/60">Last check</dt>
-            <dd>
-              <.local_time id="last-check" at={@latest && @latest.checked_at} />
-            </dd>
-            <dt class="text-base-content/60">Created</dt>
-            <dd><.local_time id="created-at" at={@monitor.inserted_at} /></dd>
-          </dl>
+        <div class="space-y-4">
+          <div class="rounded-box border border-base-300 bg-base-100 p-4">
+            <div class="mb-2 text-sm font-medium">Configuration</div>
+            <dl id="monitor-config" class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+              <dt class="text-base-content/60">Interval</dt>
+              <dd>{format_duration(@monitor.interval_seconds)}</dd>
+              <dt class="text-base-content/60">Retry interval</dt>
+              <dd>{format_duration(@monitor.retry_interval_seconds)}</dd>
+              <dt class="text-base-content/60">Retries</dt>
+              <dd>
+                {if @worker,
+                  do: "#{@worker.retries} / #{@monitor.max_retries}",
+                  else: @monitor.max_retries}
+              </dd>
+              <dt class="text-base-content/60">Timeout</dt>
+              <dd>{format_ms(@monitor.timeout_ms)}</dd>
+              <dt class="text-base-content/60">Last check</dt>
+              <dd>
+                <.local_time id="last-check" at={@latest && @latest.checked_at} />
+              </dd>
+              <dt class="text-base-content/60">Created</dt>
+              <dd><.local_time id="created-at" at={@monitor.inserted_at} /></dd>
+            </dl>
+          </div>
+
+          <div id="dependencies" class="rounded-box border border-base-300 bg-base-100 p-4">
+            <div class="mb-2 text-sm font-medium">Dependencies</div>
+            <dl class="space-y-2 text-sm">
+              <dt class="text-base-content/60">Depends on</dt>
+              <dd id="parent">
+                <div :if={@parent} class="flex items-center justify-between gap-2">
+                  <.link navigate={~p"/monitors/#{@parent.monitor}"} class="truncate hover:underline">
+                    {@parent.monitor.name}
+                  </.link>
+                  <.status_badge status={@parent.status} />
+                </div>
+                <span :if={!@parent} class="text-base-content/60">Nothing</span>
+              </dd>
+              <dt class="text-base-content/60">Dependents</dt>
+              <dd id="children">
+                <span :if={@children == []} class="text-base-content/60">None</span>
+                <ul :if={@children != []} class="space-y-1">
+                  <li
+                    :for={child <- @children}
+                    id={"child-#{child.monitor.id}"}
+                    class="flex items-center justify-between gap-2"
+                  >
+                    <.link navigate={~p"/monitors/#{child.monitor}"} class="truncate hover:underline">
+                      {child.monitor.name}
+                    </.link>
+                    <.status_badge status={child.status} />
+                  </li>
+                </ul>
+              </dd>
+            </dl>
+            <p class="mt-3 text-xs text-base-content/60">
+              While the monitor this one depends on is down, failed checks are recorded as
+              unreachable and don't alert.
+            </p>
+          </div>
         </div>
       </div>
     </Layouts.app>
@@ -351,6 +401,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
           |> assign_latest()
           |> assign_worker()
           |> assign_maintenance()
+          |> assign_dependencies()
           |> assign_stats()
           |> stream(:incidents, Monitoring.list_incidents(monitor, @incidents))
 
@@ -418,6 +469,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
       |> assign(heartbeats: heartbeats, now: DateTime.utc_now())
       |> assign_latest()
       |> assign_worker()
+      |> assign_dependencies()
       |> assign_stats()
       |> push_chart_point(result)
 
@@ -435,7 +487,8 @@ defmodule SentinelixWeb.MonitorLive.Show do
      socket
      |> assign(monitor: monitor, page_title: monitor.name)
      |> assign_latest()
-     |> assign_worker()}
+     |> assign_worker()
+     |> assign_dependencies()}
   end
 
   def handle_info({:monitor_deleted, monitor}, socket) do
@@ -484,6 +537,29 @@ defmodule SentinelixWeb.MonitorLive.Show do
     assign(socket, maintenance: Map.get(Maintenance.active_windows_for([id]), id, []))
   end
 
+  # The parent and the children with their current status. Not live: they
+  # are refreshed with every check result of this monitor (which follows
+  # its parent's recovery) and when it is updated.
+  defp assign_dependencies(socket) do
+    monitor = socket.assigns.monitor
+    parent = monitor.parent_id && Monitoring.get_monitor(monitor.parent_id)
+    children = Monitoring.list_children(monitor)
+    monitors = Enum.reject([parent | children], &is_nil/1)
+    latest = History.recent_results_by_monitor(1, Enum.map(monitors, & &1.id))
+
+    with_status = fn monitor ->
+      %{
+        monitor: monitor,
+        status: display_status(monitor, latest |> Map.get(monitor.id, []) |> List.last())
+      }
+    end
+
+    assign(socket,
+      parent: parent && with_status.(parent),
+      children: Enum.map(children, with_status)
+    )
+  end
+
   defp assign_stats(socket) do
     monitor = socket.assigns.monitor
     now = DateTime.utc_now()
@@ -520,9 +596,13 @@ defmodule SentinelixWeb.MonitorLive.Show do
   defp chart_points(monitor, seconds, :hourly) do
     monitor
     |> Stats.hourly({div(seconds, 3_600), :hour})
-    |> Enum.reject(&(&1.up + &1.down + &1.pending == 0))
+    |> Enum.reject(&(&1.up + &1.down + &1.pending + &1.unreachable == 0))
     |> Enum.map(fn hour ->
-      %{at: hour.hour, response_time_ms: hour.avg_ms && round(hour.avg_ms), down: hour.down > 0}
+      %{
+        at: hour.hour,
+        response_time_ms: hour.avg_ms && round(hour.avg_ms),
+        down: hour.down + hour.unreachable > 0
+      }
     end)
   end
 
@@ -532,7 +612,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
       chart_point(%{
         at: result.checked_at,
         response_time_ms: result.response_time_ms,
-        down: status == :down
+        down: status in [:down, :unreachable]
       })
 
     socket

@@ -175,6 +175,7 @@ defmodule Sentinelix.StatusPagesTest do
       assert status.(%{base | incident?: true}) == :degraded
       assert status.(%{base | latest_status: :pending}) == :degraded
       assert status.(%{base | latest_status: :down}) == :outage
+      assert status.(%{base | latest_status: :unreachable}) == :unreachable
       assert status.(%{base | latest_status: :maintenance}) == :maintenance
       assert status.(Map.merge(base, %{latest_status: :down, maintenance?: true})) == :maintenance
       assert status.(%{base | latest_status: nil}) == :unknown
@@ -189,6 +190,8 @@ defmodule Sentinelix.StatusPagesTest do
       assert overall.([:operational, :degraded]) == :degraded
       assert overall.([:operational, :outage]) == :partial_outage
       assert overall.([:outage, :outage, :maintenance, :paused]) == :major_outage
+      assert overall.([:operational, :unreachable]) == :partial_outage
+      assert overall.([:outage, :unreachable]) == :major_outage
       assert overall.([:operational, :maintenance]) == :maintenance
       assert overall.([:maintenance]) == :maintenance
     end

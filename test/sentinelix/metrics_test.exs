@@ -101,6 +101,17 @@ defmodule Sentinelix.MetricsTest do
     assert output =~ ~s(sentinelix_monitor_status{#{labels(monitor)},status="maintenance"} 1\n)
   end
 
+  test "reports unreachable from the latest result" do
+    monitor = monitor_fixture()
+    check_result_fixture(monitor, %{status: :unreachable})
+
+    output = metrics()
+
+    refute output =~ "sentinelix_monitor_up{#{labels(monitor)}}"
+    assert output =~ ~s(sentinelix_monitor_status{#{labels(monitor)},status="unreachable"} 1\n)
+    assert output =~ ~s(sentinelix_monitor_status{#{labels(monitor)},status="down"} 0\n)
+  end
+
   test "disabled monitors are only reported as disabled" do
     monitor = monitor_fixture(:http, %{enabled: false})
     check_result_fixture(monitor, %{status: :up, response_time_ms: 5})

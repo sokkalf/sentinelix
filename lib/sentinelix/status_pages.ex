@@ -27,7 +27,8 @@ defmodule Sentinelix.StatusPages do
 
   @pubsub Sentinelix.PubSub
 
-  @type public_status :: :operational | :degraded | :outage | :maintenance | :paused | :unknown
+  @type public_status ::
+          :operational | :degraded | :outage | :unreachable | :maintenance | :paused | :unknown
   @type overall_status ::
           :operational | :degraded | :partial_outage | :major_outage | :maintenance
 
@@ -391,6 +392,8 @@ defmodule Sentinelix.StatusPages do
     * `:maintenance` – it is in maintenance (or its latest result is a
       maintenance result)
     * `:outage` – its latest check failed
+    * `:unreachable` – its latest check failed while the monitor it
+      depends on was down (counts as an outage for the page)
     * `:degraded` – a failed check is being retried (`:pending`), or it has
       an open incident while its latest check succeeded
     * `:operational` – its latest check succeeded
@@ -403,6 +406,7 @@ defmodule Sentinelix.StatusPages do
     cond do
       Map.get(state, :maintenance?, false) or latest == :maintenance -> :maintenance
       latest == :down -> :outage
+      latest == :unreachable -> :unreachable
       latest == :pending or incident? -> :degraded
       latest == :up -> :operational
       true -> :unknown
@@ -414,12 +418,17 @@ defmodule Sentinelix.StatusPages do
 
   Paused monitors and monitors without data are ignored and monitors in
   maintenance never count as an outage. When every remaining monitor is
-  down it is a major outage, when some are a partial outage.
+  down (or unreachable) it is a major outage, when some are a partial
+  outage.
   """
   @spec overall_status([public_status()]) :: overall_status()
   def overall_status(statuses) do
     counted = Enum.reject(statuses, &(&1 in [:paused, :unknown]))
-    active = Enum.reject(counted, &(&1 == :maintenance))
+
+    active =
+      counted
+      |> Enum.reject(&(&1 == :maintenance))
+      |> Enum.map(&if(&1 == :unreachable, do: :outage, else: &1))
 
     cond do
       active != [] and Enum.all?(active, &(&1 == :outage)) -> :major_outage

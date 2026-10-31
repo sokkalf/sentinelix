@@ -8,6 +8,10 @@ defmodule SentinelixWeb.MonitorLive.Form do
   `Sentinelix.Monitoring.clone_monitor/1` and the source's notification
   channels. Secrets are not copied: the secrets the source has must be
   entered again before the clone can be saved.
+
+  The parent ("Depends on") can be any monitor except the monitor itself
+  and the monitors that depend on it. The form suggests one (see
+  `Sentinelix.Monitoring.suggest_parent/1`) while none is chosen.
   """
 
   use SentinelixWeb, :live_view
@@ -211,6 +215,41 @@ defmodule SentinelixWeb.MonitorLive.Form do
             />
             <.input field={@form[:timeout_ms]} type="number" label="Timeout (ms)" min="100" />
             <.input field={@form[:enabled]} type="checkbox" label="Enabled" />
+          </section>
+
+          <section
+            id="monitor-dependency"
+            class="rounded-box border border-base-300 bg-base-100 p-4 sm:p-6"
+          >
+            <h2 class="mb-3 font-semibold">Dependency</h2>
+            <.input
+              field={@form[:parent_id]}
+              type="select"
+              label="Depends on"
+              prompt="Nothing"
+              options={@parent_options}
+            />
+            <p
+              :if={@suggested_parent && blank?(@form[:parent_id].value)}
+              id="suggested-parent"
+              class="mb-2 flex items-center gap-2 text-sm"
+            >
+              <span class="min-w-0 truncate">
+                Suggested: <span class="font-medium">{@suggested_parent.name}</span>
+              </span>
+              <button
+                type="button"
+                id="use-suggested-parent"
+                phx-click="use_suggested_parent"
+                class="btn btn-ghost btn-xs"
+              >
+                Use
+              </button>
+            </p>
+            <p class="text-xs text-base-content/60">
+              Typically the ping monitor of the host. While it is down, this monitor's failed
+              checks are recorded as unreachable and don't alert.
+            </p>
           </section>
 
           <section
@@ -753,6 +792,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
     socket
     |> assign(page_title: "New monitor", monitor: monitor, return_to: ~p"/monitors")
     |> assign(channel_ids: Enum.map(Notifications.list_default_channels(), & &1.id))
+    |> assign(parent_options: parent_options(monitor))
     |> assign_form(Monitoring.change_monitor(monitor), %{})
   end
 
@@ -771,6 +811,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
           return_to: ~p"/monitors/#{monitor}"
         )
         |> assign(channel_ids: Notifications.monitor_channel_ids(monitor))
+        |> assign(parent_options: parent_options(monitor))
         |> assign_form(Monitoring.change_monitor(monitor), %{})
     end
   end
@@ -794,6 +835,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
           reenter_secrets: for({key, value} <- source.secrets || %{}, value, do: key)
         )
         |> assign(channel_ids: Notifications.monitor_channel_ids(source))
+        |> assign(parent_options: parent_options(monitor))
         |> assign_form(Monitoring.change_monitor(monitor), %{})
     end
   end
@@ -819,6 +861,19 @@ defmodule SentinelixWeb.MonitorLive.Form do
 
     changeset = Monitoring.change_monitor(socket.assigns.monitor, params)
     {:noreply, assign_form(socket, changeset, params)}
+  end
+
+  def handle_event("use_suggested_parent", _params, socket) do
+    case socket.assigns.suggested_parent do
+      nil ->
+        {:noreply, socket}
+
+      parent ->
+        params = Map.put(socket.assigns.params, "parent_id", to_string(parent.id))
+        changeset = Monitoring.change_monitor(socket.assigns.monitor, params)
+        changeset = %{changeset | action: socket.assigns.form.source.action}
+        {:noreply, assign_form(socket, changeset, params)}
+    end
   end
 
   def handle_event("add_label", _params, socket) do
@@ -957,7 +1012,34 @@ defmodule SentinelixWeb.MonitorLive.Form do
       stored_secrets: Map.new(stored, fn {key, value} -> {key, value != nil} end),
       secret_errors: secret_errors(socket, changeset, type, params)
     )
+    |> assign_suggested_parent(changeset)
   end
+
+  # The suggested parent (see Monitoring.suggest_parent/1), looked up again
+  # only when the type or host changes.
+  defp assign_suggested_parent(socket, changeset) do
+    type = Ecto.Changeset.get_field(changeset, :type)
+    host = (Ecto.Changeset.get_field(changeset, :auto_labels) || %{})["host"]
+
+    if socket.assigns[:suggested_for] == {type, host} do
+      socket
+    else
+      suggestion = Monitoring.suggest_parent(Ecto.Changeset.apply_changes(changeset))
+      assign(socket, suggested_for: {type, host}, suggested_parent: suggestion)
+    end
+  end
+
+  # The monitors this one can depend on: all but itself and the monitors
+  # that depend on it.
+  defp parent_options(%Monitor{id: id}) do
+    excluded = if id, do: [id | Monitoring.descendant_ids(id)], else: []
+
+    for monitor <- Monitoring.list_monitors(), monitor.id not in excluded do
+      {"#{monitor.name} (#{type_label(monitor.type)})", monitor.id}
+    end
+  end
+
+  defp blank?(value), do: value in [nil, ""]
 
   ## Params
 

@@ -20,8 +20,8 @@ defmodule Sentinelix.Notifications.Dispatcher do
   The last notified status and warning are persisted per monitor
   (`Sentinelix.Notifications.State`). Workers start from the last stored
   check result, but they don't persist their warning flag (so every restart
-  re-raises an active warning) and a `:maintenance` result makes them start
-  as `:pending`. Comparing against the persisted state keeps restarts (app
+  re-raises an active warning) and a `:maintenance` or `:unreachable` result
+  makes them start as `:pending`. Comparing against the persisted state keeps restarts (app
   reboots, monitor edits) from re-sending notifications. A recovery clears
   the notified warning: a warning still present after an outage is notified
   again.

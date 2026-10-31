@@ -18,8 +18,9 @@ defmodule Sentinelix.Metrics do
 
     * `sentinelix_monitor_enabled` – 1 if the monitor is enabled, else 0.
     * `sentinelix_monitor_up` – 1 if up, 0 if down; absent while the
-      monitor is pending (new or retrying), in maintenance or disabled.
-    * `sentinelix_monitor_status{status="up|down|pending|maintenance"}` –
+      monitor is pending (new or retrying), in maintenance, unreachable (its
+      parent is down) or disabled.
+    * `sentinelix_monitor_status{status="up|down|pending|maintenance|unreachable"}` –
       1 for the current status, 0 for the others (enabled monitors only).
     * `sentinelix_monitor_warning` – 1 while a check reports a warning (e.g.
       a certificate close to expiry; enabled monitors only).
@@ -58,12 +59,12 @@ defmodule Sentinelix.Metrics do
   alias Sentinelix.Monitoring.Worker
 
   @peep Sentinelix.Peep
-  @statuses [:up, :down, :pending, :maintenance]
+  @statuses [:up, :down, :pending, :maintenance, :unreachable]
 
   @gauges [
     {"sentinelix_monitor_enabled", "Whether the monitor is enabled (1) or paused (0)."},
     {"sentinelix_monitor_up",
-     "Whether the monitor is up (1) or down (0). Absent while pending, in maintenance or disabled."},
+     "Whether the monitor is up (1) or down (0). Absent while pending, in maintenance, unreachable or disabled."},
     {"sentinelix_monitor_status", "Current status of the monitor (1 for the current status)."},
     {"sentinelix_monitor_warning",
      "Whether the monitor's checks report a warning (e.g. a certificate close to expiry)."},
@@ -191,10 +192,13 @@ defmodule Sentinelix.Metrics do
   defp labels(monitor), do: [monitor_id: monitor.id, monitor: monitor.name, type: monitor.type]
 
   # A disabled monitor has no status. An enabled one has its worker's status;
-  # the latest result tells if it is in maintenance (the worker keeps its
-  # status during maintenance) and stands in when no worker is running.
+  # the latest result tells if it is in maintenance or unreachable (the
+  # worker keeps its status then) and stands in when no worker is running.
   defp status(%{enabled: false}, _info, _result), do: nil
-  defp status(_monitor, _info, %{status: :maintenance}), do: :maintenance
+
+  defp status(_monitor, _info, %{status: status}) when status in [:maintenance, :unreachable],
+    do: status
+
   defp status(_monitor, %{status: status}, _result), do: status
   defp status(_monitor, nil, %{status: status}), do: status
   defp status(_monitor, nil, nil), do: :pending

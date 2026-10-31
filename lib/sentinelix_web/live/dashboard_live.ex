@@ -29,7 +29,7 @@ defmodule SentinelixWeb.DashboardLive do
 
   @heartbeats 50
   @uptime_window {24, :hour}
-  @statuses ~w(up down pending maintenance paused)a
+  @statuses ~w(up down pending unreachable maintenance paused)a
 
   @impl true
   def render(assigns) do
@@ -45,7 +45,7 @@ defmodule SentinelixWeb.DashboardLive do
         </:actions>
       </.header>
 
-      <div id="status-counters" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div id="status-counters" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <.link
           :for={status <- @statuses}
           id={"counter-#{status}"}

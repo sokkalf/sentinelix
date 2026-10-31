@@ -67,6 +67,11 @@ defmodule SentinelixWeb.DashboardLiveTest do
       assert row =~ "503 ms"
       assert has_element?(view, "#counter-down", "1")
 
+      check_result_fixture(monitor, %{status: :unreachable})
+      assert view |> element("#monitor-#{monitor.id}") |> render() =~ "Unreachable"
+      assert has_element?(view, "#counter-unreachable", "1")
+      assert has_element?(view, "#counter-down", "0")
+
       Monitoring.broadcast_status_event(monitor, {:warning_raised, monitor, nil})
       assert view |> element("#monitor-#{monitor.id}") |> render() =~ "Warning"
 

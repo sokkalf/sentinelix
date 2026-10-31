@@ -122,8 +122,20 @@ defmodule Sentinelix.Monitoring.Supervisor do
   """
   @spec whereis(Monitor.t() | pos_integer(), engine()) :: pid() | nil
   def whereis(monitor, engine \\ __MODULE__) do
+    case lookup(monitor, engine) do
+      {pid, _value} -> pid
+      nil -> nil
+    end
+  end
+
+  @doc """
+  The pid of a monitor's worker and the value it published in the
+  registry (see Dependencies in `Sentinelix.Monitoring.Worker`), or `nil`.
+  """
+  @spec lookup(Monitor.t() | pos_integer(), engine()) :: {pid(), term()} | nil
+  def lookup(monitor, engine \\ __MODULE__) do
     case Registry.lookup(registry(engine), monitor_id(monitor)) do
-      [{pid, _}] -> pid
+      [{pid, value}] -> {pid, value}
       [] -> nil
     end
   end
