@@ -46,6 +46,7 @@ defmodule Sentinelix.Monitoring do
     Incident,
     Labels,
     Monitor,
+    Selector,
     Settings,
     Worker
   }
@@ -125,6 +126,10 @@ defmodule Sentinelix.Monitoring do
       user or automatic label (`all_labels`); a label without a value
       (`{key, ""}`) matches any value of `key`, see
       `Sentinelix.Monitoring.Labels.has?/2`. Can be given more than once.
+    * `:selector` – only return monitors matching a
+      `Sentinelix.Monitoring.Selector` (a struct, or a string that raises if
+      it's invalid). It can't have `status` terms, see
+      `Sentinelix.Monitoring.Selector.split_status/1`.
   """
   @spec list_monitors(keyword()) :: [Monitor.t()]
   def list_monitors(opts \\ []) do
@@ -150,18 +155,33 @@ defmodule Sentinelix.Monitoring do
 
       {:label, {key, value}}, q ->
         where(q, [m], fragment("? @> ?", m.all_labels, ^%{key => value}))
+
+      {:selector, text}, q when is_binary(text) ->
+        Selector.filter(q, Selector.parse!(text))
+
+      {:selector, %Selector{} = selector}, q ->
+        Selector.filter(q, selector)
     end)
   end
 
   @doc """
   All user label keys in use with their values, as a map of key => sorted
   values (`""` for labels without a value). For autocompletion in the
-  label editor, so automatic labels are not included.
+  label editor, so automatic labels are not included unless asked for.
+
+  ## Options
+
+    * `:automatic` – also include automatic labels (default `false`), e.g.
+      to complete selectors.
   """
-  @spec list_label_values() :: %{Labels.key() => [Labels.value()]}
-  def list_label_values do
-    from(m in Monitor,
-      cross_join: l in fragment("jsonb_each_text(?)", m.labels),
+  @spec list_label_values(keyword()) :: %{Labels.key() => [Labels.value()]}
+  def list_label_values(opts \\ []) do
+    query =
+      if Keyword.get(opts, :automatic, false),
+        do: from(m in Monitor, cross_join: l in fragment("jsonb_each_text(?)", m.all_labels)),
+        else: from(m in Monitor, cross_join: l in fragment("jsonb_each_text(?)", m.labels))
+
+    from([_m, l] in query,
       distinct: true,
       select: {l.key, l.value}
     )

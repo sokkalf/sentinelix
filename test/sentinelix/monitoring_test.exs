@@ -4,7 +4,7 @@ defmodule Sentinelix.MonitoringTest do
   import Sentinelix.MonitoringFixtures
 
   alias Sentinelix.Monitoring
-  alias Sentinelix.Monitoring.{CheckResult, Incident, Monitor, Settings}
+  alias Sentinelix.Monitoring.{CheckResult, Incident, Monitor, Selector, Settings}
 
   describe "list_monitors/1" do
     test "returns all monitors ordered by name, case-insensitively" do
@@ -53,9 +53,32 @@ defmodule Sentinelix.MonitoringTest do
       assert ids(Monitoring.list_monitors(label: {"type", "http"}, label: {"env", "prod"})) ==
                ids([web])
     end
+
+    test "filters by selector" do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      db = monitor_fixture(:tcp, %{name: "Database", labels: %{"env" => "dev"}})
+
+      assert ids(Monitoring.list_monitors(selector: "env=prod")) == ids([web])
+      assert ids(Monitoring.list_monitors(selector: "type=tcp, name~base")) == ids([db])
+      assert ids(Monitoring.list_monitors(selector: Selector.parse!(""))) == ids([web, db])
+
+      assert_raise Selector.Error, fn -> Monitoring.list_monitors(selector: "env=") end
+      assert_raise ArgumentError, fn -> Monitoring.list_monitors(selector: "status=up") end
+    end
   end
 
-  describe "list_label_values/0" do
+  describe "list_label_values/1" do
+    test "includes automatic labels when asked to" do
+      monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+      monitor_fixture(:tcp)
+
+      assert Monitoring.list_label_values(automatic: true) == %{
+               "env" => ["prod"],
+               "host" => ["db.example.com", "example.com"],
+               "type" => ["http", "tcp"]
+             }
+    end
+
     test "returns the user label keys in use with their sorted values" do
       assert Monitoring.list_label_values() == %{}
 
