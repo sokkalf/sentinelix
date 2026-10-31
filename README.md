@@ -18,7 +18,9 @@ public status pages.
   charts, uptime over 24 hours / 7 / 30 / 90 days and incident history
   (LiveView, updates without reloading).
 * **Labels:** key/value labels on monitors (`env=prod`, `site=oslo`) to
-  group, filter and search them, plus automatic `type` and `host` labels.
+  group and filter them, plus automatic `type` and `host` labels.
+* **Selectors** such as `env=prod, site in (oslo,helsinki), status=down`
+  filter the dashboard and the monitor list.
 * **Cloning:** "same checks as db1, but for db2" – copy a monitor's
   settings, labels and notification channels into a new one.
 * **Bulk actions** in the monitor list: label, pause, resume, attach
@@ -281,10 +283,8 @@ along any dimension. A label's value is optional (`deprecated`).
 * Each key appears at most once per monitor, at most 64 labels.
 
 Edit them in the monitor form, which suggests the keys and values already in
-use. The dashboard filters by a label (pick it in the label filter or click
-a label badge: `/?label=env=prod`; a bare key like `/?label=env` matches any
-value), and the dashboard and monitor list search also matches labels
-written as `key=value`.
+use. The dashboard and the monitor list filter by labels with
+[selectors](#selectors); clicking a label badge adds it to the selector.
 
 ### Automatic labels
 
@@ -299,8 +299,8 @@ settings whenever it is saved:
   (`https://WWW.Example.com:8443/` gives `host=www.example.com`). Push
   monitors have none.
 
-They filter and search like your own labels (`/?label=type=tcp`,
-`/?label=host=db1.example.com`) and appear as muted, dashed badges on the
+Selectors use them like your own labels (`type=tcp`,
+`host=db1.example.com`), and they appear as muted, dashed badges on the
 monitor page and in the monitor form. `type` and `host` are reserved: your
 own labels can't use them. Labels named `type` or `host` from before
 automatic labels were dropped where they equalled the automatic one and
@@ -309,6 +309,59 @@ renamed to `user/type` and `user/host` otherwise.
 Tags of earlier versions became labels without a value, normalized to the
 key rules (`Web Server` became `web-server`); tags written as `key=value`
 kept their value. Dashboard links with `?tag=` keep working.
+
+## Selectors
+
+A selector picks monitors by their labels (your own and the automatic
+ones), name and status. It is a comma-separated list of terms that all have
+to match, much like Kubernetes label selectors:
+
+```
+env=prod, site in (oslo,helsinki), service!=legacy, !deprecated, host
+```
+
+| Term | Matches monitors |
+|------|------------------|
+| `key` | with the label `key`, whatever its value |
+| `!key` | without the label `key` |
+| `key=value` (or `==`) | with exactly this value (case-sensitive) |
+| `key!=value` | without the label, or with another value |
+| `key in (a,b)` | whose value is one of these |
+| `key notin (a,b)` | without the label, or with none of these values |
+| `key~text` | whose value contains the text (case-insensitive) |
+| `key!~text` | without the label, or whose value doesn't contain the text |
+
+Two keys are pseudo-labels instead of labels (so labels of your own named
+`status` or `name` can't be selected):
+
+* `status`: the current status, `up`, `down`, `pending`, `maintenance` or
+  `paused` (with `=`, `!=`, `in` and `notin`): `status=down`,
+  `status in (down,pending)`.
+* `name`: the monitor's name, with any operator that takes a value:
+  `name~api` (name contains "api", ignoring case), `name="Web 1"`.
+
+Spaces around operators and commas don't matter, keys are lowercased, and
+an empty selector matches every monitor. Values need no quotes, except for
+names with spaces or one of `, ( ) " = ! ~` in them: `name~"web 1"`
+(`\"` and `\\` inside quotes). A term with an error (`env=`, an unknown
+status) is shown below the input with its column.
+
+Examples:
+
+* `env=prod, status=down`: production monitors that are down.
+* `type=http, host~example.com`: HTTP monitors of hosts under example.com.
+* `team=db, !deprecated, status!=paused`: the db team's active monitors.
+* `site notin (oslo)`: everything not in Oslo, including monitors without a
+  `site` label.
+
+On the **dashboard** the selector is in the URL
+(`/?selector=env%3Dprod%2C%20status%3Ddown`), so a filtered dashboard can be
+bookmarked and shared. The status counters toggle a `status=` term, label
+badges add their label, and the input suggests the keys and values in use,
+automatic labels included. Older dashboard links keep working: `?q=web`
+becomes `name~web`, `?status=down` `status=down`, and `?label=env=prod` or
+`?tag=legacy` that label. The **monitor list** takes the same selector
+(`/monitors?selector=...`); bulk actions apply to the monitors it shows.
 
 ## Cloning monitors
 
@@ -329,8 +382,9 @@ not changed.
 ## Bulk actions
 
 The monitor list (`/monitors`) changes many monitors at once. Select
-monitors with the checkboxes, or all monitors matching the current search
-with the checkbox in the table header (or *Select all*). Then:
+monitors with the checkboxes, or all monitors matching the current
+[selector](#selectors) with the checkbox in the table header (or *Select
+all*). Then:
 
 * **Labels:** enter one or more labels separated by spaces or commas and
   click *Add* (`env=prod` sets the value, replacing another value of `env`)
@@ -344,7 +398,7 @@ with the checkbox in the table header (or *Select all*). Then:
 Each action changes all selected monitors or, if one of them can't be
 changed (e.g. it would get more than 64 labels), none. The checks of the
 changed monitors restart with the new configuration, as after editing a
-monitor. Only monitors that are shown can be selected: narrowing the search
+monitor. Only monitors that are shown can be selected: narrowing the selector
 deselects the monitors it hides, and monitors that start matching are not
 selected automatically.
 
