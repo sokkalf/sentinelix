@@ -262,6 +262,10 @@ defmodule SentinelixWeb.MonitorLive.Form do
               No notification channels yet.
               <.link navigate={~p"/settings/notifications/new"} class="link">Add one</.link>
             </p>
+            <p :if={@routed_channel_ids != []} class="mb-1 text-xs text-base-content/60">
+              Channels marked <em>via selector</em>
+              notify this monitor because of its labels or name, checked or not.
+            </p>
             <label
               :for={channel <- @channels}
               class="flex cursor-pointer items-center gap-2 py-1 text-sm"
@@ -276,6 +280,14 @@ defmodule SentinelixWeb.MonitorLive.Form do
               />
               <span class="truncate">{channel.name}</span>
               <span class="badge badge-ghost badge-xs">{channel.type}</span>
+              <span
+                :if={channel.id in @routed_channel_ids}
+                id={"channel-#{channel.id}-routed"}
+                class="badge badge-info badge-soft badge-xs"
+                title={"Its selector matches: #{channel.selector}"}
+              >
+                via selector <code>{channel.selector}</code>
+              </span>
               <span :if={!channel.enabled} class="badge badge-warning badge-soft badge-xs">
                 disabled
               </span>
@@ -1012,7 +1024,22 @@ defmodule SentinelixWeb.MonitorLive.Form do
       stored_secrets: Map.new(stored, fn {key, value} -> {key, value != nil} end),
       secret_errors: secret_errors(socket, changeset, type, params)
     )
+    |> assign_routed_channels(changeset)
     |> assign_suggested_parent(changeset)
+  end
+
+  # The channels whose selector matches the monitor as edited (its labels,
+  # automatic labels and name in the form; `all_labels` is the stored union
+  # and would be stale), whether or not they are attached.
+  defp assign_routed_channels(socket, changeset) do
+    preview = %{Ecto.Changeset.apply_changes(changeset) | all_labels: nil}
+
+    routed_ids =
+      for {channel, _reasons} <-
+            Notifications.route_channels(socket.assigns.channels, preview, []),
+          do: channel.id
+
+    assign(socket, routed_channel_ids: routed_ids)
   end
 
   # The suggested parent (see Monitoring.suggest_parent/1), looked up again
