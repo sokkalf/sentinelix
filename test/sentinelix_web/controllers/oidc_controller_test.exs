@@ -254,6 +254,28 @@ defmodule SentinelixWeb.OIDCControllerTest do
       assert redirected_to(conn) == ~p"/"
     end
 
+    test "stores the user's groups and refreshes them on every login", %{conn: conn} do
+      fake = setup_oidc()
+
+      oidc_login(conn, fake, Map.put(@claims, "groups", ["staff", "ops"]))
+      user = Accounts.get_user_by_oidc_identity(fake.issuer, "user-123")
+      assert user.groups == ["ops", "staff"]
+
+      oidc_login(build_conn(), fake, Map.put(@claims, "groups", ["staff"]))
+      assert Sentinelix.Repo.reload!(user).groups == ["staff"]
+
+      oidc_login(build_conn(), fake, @claims)
+      assert Sentinelix.Repo.reload!(user).groups == []
+    end
+
+    test "stores groups from a custom (nested) claim", %{conn: conn} do
+      fake = setup_oidc(oidc: [groups_claim: "realm_access.roles"])
+
+      oidc_login(conn, fake, Map.put(@claims, "realm_access", %{"roles" => ["ops"]}))
+
+      assert Accounts.get_user_by_oidc_identity(fake.issuer, "user-123").groups == ["ops"]
+    end
+
     test "reads groups from a custom claim, also via userinfo", %{conn: conn} do
       fake = setup_oidc(oidc: [allowed_groups: ["ops"], groups_claim: "roles"])
 

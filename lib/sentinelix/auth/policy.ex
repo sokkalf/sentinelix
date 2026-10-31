@@ -47,7 +47,9 @@ defmodule Sentinelix.Auth.Policy do
   end
 
   @doc """
-  Extracts the group names from the claims.
+  Extracts the group names from the claims. Besides the allow-list, these
+  are stored on the user at every login (see
+  `Sentinelix.Accounts.upsert_oidc_user/1`).
   """
   def groups(claims, claim_name) do
     case Map.fetch(claims, claim_name) do

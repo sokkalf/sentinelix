@@ -6,17 +6,23 @@ defmodule Sentinelix.Accounts.User do
 
     * **OIDC users** are provisioned just-in-time on their first login through
       the OpenID Connect provider and are identified by `oidc_issuer` +
-      `oidc_subject`. Their `email` and `name` are refreshed from the claims
-      on every login.
+      `oidc_subject`. Their `email`, `name` and `groups` are refreshed from
+      the claims on every login. The groups come from the groups claim (see
+      `Sentinelix.Auth.Policy.groups/2`) and decide which group-scoped saved
+      views the user sees (see `Sentinelix.SavedViews`).
     * **Local users** have a password (`hashed_password`) and are only used as
       a break-glass fallback when the IdP is unavailable or not configured.
       They are created with `mix sentinelix.create_admin` or the
-      `ADMIN_EMAIL`/`ADMIN_PASSWORD` environment variables.
+      `ADMIN_EMAIL`/`ADMIN_PASSWORD` environment variables. They have no
+      groups.
   """
   use Ecto.Schema
   import Ecto.Changeset
 
   @type t :: %__MODULE__{}
+
+  @max_groups 500
+  @max_group_length 255
 
   schema "users" do
     field :email, :string
@@ -26,16 +32,22 @@ defmodule Sentinelix.Accounts.User do
     field :password, :string, virtual: true, redact: true
     field :hashed_password, :string, redact: true
     field :last_login_at, :utc_datetime
+    field :groups, {:array, :string}, default: []
 
     timestamps(type: :utc_datetime)
   end
 
   @doc """
   Changeset for users provisioned from OpenID Connect claims.
+
+  `:groups` are normalized rather than validated, so odd claims never fail
+  a login: blank names, names longer than #{@max_group_length} characters and
+  repeats are dropped, and at most #{@max_groups} are kept.
   """
   def oidc_changeset(user, attrs) do
     user
-    |> cast(attrs, [:oidc_issuer, :oidc_subject, :email, :name, :last_login_at])
+    |> cast(attrs, [:oidc_issuer, :oidc_subject, :email, :name, :last_login_at, :groups])
+    |> update_change(:groups, &normalize_groups/1)
     |> validate_required([:oidc_issuer, :oidc_subject])
     |> validate_length(:email, max: 255)
     |> validate_length(:name, max: 255)
@@ -67,6 +79,15 @@ defmodule Sentinelix.Accounts.User do
     |> validate_required([:password])
     |> validate_length(:password, min: 12, max: 72)
     |> maybe_hash_password(opts)
+  end
+
+  defp normalize_groups(groups) do
+    groups
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&(&1 != "" and String.length(&1) <= @max_group_length))
+    |> Enum.uniq()
+    |> Enum.take(@max_groups)
+    |> Enum.sort()
   end
 
   defp validate_email(changeset) do

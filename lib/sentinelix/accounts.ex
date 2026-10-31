@@ -83,9 +83,9 @@ defmodule Sentinelix.Accounts do
   @doc """
   Creates or updates the user for an OIDC identity (just-in-time provisioning).
 
-  Users are matched on `:oidc_issuer` + `:oidc_subject` only; `:email` and
-  `:name` are overwritten with the latest values from the IdP and
-  `last_login_at` is bumped.
+  Users are matched on `:oidc_issuer` + `:oidc_subject` only; `:email`,
+  `:name` and `:groups` are overwritten with the latest values from the IdP
+  (no `:groups` means none) and `last_login_at` is bumped.
   """
   def upsert_oidc_user(attrs) do
     attrs = Map.put(attrs, :last_login_at, DateTime.utc_now(:second))
@@ -93,7 +93,7 @@ defmodule Sentinelix.Accounts do
     %User{}
     |> User.oidc_changeset(attrs)
     |> Repo.insert(
-      on_conflict: {:replace, [:email, :name, :last_login_at, :updated_at]},
+      on_conflict: {:replace, [:email, :name, :groups, :last_login_at, :updated_at]},
       conflict_target: [:oidc_issuer, :oidc_subject],
       returning: true
     )
