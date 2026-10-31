@@ -22,17 +22,22 @@ defmodule SentinelixWeb.MonitorLiveTest do
     end
 
     test "lists, searches, pauses and deletes monitors", %{conn: conn} do
-      web = monitor_fixture(:http, %{name: "Web"})
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"site" => "oslo"}})
       db = monitor_fixture(:tcp, %{name: "Database"})
       check_result_fixture(web, %{status: :up})
 
       {:ok, view, _html} = live(conn, ~p"/monitors")
       assert view |> element("#monitor-#{web.id}") |> render() =~ "Up"
       assert view |> element("#monitor-#{db.id}") |> render() =~ "db.example.com:5432"
+      assert has_element?(view, "#monitor-#{web.id} [data-label='site=oslo']")
 
       view |> form("#search-form", %{q: "data"}) |> render_change()
       refute has_element?(view, "#monitor-#{web.id}")
       assert has_element?(view, "#monitor-#{db.id}")
+
+      view |> form("#search-form", %{q: "site=oslo"}) |> render_change()
+      assert has_element?(view, "#monitor-#{web.id}")
+      refute has_element?(view, "#monitor-#{db.id}")
       view |> form("#search-form", %{q: ""}) |> render_change()
 
       view |> element("#toggle-#{web.id}") |> render_click()
@@ -60,8 +65,12 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
   describe "show" do
     test "renders a monitor without results", %{conn: conn} do
-      monitor = monitor_fixture(:http, %{name: "Empty"})
+      monitor =
+        monitor_fixture(:http, %{name: "Empty", labels: %{"env" => "prod", "legacy" => ""}})
+
       {:ok, view, html} = live(conn, ~p"/monitors/#{monitor}")
+      assert has_element?(view, "[data-label='env=prod']", "env=prod")
+      assert has_element?(view, "[data-label=legacy]", "legacy")
 
       assert html =~ "Empty"
       assert html =~ "https://example.com/health"
@@ -221,12 +230,20 @@ defmodule SentinelixWeb.MonitorLiveTest do
              |> form("#monitor-form", monitor: %{name: "", settings: %{url: "nope"}})
              |> render_change() =~ "must be a valid http:// or https:// URL"
 
+      view |> element("#add-label") |> render_click()
+      view |> element("#add-label") |> render_click()
+      view |> element("#add-label") |> render_click()
+
       {:ok, _view, html} =
         view
         |> form("#monitor-form",
           monitor: %{
             name: "Homepage",
-            tags: "prod, web team",
+            labels: %{
+              "0" => %{key: " Env ", value: "prod"},
+              "1" => %{key: "", value: ""},
+              "2" => %{key: "web", value: ""}
+            },
             interval_seconds: "30",
             settings: %{
               url: "https://example.com",
@@ -242,7 +259,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert html =~ "Monitor created"
       assert [monitor] = Monitoring.list_monitors()
       assert monitor.name == "Homepage"
-      assert monitor.tags == ["prod", "web team"]
+      assert monitor.labels == %{"env" => "prod", "web" => ""}
       assert monitor.interval_seconds == 30
       assert monitor.settings.method == "HEAD"
       assert monitor.settings.headers == %{"X-Token" => "abc", "Accept" => "text/html"}
@@ -405,9 +422,10 @@ defmodule SentinelixWeb.MonitorLiveTest do
     end
 
     test "edits a monitor", %{conn: conn} do
-      monitor = monitor_fixture(:tcp, %{name: "DB", tags: ["a", "b"]})
-      {:ok, view, html} = live(conn, ~p"/monitors/#{monitor}/edit")
-      assert html =~ "a, b"
+      monitor = monitor_fixture(:tcp, %{name: "DB", labels: %{"env" => "prod"}})
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}/edit")
+      assert has_element?(view, "#monitor_labels_0_key[value=env]")
+      assert has_element?(view, "#monitor_labels_0_value[value=prod]")
 
       assert view
              |> form("#monitor-form", monitor: %{settings: %{port: "70000"}})
@@ -425,6 +443,55 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
     test "redirects for unknown monitors", %{conn: conn} do
       assert {:error, {:live_redirect, %{to: "/monitors"}}} = live(conn, ~p"/monitors/0/edit")
+    end
+
+    test "edits labels with autocompletion of keys and values", %{conn: conn} do
+      monitor_fixture(:http, %{labels: %{"site" => "oslo", "env" => "prod"}})
+      monitor_fixture(:http, %{labels: %{"site" => "helsinki"}})
+      monitor = monitor_fixture(:tcp, %{labels: %{"site" => "oslo", "legacy" => ""}})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}/edit")
+      # Rows sorted by key.
+      assert has_element?(view, "#monitor_labels_0_key[value=legacy]")
+      assert has_element?(view, "#monitor_labels_1_key[value=site]")
+      assert has_element?(view, "#label-keys option[value=env]")
+      assert has_element?(view, "#label-keys option[value=site]")
+      assert has_element?(view, "#label-values-1 option[value=helsinki]")
+      assert has_element?(view, "#label-values-1 option[value=oslo]")
+
+      # Duplicate keys and invalid keys are errors.
+      view |> element("#add-label") |> render_click()
+
+      html =
+        view
+        |> form("#monitor-form", monitor: %{labels: %{"2" => %{key: "Site", value: "bergen"}}})
+        |> render_change()
+
+      assert html =~ "duplicate label key site"
+      # The values of the key typed so far are suggested.
+      assert has_element?(view, "#label-values-2 option[value=oslo]")
+
+      html =
+        view
+        |> form("#monitor-form", monitor: %{labels: %{"2" => %{key: "bad key", value: ""}}})
+        |> render_submit()
+
+      assert html =~ ~s(invalid label key &quot;bad key&quot;)
+
+      # Removing rows keeps the others.
+      view |> element("#remove-label-2") |> render_click()
+      view |> element("#remove-label-0") |> render_click()
+      refute has_element?(view, "#label-row-1")
+      assert has_element?(view, "#monitor_labels_0_key[value=site]")
+
+      view |> form("#monitor-form") |> render_submit()
+      assert Monitoring.get_monitor!(monitor.id).labels == %{"site" => "oslo"}
+
+      # Removing every label clears them.
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}/edit")
+      view |> element("#remove-label-0") |> render_click()
+      view |> form("#monitor-form") |> render_submit()
+      assert Monitoring.get_monitor!(monitor.id).labels == %{}
     end
 
     test "selects notification channels", %{conn: conn} do

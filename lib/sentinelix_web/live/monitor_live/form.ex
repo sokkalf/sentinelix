@@ -11,7 +11,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
 
   alias Sentinelix.Checks.Postgres.Expectation
   alias Sentinelix.Monitoring
-  alias Sentinelix.Monitoring.{Monitor, Settings}
+  alias Sentinelix.Monitoring.{Labels, Monitor, Settings}
   alias Sentinelix.Notifications
 
   @impl true
@@ -92,17 +92,78 @@ defmodule SentinelixWeb.MonitorLive.Form do
             </.inputs_for>
           </section>
 
+          <section
+            id="monitor-labels"
+            class="rounded-box border border-base-300 bg-base-100 p-4 sm:p-6"
+          >
+            <h2 class="font-semibold">Labels</h2>
+            <p class="mt-1 mb-3 text-xs text-base-content/60">
+              Key/value pairs like env=prod or site=oslo to group and filter monitors.
+              The value is optional.
+            </p>
+            <div
+              :for={{row, index} <- Enum.with_index(@label_rows)}
+              id={"label-row-#{index}"}
+              class="mb-2 flex items-center gap-2"
+            >
+              <input
+                type="text"
+                id={"monitor_labels_#{index}_key"}
+                name={"monitor[labels][#{index}][key]"}
+                value={row["key"]}
+                placeholder="key"
+                list="label-keys"
+                aria-label="Label key"
+                autocomplete="off"
+                phx-debounce="300"
+                class={[
+                  "input input-sm min-w-0 flex-1 font-mono",
+                  @label_errors != [] && "input-error"
+                ]}
+              />
+              <span class="text-base-content/50">=</span>
+              <input
+                type="text"
+                id={"monitor_labels_#{index}_value"}
+                name={"monitor[labels][#{index}][value]"}
+                value={row["value"]}
+                placeholder="value"
+                list={"label-values-#{index}"}
+                aria-label="Label value"
+                autocomplete="off"
+                phx-debounce="300"
+                class={[
+                  "input input-sm min-w-0 flex-1 font-mono",
+                  @label_errors != [] && "input-error"
+                ]}
+              />
+              <datalist id={"label-values-#{index}"}>
+                <option :for={value <- label_value_options(@label_values, row)} value={value} />
+              </datalist>
+              <button
+                type="button"
+                id={"remove-label-#{index}"}
+                phx-click="remove_label"
+                phx-value-index={index}
+                class="btn btn-ghost btn-sm btn-square"
+                title="Remove label"
+              >
+                <.icon name="hero-x-mark" class="size-4" />
+              </button>
+            </div>
+            <datalist id="label-keys">
+              <option :for={key <- @label_values |> Map.keys() |> Enum.sort()} value={key} />
+            </datalist>
+            <p :for={msg <- @label_errors} class="mb-2 flex items-center gap-2 text-sm text-error">
+              <.icon name="hero-exclamation-circle" class="size-5" /> {msg}
+            </p>
+            <button type="button" id="add-label" phx-click="add_label" class="btn btn-ghost btn-sm">
+              <.icon name="hero-plus" class="size-4" /> Add label
+            </button>
+          </section>
+
           <section class="rounded-box border border-base-300 bg-base-100 p-4 sm:p-6">
-            <h2 class="mb-3 font-semibold">Description & tags</h2>
-            <.input
-              field={@form[:tags]}
-              type="text"
-              label="Tags"
-              value={format_list(@form[:tags].value)}
-              placeholder="production, web"
-              phx-debounce="300"
-            />
-            <p class="-mt-1 mb-2 text-xs text-base-content/60">Comma separated.</p>
+            <h2 class="mb-3 font-semibold">Description</h2>
             <.input
               field={@form[:description]}
               type="textarea"
@@ -639,7 +700,12 @@ defmodule SentinelixWeb.MonitorLive.Form do
 
   @impl true
   def mount(params, _session, socket) do
-    socket = assign(socket, channels: Notifications.list_channels())
+    socket =
+      assign(socket,
+        channels: Notifications.list_channels(),
+        label_values: Monitoring.list_label_values()
+      )
+
     {:ok, apply_action(socket, socket.assigns.live_action, params)}
   end
 
@@ -694,6 +760,17 @@ defmodule SentinelixWeb.MonitorLive.Form do
     {:noreply, assign_form(socket, changeset, params)}
   end
 
+  def handle_event("add_label", _params, socket) do
+    update_label_rows(socket, &(&1 ++ [%{"key" => "", "value" => ""}]))
+  end
+
+  def handle_event("remove_label", %{"index" => index}, socket) do
+    case Integer.parse(index) do
+      {index, ""} -> update_label_rows(socket, &List.delete_at(&1, index))
+      _ -> {:noreply, socket}
+    end
+  end
+
   def handle_event("save", %{"monitor" => params} = all_params, socket) do
     socket
     |> assign(channel_ids: channel_ids(all_params))
@@ -743,16 +820,44 @@ defmodule SentinelixWeb.MonitorLive.Form do
     end
   end
 
+  defp update_label_rows(socket, fun) do
+    params = Map.put(socket.assigns.params, "labels", fun.(socket.assigns.label_rows))
+    changeset = Monitoring.change_monitor(socket.assigns.monitor, params)
+    # Keep showing errors once the form has been validated.
+    changeset = %{changeset | action: socket.assigns.form.source.action}
+    {:noreply, assign_form(socket, changeset, params)}
+  end
+
+  # The label editor's rows: as entered (blank rows too), or the labels of
+  # the monitor before anything was entered.
+  defp label_rows(%{"labels" => rows}, _changeset) when is_list(rows), do: rows
+
+  defp label_rows(_params, changeset) do
+    changeset
+    |> Ecto.Changeset.get_field(:labels)
+    |> Labels.to_list()
+    |> Enum.map(fn {key, value} -> %{"key" => key, "value" => value} end)
+  end
+
+  # Autocompletion of a row's value: the values in use for its key.
+  defp label_value_options(label_values, row) do
+    key = (row["key"] || "") |> String.trim() |> String.downcase()
+    label_values |> Map.get(key, []) |> Enum.reject(&(&1 == ""))
+  end
+
   defp assign_form(socket, changeset, params) do
     type = Ecto.Changeset.get_field(changeset, :type)
     monitor = socket.assigns.monitor
     # Stored secrets only apply while the type is unchanged.
     stored = if monitor.type == type, do: monitor.secrets || %{}, else: %{}
+    form = to_form(changeset)
 
     assign(socket,
-      form: to_form(changeset),
+      form: form,
       type: type,
       params: params,
+      label_rows: label_rows(params, changeset),
+      label_errors: Enum.map(form[:labels].errors, &translate_error/1),
       secret_fields: Enum.map(Monitor.secret_fields(type), &String.to_existing_atom/1),
       stored_secrets: Map.new(stored, fn {key, value} -> {key, value != nil} end)
     )
@@ -761,17 +866,32 @@ defmodule SentinelixWeb.MonitorLive.Form do
   ## Params
 
   # The form uses plain text inputs for list and map fields; turn them into
-  # the shapes the changeset casts.
+  # the shapes the changeset casts. The label editor's rows arrive as an
+  # index => row map, and not at all when there are none (no labels).
   @doc false
   def normalize_params(params) do
     params
-    |> update_present("tags", &split_list(&1, ~r/,/))
+    |> Map.update("labels", [], &label_params/1)
     |> update_present("settings", fn settings ->
       settings
       |> update_present("accepted_status_codes", &split_list(&1, ~r/[,\s]+/))
       |> update_present("headers", &parse_headers/1)
     end)
   end
+
+  defp label_params(rows) when is_map(rows) do
+    rows
+    |> Enum.flat_map(fn {index, row} ->
+      case Integer.parse(index) do
+        {index, ""} when is_map(row) -> [{index, Map.take(row, ["key", "value"])}]
+        _ -> []
+      end
+    end)
+    |> Enum.sort()
+    |> Enum.map(&elem(&1, 1))
+  end
+
+  defp label_params(rows), do: rows
 
   defp update_present(map, key, fun) when is_map(map) do
     case map do
