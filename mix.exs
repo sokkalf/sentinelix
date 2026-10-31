@@ -82,6 +82,7 @@ defmodule Sentinelix.MixProject do
       {:tz, "~> 0.28"},
       {:hammer, "~> 7.1"},
       {:gen_smtp, "~> 1.3"},
+      {:yaml_elixir, "~> 2.12"},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ]
   end
