@@ -14,6 +14,9 @@ defmodule Sentinelix.Monitoring do
     * `{:monitor_updated, %Monitor{}}` – also sent by `toggle_monitor/1`
     * `{:monitor_deleted, %Monitor{}}`
 
+  Bulk changes (`put_labels/2`, `delete_labels/2`, `set_monitors_enabled/2`,
+  `delete_monitors/1`) send one of these events per changed monitor.
+
   Topic `"monitor:<id>"` (see `subscribe_monitor/1`) – everything about a
   single monitor:
 
@@ -239,6 +242,111 @@ defmodule Sentinelix.Monitoring do
     monitor
     |> Repo.delete()
     |> broadcast_monitor_change(:monitor_deleted)
+  end
+
+  ## Bulk changes
+
+  @doc """
+  Adds labels to each of the given monitors (structs or ids; unknown ids
+  are ignored), replacing the value of keys a monitor already has.
+  `labels` is anything `Sentinelix.Monitoring.Labels` casts, e.g.
+  `%{"env" => "prod"}` or `["env=prod", "legacy"]`.
+
+  All monitors are changed in one transaction, or none if a change is
+  invalid (e.g. a monitor would get more than the maximum number of
+  labels): then the error changeset of the first such monitor is returned
+  (its `data` is the monitor). Returns the monitors that changed; each is
+  broadcast as `{:monitor_updated, monitor}` after the commit, like
+  `update_monitor/2`, so their workers restart.
+  """
+  @spec put_labels([monitor_ref()], Labels.t() | [String.t()]) ::
+          {:ok, [Monitor.t()]} | {:error, Ecto.Changeset.t()}
+  def put_labels(monitors, labels) do
+    case labels_changeset(%Monitor{}, labels) do
+      %{valid?: true} = changeset ->
+        labels = Ecto.Changeset.get_field(changeset, :labels)
+        bulk_update(monitors, &labels_changeset(&1, Map.merge(&1.labels, labels)))
+
+      changeset ->
+        {:error, changeset}
+    end
+  end
+
+  @doc """
+  Removes the labels with the given keys (whatever their value) from each
+  of the given monitors. Transaction and events as in `put_labels/2`.
+  """
+  @spec delete_labels([monitor_ref()], [Labels.key()]) ::
+          {:ok, [Monitor.t()]} | {:error, Ecto.Changeset.t()}
+  def delete_labels(monitors, keys) when is_list(keys) do
+    keys = Enum.map(keys, &(&1 |> String.trim() |> String.downcase()))
+    bulk_update(monitors, &labels_changeset(&1, Map.drop(&1.labels, keys)))
+  end
+
+  defp labels_changeset(monitor, labels),
+    do: Ecto.Changeset.cast(monitor, %{labels: labels}, [:labels])
+
+  @doc """
+  Enables (resumes) or disables (pauses) each of the given monitors.
+  Transaction and events as in `put_labels/2`: only monitors that weren't
+  already in that state change.
+  """
+  @spec set_monitors_enabled([monitor_ref()], boolean()) ::
+          {:ok, [Monitor.t()]} | {:error, Ecto.Changeset.t()}
+  def set_monitors_enabled(monitors, enabled) when is_boolean(enabled) do
+    bulk_update(monitors, &Ecto.Changeset.change(&1, enabled: enabled))
+  end
+
+  @doc """
+  Deletes the given monitors (structs or ids; unknown ids are ignored)
+  together with their check results and incidents, in one statement.
+  Returns the deleted monitors; each is broadcast as `{:monitor_deleted,
+  monitor}`, like `delete_monitor/1`.
+  """
+  @spec delete_monitors([monitor_ref()]) :: {:ok, [Monitor.t()]}
+  def delete_monitors(monitors) do
+    ids = Enum.map(monitors, &monitor_id/1)
+
+    {_count, deleted} =
+      Monitor
+      |> where([m], m.id in ^ids)
+      |> select([m], m)
+      |> Repo.delete_all()
+
+    Enum.each(deleted, &broadcast_monitor_change({:ok, &1}, :monitor_deleted))
+    {:ok, deleted}
+  end
+
+  # Applies `change` (monitor -> changeset) to the given monitors in one
+  # transaction and broadcasts the changed ones after the commit. Rows are
+  # locked (in id order, so concurrent bulk changes can't deadlock) while
+  # their labels are merged, so concurrent bulk changes don't overwrite
+  # each other.
+  defp bulk_update(monitors, change) do
+    ids = Enum.map(monitors, &monitor_id/1)
+
+    Repo.transaction(fn ->
+      Monitor
+      |> where([m], m.id in ^ids)
+      |> order_by([m], asc: m.id)
+      |> lock("FOR UPDATE")
+      |> Repo.all()
+      |> Enum.map(change)
+      # An invalid cast leaves no change behind, but must still fail.
+      |> Enum.reject(&(&1.valid? and &1.changes == %{}))
+      |> Enum.map(&update_or_rollback/1)
+    end)
+    |> tap(fn
+      {:ok, changed} -> Enum.each(changed, &broadcast_monitor_change({:ok, &1}, :monitor_updated))
+      _error -> :ok
+    end)
+  end
+
+  defp update_or_rollback(changeset) do
+    case Repo.update(changeset) do
+      {:ok, monitor} -> monitor
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
   end
 
   @doc """

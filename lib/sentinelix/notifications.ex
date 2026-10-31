@@ -215,6 +215,40 @@ defmodule Sentinelix.Notifications do
   end
 
   @doc """
+  Attaches each of the given channels to each of the given monitors, in
+  addition to the channels they already have (ids or structs; unknown ids
+  are ignored). One statement, so all or nothing.
+
+  Like the other assignment changes this restarts nothing: the dispatcher
+  looks up a monitor's channels when it sends.
+  """
+  @spec attach_channels([monitor_ref()], [channel_ref()]) :: :ok
+  def attach_channels(monitors, channels) do
+    monitor_ids = existing_ids(Monitor, Enum.map(monitors, &id/1))
+    channel_ids = existing_ids(Channel, Enum.map(channels, &id/1))
+
+    rows = for m <- monitor_ids, c <- channel_ids, do: %{monitor_id: m, channel_id: c}
+    Repo.insert_all(@join_table, rows, on_conflict: :nothing)
+    :ok
+  end
+
+  @doc """
+  Detaches each of the given channels from each of the given monitors.
+  """
+  @spec detach_channels([monitor_ref()], [channel_ref()]) :: :ok
+  def detach_channels(monitors, channels) do
+    monitor_ids = Enum.map(monitors, &id/1)
+    channel_ids = Enum.map(channels, &id/1)
+
+    from(mc in @join_table,
+      where: mc.monitor_id in ^monitor_ids and mc.channel_id in ^channel_ids
+    )
+    |> Repo.delete_all()
+
+    :ok
+  end
+
+  @doc """
   Returns the default channels (those attached to new monitors).
   """
   @spec list_default_channels() :: [Channel.t()]

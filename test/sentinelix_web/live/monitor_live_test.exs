@@ -69,6 +69,145 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#monitor_name[value='Web (copy)']")
     end
 
+    test "applies bulk actions to the selected monitors", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"site" => "oslo", "env" => "dev"}})
+      db = monitor_fixture(:tcp, %{name: "Database"})
+      other = monitor_fixture(:http, %{name: "Other", labels: %{"site" => "oslo"}})
+      channel = channel_fixture(:webhook, %{name: "Ops"})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors")
+      refute has_element?(view, "#bulk-actions")
+
+      view |> element("#select-#{web.id}") |> render_click()
+      view |> element("#select-#{db.id}") |> render_click()
+      assert has_element?(view, "#selection-count", "2 monitors selected")
+      assert has_element?(view, "#select-#{web.id}[checked]")
+      refute has_element?(view, "#select-#{other.id}[checked]")
+
+      submit_bulk(view, "#bulk-labels-form", %{labels: "Env=prod, team=ops"}, "add")
+      assert render(view) =~ "Added env=prod, team=ops to 2 monitors."
+
+      assert Monitoring.get_monitor!(web.id).labels == %{
+               "site" => "oslo",
+               "env" => "prod",
+               "team" => "ops"
+             }
+
+      assert Monitoring.get_monitor!(db.id).labels == %{"env" => "prod", "team" => "ops"}
+      assert Monitoring.get_monitor!(other.id).labels == %{"site" => "oslo"}
+      assert has_element?(view, "#monitor-#{db.id} [data-label='env=prod']")
+
+      submit_bulk(view, "#bulk-labels-form", %{labels: "site team"}, "remove")
+      assert render(view) =~ "Removed site, team from 2 monitors."
+      assert Monitoring.get_monitor!(web.id).labels == %{"env" => "prod"}
+      assert Monitoring.get_monitor!(other.id).labels == %{"site" => "oslo"}
+
+      view |> element("#bulk-pause") |> render_click()
+      assert render(view) =~ "2 monitors paused."
+      refute Monitoring.get_monitor!(web.id).enabled
+      refute Monitoring.get_monitor!(db.id).enabled
+      assert Monitoring.get_monitor!(other.id).enabled
+      assert view |> element("#monitor-#{db.id}") |> render() =~ "Paused"
+
+      view |> element("#bulk-resume") |> render_click()
+      assert Monitoring.get_monitor!(web.id).enabled
+      assert Monitoring.get_monitor!(db.id).enabled
+
+      submit_bulk(view, "#bulk-channels-form", %{channel_id: channel.id}, "attach")
+      assert render(view) =~ "Attached Ops to 2 monitors."
+      assert Enum.sort(Notifications.channel_monitor_ids(channel)) == Enum.sort([web.id, db.id])
+
+      submit_bulk(view, "#bulk-channels-form", %{channel_id: channel.id}, "detach")
+      assert render(view) =~ "Detached Ops from 2 monitors."
+      assert Notifications.channel_monitor_ids(channel) == []
+
+      # The selection survives the actions, until the monitors are deleted.
+      assert has_element?(
+               view,
+               "#bulk-delete[data-confirm='Delete 2 monitors and all of their history?']"
+             )
+
+      view |> element("#bulk-delete") |> render_click()
+      assert render(view) =~ "2 monitors deleted."
+      refute Monitoring.get_monitor(web.id)
+      refute Monitoring.get_monitor(db.id)
+      assert Monitoring.get_monitor(other.id)
+      refute has_element?(view, "#monitor-#{web.id}")
+      refute has_element?(view, "#bulk-actions")
+    end
+
+    test "selects all monitors matching the search", %{conn: conn} do
+      web1 = monitor_fixture(:http, %{name: "Web 1"})
+      web2 = monitor_fixture(:http, %{name: "Web 2"})
+      db = monitor_fixture(:tcp, %{name: "Database"})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors")
+      view |> form("#search-form", %{q: "web"}) |> render_change()
+      view |> element("#select-all") |> render_click()
+      assert has_element?(view, "#selection-count", "2 monitors selected")
+      assert has_element?(view, "#select-all[checked]")
+      assert has_element?(view, "#select-#{web1.id}[checked]")
+
+      view |> element("#bulk-pause") |> render_click()
+      refute Monitoring.get_monitor!(web1.id).enabled
+      refute Monitoring.get_monitor!(web2.id).enabled
+      assert Monitoring.get_monitor!(db.id).enabled
+
+      # Widening the search keeps the selection; "select all" then offers
+      # every matching monitor.
+      view |> form("#search-form", %{q: ""}) |> render_change()
+      assert has_element?(view, "#selection-count", "2 monitors selected")
+      refute has_element?(view, "#select-#{db.id}[checked]")
+      view |> element("#select-all-matching", "Select all 3 monitors") |> render_click()
+      assert has_element?(view, "#selection-count", "3 monitors selected")
+
+      # Narrowing it deselects the monitors that no longer match.
+      view |> form("#search-form", %{q: "web 2"}) |> render_change()
+      assert has_element?(view, "#selection-count", "1 monitor selected")
+
+      view |> element("#bulk-resume") |> render_click()
+      assert Monitoring.get_monitor!(web2.id).enabled
+      refute Monitoring.get_monitor!(web1.id).enabled
+
+      view |> element("#select-all") |> render_click()
+      refute has_element?(view, "#bulk-actions")
+    end
+
+    test "deselects monitors that stop matching the search", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web"})
+      {:ok, view, _html} = live(conn, ~p"/monitors")
+      view |> form("#search-form", %{q: "web"}) |> render_change()
+      view |> element("#select-#{web.id}") |> render_click()
+
+      {:ok, _} = Monitoring.update_monitor(web, %{name: "Api"})
+      refute has_element?(view, "#monitor-#{web.id}")
+      refute has_element?(view, "#bulk-actions")
+    end
+
+    test "bulk label errors change nothing", %{conn: conn} do
+      full = for i <- 1..64, into: %{}, do: {"k#{i}", ""}
+      ok = monitor_fixture(:http, %{name: "Fine"})
+      too_many = monitor_fixture(:http, %{name: "Full", labels: full})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors")
+      view |> element("#select-all") |> render_click()
+
+      submit_bulk(view, "#bulk-labels-form", %{labels: "env=prod"}, "add")
+      assert render(view) =~ "Nothing changed, Full: at most 64 labels are allowed."
+      assert Monitoring.get_monitor!(ok.id).labels == %{}
+      assert Monitoring.get_monitor!(too_many.id).labels == full
+
+      submit_bulk(view, "#bulk-labels-form", %{labels: "bad!key"}, "add")
+      assert render(view) =~ ~s(Nothing changed: invalid label key &quot;bad!key&quot;.)
+
+      submit_bulk(view, "#bulk-labels-form", %{labels: "k1=x"}, "remove")
+      assert render(view) =~ "Remove labels by key (env, not env=prod)."
+      assert Monitoring.get_monitor!(too_many.id).labels == full
+
+      submit_bulk(view, "#bulk-labels-form", %{labels: " "}, "add")
+      assert render(view) =~ "Enter labels such as env=prod"
+    end
+
     test "updates on status changes", %{conn: conn} do
       monitor = monitor_fixture(:http, %{name: "Web"})
       {:ok, view, _html} = live(conn, ~p"/monitors")
@@ -671,5 +810,13 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
       assert Notifications.monitor_channel_ids(monitor) == []
     end
+  end
+
+  # Submits a bulk action form with the button of the given `op`.
+  defp submit_bulk(view, selector, data, op) do
+    view
+    |> form(selector, data)
+    |> put_submitter("button[name=op][value=#{op}]")
+    |> render_submit()
   end
 end

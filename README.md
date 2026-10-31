@@ -21,6 +21,8 @@ public status pages.
   group, filter and search them.
 * **Cloning:** "same checks as db1, but for db2" – copy a monitor's
   settings, labels and notification channels into a new one.
+* **Bulk actions** in the monitor list: label, pause, resume, attach
+  notification channels to or delete many monitors at once.
 * **Notifications** by email, generic webhook, Slack, Discord, Telegram,
   ntfy and Gotify, on down, recovery and certificate warnings.
 * **Maintenance windows** (one-off or recurring, time zone aware) that
@@ -303,6 +305,28 @@ not changed.
   original).
 * Maintenance windows and status pages are not copied; add the new monitor
   to them separately.
+
+## Bulk actions
+
+The monitor list (`/monitors`) changes many monitors at once. Select
+monitors with the checkboxes, or all monitors matching the current search
+with the checkbox in the table header (or *Select all*). Then:
+
+* **Labels:** enter one or more labels separated by spaces or commas and
+  click *Add* (`env=prod` sets the value, replacing another value of `env`)
+  or keys and click *Remove* (`env` removes the label whatever its value).
+* **Pause** or **Resume** the monitors.
+* **Attach** or **Detach** a notification channel (in addition to the
+  channels the monitors already have).
+* **Delete** the monitors with their history, after a confirmation that
+  shows how many.
+
+Each action changes all selected monitors or, if one of them can't be
+changed (e.g. it would get more than 64 labels), none. The checks of the
+changed monitors restart with the new configuration, as after editing a
+monitor. Only monitors that are shown can be selected: narrowing the search
+deselects the monitors it hides, and monitors that start matching are not
+selected automatically.
 
 ## PostgreSQL monitors
 
