@@ -29,10 +29,30 @@ defmodule Sentinelix.Metrics do
       latest check.
     * `sentinelix_monitor_cert_days_remaining` – days until the certificate
       expires, for monitors whose last check reported it (cert monitors).
+    * `sentinelix_monitor_labels` – always 1; carries the monitor's labels
+      (see `Sentinelix.Monitoring.Labels`) as `label_<key>="<value>"`, in
+      the style of kube-state-metrics' `kube_pod_labels`.
+
+  ## Monitor labels
+
+  Monitor labels are not added to every gauge: arbitrary user-defined keys
+  would change the series of all metrics whenever a label is edited and
+  multiply their cardinality. Instead, the single info metric
+  `sentinelix_monitor_labels` carries them and can be joined in PromQL:
+
+      sentinelix_monitor_up
+        * on (monitor_id) group_left (label_env)
+        sentinelix_monitor_labels
+
+  Label keys become Prometheus label names prefixed with `label_`, with
+  characters other than `a-z`, `0-9` and `_` replaced by `_`
+  (`team/owner` -> `label_team_owner`); if two keys end up the same, the
+  first in sorted order wins. Labels without a value have the value `""`.
   """
 
   alias Sentinelix.Metrics.CheckMeta
   alias Sentinelix.Monitoring
+  alias Sentinelix.Monitoring.Labels
   alias Sentinelix.Monitoring.Supervisor, as: Engine
   alias Sentinelix.Monitoring.Worker
 
@@ -49,7 +69,9 @@ defmodule Sentinelix.Metrics do
     {"sentinelix_monitor_response_time_ms", "Response time of the latest check in milliseconds."},
     {"sentinelix_monitor_last_check_timestamp_seconds", "Unix time of the latest check."},
     {"sentinelix_monitor_cert_days_remaining",
-     "Days until the monitored TLS certificate expires."}
+     "Days until the monitored TLS certificate expires."},
+    {"sentinelix_monitor_labels",
+     "The monitor's labels as label_<key> (always 1). Join on monitor_id."}
   ]
 
   @doc "The name of the `Peep` reporter."
@@ -104,6 +126,7 @@ defmodule Sentinelix.Metrics do
 
       %{
         labels: labels(monitor),
+        monitor_labels: monitor.labels,
         enabled: monitor.enabled,
         status: status(monitor, info, result),
         warning: info != nil and info.warning == true,
@@ -116,7 +139,20 @@ defmodule Sentinelix.Metrics do
   # {metric name, labels, value} samples of a monitor
   defp samples(%{labels: labels} = row) do
     [{"sentinelix_monitor_enabled", labels, bool(row.enabled)}] ++
-      status_samples(row) ++ result_samples(row) ++ cert_samples(row)
+      status_samples(row) ++
+      result_samples(row) ++ cert_samples(row) ++ label_samples(row)
+  end
+
+  defp label_samples(%{labels: labels, monitor_labels: monitor_labels}) do
+    extra =
+      monitor_labels
+      |> Labels.to_list()
+      |> Enum.map(fn {key, value} ->
+        {"label_" <> String.replace(key, ~r/[^a-z0-9_]/, "_"), value}
+      end)
+      |> Enum.uniq_by(&elem(&1, 0))
+
+    [{"sentinelix_monitor_labels", labels ++ extra, 1}]
   end
 
   defp status_samples(%{enabled: false}), do: []
@@ -186,7 +222,7 @@ defmodule Sentinelix.Metrics do
 
   defp format_labels(labels) do
     Enum.map_intersperse(labels, ?,, fn {key, value} ->
-      [Atom.to_string(key), "=\"", escape(to_string(value)), ?"]
+      [to_string(key), "=\"", escape(to_string(value)), ?"]
     end)
   end
 

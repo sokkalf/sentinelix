@@ -142,6 +142,27 @@ defmodule Sentinelix.MetricsTest do
     refute metrics() =~ "sentinelix_monitor_cert_days_remaining{#{labels(monitor)}}"
   end
 
+  test "reports monitor labels in an info metric only" do
+    labelled =
+      monitor_fixture(:http, %{
+        enabled: false,
+        labels: %{"env" => "prod", "team/owner" => "ops@example.com", "legacy" => ""}
+      })
+
+    plain = monitor_fixture(:http, %{enabled: false})
+
+    output = metrics()
+
+    assert output =~ "# TYPE sentinelix_monitor_labels gauge\n"
+
+    assert output =~
+             ~s(sentinelix_monitor_labels{#{labels(labelled)},label_env="prod",label_legacy="",label_team_owner="ops@example.com"} 1\n)
+
+    assert output =~ "sentinelix_monitor_labels{#{labels(plain)}} 1\n"
+    # Other metrics don't carry them.
+    assert output =~ "sentinelix_monitor_enabled{#{labels(labelled)}} 0\n"
+  end
+
   test "escapes label values" do
     monitor = monitor_fixture(:http, %{name: ~s(Say "hi" \\ there)})
 
