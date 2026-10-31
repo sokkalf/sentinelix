@@ -194,7 +194,7 @@ defmodule Sentinelix.SavedViews do
   # Tries the first free slug; another view taking it in the meantime gives
   # a unique constraint error, then the next one is tried.
   defp insert_with_slug(%Ecto.Changeset{valid?: false} = changeset, _attempts),
-    do: {:error, changeset}
+    do: {:error, %{changeset | action: :insert}}
 
   defp insert_with_slug(changeset, attempts) do
     slug = free_slug(Ecto.Changeset.get_field(changeset, :name))
@@ -241,7 +241,7 @@ defmodule Sentinelix.SavedViews do
     with :ok <- authorize_owner(scope, view) do
       view
       |> SavedView.changeset(attrs, scope.groups)
-      |> Repo.update()
+      |> Repo.update(stale_error_field: :id)
       |> broadcast_change()
     end
   end
@@ -253,7 +253,7 @@ defmodule Sentinelix.SavedViews do
     with :ok <- authorize_owner(scope, saved) do
       saved
       |> SavedView.params_changeset(View.to_params(view))
-      |> Repo.update()
+      |> Repo.update(stale_error_field: :id)
       |> broadcast_change()
     end
   end
@@ -263,7 +263,7 @@ defmodule Sentinelix.SavedViews do
           {:ok, SavedView.t()} | {:error, Ecto.Changeset.t() | :forbidden}
   def delete_view(%Scope{} = scope, %SavedView{} = view) do
     with :ok <- authorize_owner(scope, view) do
-      view |> Repo.delete() |> broadcast_change()
+      view |> Repo.delete(stale_error_field: :id) |> broadcast_change()
     end
   end
 
