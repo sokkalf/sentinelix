@@ -72,6 +72,22 @@ defmodule Sentinelix.StatsTest do
       assert Stats.uptime(monitor, {24, :hour}, now: @now) == 75.0
     end
 
+    test "unreachable results count as downtime", %{monitor: monitor} do
+      result(monitor, :up, ago(60), 100)
+      result(monitor, :unreachable, ago(120), 30_000)
+      result(monitor, :down, ago(180), 30_000)
+      result(monitor, :up, ago(240), 100)
+
+      summary = Stats.summary(monitor, {24, :hour}, now: @now)
+
+      assert summary.uptime == 50.0
+      assert %{up: 2, down: 1, unreachable: 1, total: 4} = summary
+      assert summary.max_ms == 100
+
+      assert Stats.uptime_percent(%{unreachable: 1}) == 0.0
+      assert Stats.uptime_percent(%{up: 0, down: 0, pending: 3}) == nil
+    end
+
     test "only counts results inside the window", %{monitor: monitor} do
       result(monitor, :down, ago(25 * 3600))
       result(monitor, :up, ago(3600))
@@ -121,8 +137,8 @@ defmodule Sentinelix.StatsTest do
 
   describe "with rollups" do
     # Results every 10 minutes over the last 3 days: up with 100..150 ms,
-    # except down between 30 and 32 hours ago, and maintenance for the
-    # first hour of each day.
+    # except down between 30 and 32 hours ago, unreachable between 40 and 41
+    # hours ago, and maintenance for the first hour of each day.
     setup %{monitor: monitor} do
       for i <- 0..(3 * 24 * 6 - 1) do
         at = ago(i * 600 + 7)
@@ -131,6 +147,7 @@ defmodule Sentinelix.StatsTest do
         cond do
           at.hour == 0 -> result(monitor, :maintenance, at)
           hours_ago >= 30 and hours_ago < 32 -> result(monitor, :down, at, 5_000)
+          hours_ago >= 40 and hours_ago < 41 -> result(monitor, :unreachable, at, 5_000)
           true -> result(monitor, :up, at, 100 + rem(i, 6) * 10)
         end
       end

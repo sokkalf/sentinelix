@@ -22,10 +22,13 @@ defmodule Sentinelix.Stats do
 
   ## Semantics
 
-    * Uptime is `up / (up + down)` as a percentage (`0.0..100.0`).
-      `:maintenance` results and `:pending` results (a failed check that is
-      being retried and not yet confirmed down) are excluded from the
-      denominator. `nil` when there are no up or down results.
+    * Uptime is `up / (up + down + unreachable)` as a percentage
+      (`0.0..100.0`). `:maintenance` results and `:pending` results (a
+      failed check that is being retried and not yet confirmed down) are
+      excluded from the denominator. `:unreachable` results (failed while
+      the monitor's parent was down) count as downtime: the service wasn't
+      available, the parent only explains why and keeps the alert quiet.
+      `nil` when there are no up, down or unreachable results.
     * Response time statistics cover `:up` results only (the response time
       of a failed check is mostly its timeout). `p95_ms` is computed from
       the raw results only, so for windows longer than the raw retention it
@@ -49,6 +52,7 @@ defmodule Sentinelix.Stats do
           down: non_neg_integer(),
           pending: non_neg_integer(),
           maintenance: non_neg_integer(),
+          unreachable: non_neg_integer(),
           total: non_neg_integer(),
           avg_ms: float() | nil,
           min_ms: non_neg_integer() | nil,
@@ -61,7 +65,8 @@ defmodule Sentinelix.Stats do
           up: non_neg_integer(),
           down: non_neg_integer(),
           pending: non_neg_integer(),
-          maintenance: non_neg_integer()
+          maintenance: non_neg_integer(),
+          unreachable: non_neg_integer()
         }
 
   @empty %{
@@ -69,6 +74,7 @@ defmodule Sentinelix.Stats do
     down: 0,
     pending: 0,
     maintenance: 0,
+    unreachable: 0,
     response_count: 0,
     response_sum: nil,
     min_ms: nil,
@@ -162,7 +168,8 @@ defmodule Sentinelix.Stats do
            up: counts.up,
            down: counts.down,
            pending: counts.pending,
-           maintenance: counts.maintenance
+           maintenance: counts.maintenance,
+           unreachable: counts.unreachable
          }
        end)}
     end)
@@ -261,6 +268,7 @@ defmodule Sentinelix.Stats do
           down: filter(count(), r.status == ^:down),
           pending: filter(count(), r.status == ^:pending),
           maintenance: filter(count(), r.status == ^:maintenance),
+          unreachable: filter(count(), r.status == ^:unreachable),
           response_count: filter(count(r.response_time_ms), r.status == ^:up),
           response_sum: filter(sum(r.response_time_ms), r.status == ^:up),
           min_ms: filter(min(r.response_time_ms), r.status == ^:up),
@@ -298,6 +306,7 @@ defmodule Sentinelix.Stats do
           down: sum(h.down_count),
           pending: sum(h.pending_count),
           maintenance: sum(h.maintenance_count),
+          unreachable: sum(h.unreachable_count),
           response_count: sum(h.response_count),
           response_sum: fragment("sum(? * ?)", h.avg_ms, h.response_count),
           min_ms: min(h.min_ms),
@@ -346,6 +355,7 @@ defmodule Sentinelix.Stats do
       down: acc.down + (row.down || 0),
       pending: acc.pending + (row.pending || 0),
       maintenance: acc.maintenance + (row.maintenance || 0),
+      unreachable: acc.unreachable + (row.unreachable || 0),
       response_count: acc.response_count + (row.response_count || 0),
       response_sum: add(acc.response_sum, row.response_sum),
       min_ms: pick(acc.min_ms, row.min_ms, &min/2),
@@ -368,15 +378,24 @@ defmodule Sentinelix.Stats do
       down: counts.down,
       pending: counts.pending,
       maintenance: counts.maintenance,
-      total: counts.up + counts.down + counts.pending + counts.maintenance,
+      unreachable: counts.unreachable,
+      total: counts.up + counts.down + counts.pending + counts.maintenance + counts.unreachable,
       avg_ms: avg(counts),
       min_ms: counts.min_ms,
       max_ms: counts.max_ms
     }
   end
 
-  defp uptime_percent(%{up: 0, down: 0}), do: nil
-  defp uptime_percent(%{up: up, down: down}), do: up * 100 / (up + down)
+  @doc """
+  The uptime percentage of result counts (`:up`, `:down` and `:unreachable`
+  counts; other keys are ignored), see Semantics. `nil` without any.
+  """
+  @spec uptime_percent(map()) :: float() | nil
+  def uptime_percent(counts) do
+    up = Map.get(counts, :up, 0)
+    unavailable = Map.get(counts, :down, 0) + Map.get(counts, :unreachable, 0)
+    if up + unavailable == 0, do: nil, else: up * 100 / (up + unavailable)
+  end
 
   defp avg(%{response_count: 0}), do: nil
   defp avg(%{response_sum: nil}), do: nil

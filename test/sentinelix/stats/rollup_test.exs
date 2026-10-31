@@ -38,6 +38,7 @@ defmodule Sentinelix.Stats.RollupTest do
       result(monitor, :pending, at(~T[10:55:00]), 30_000)
       result(monitor, :maintenance, at(~T[10:59:59.999999]))
       result(monitor, :down, at(~T[11:30:00]))
+      result(monitor, :unreachable, at(~T[11:40:00]))
       result(other, :maintenance, at(~T[11:30:00]))
       # The current hour is not complete yet.
       result(monitor, :up, at(~T[12:00:00]), 100)
@@ -67,6 +68,7 @@ defmodule Sentinelix.Stats.RollupTest do
                  hour: ~U[2026-10-30 11:00:00Z],
                  up_count: 0,
                  down_count: 1,
+                 unreachable_count: 1,
                  response_count: 0,
                  avg_ms: nil,
                  min_ms: nil

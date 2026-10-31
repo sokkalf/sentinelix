@@ -43,8 +43,9 @@ defmodule Sentinelix.Monitoring.History do
 
   @doc """
   The response time series of a monitor since `since`, one point per check
-  result (except `:maintenance`), oldest first. For longer ranges use the
-  hourly buckets of `Sentinelix.Stats.hourly/3`.
+  result (except `:maintenance`; `:unreachable` ones are marked down),
+  oldest first. For longer ranges use the hourly buckets of
+  `Sentinelix.Stats.hourly/3`.
   """
   @spec response_times(Monitor.t() | pos_integer(), DateTime.t()) :: [point()]
   def response_times(monitor, %DateTime{} = since) do
@@ -57,7 +58,7 @@ defmodule Sentinelix.Monitoring.History do
     |> select([r], %{
       at: r.checked_at,
       response_time_ms: r.response_time_ms,
-      down: r.status == :down
+      down: r.status in [:down, :unreachable]
     })
     |> Repo.all()
   end
