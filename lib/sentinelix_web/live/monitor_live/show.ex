@@ -73,7 +73,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
             >
               {target(@monitor)}
             </span>
-            <span :for={tag <- @monitor.tags} class="badge badge-ghost badge-sm">{tag}</span>
+            <.label_badges labels={@monitor.labels} class="badge-sm" />
           </div>
           <p :if={@monitor.description} class="mt-2 max-w-prose text-sm">{@monitor.description}</p>
         </div>

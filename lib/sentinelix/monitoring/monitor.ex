@@ -3,7 +3,8 @@ defmodule Sentinelix.Monitoring.Monitor do
   A configured monitor (what to check, how often and how).
 
   Type-specific options live in the `settings` embed, see
-  `Sentinelix.Monitoring.Settings`.
+  `Sentinelix.Monitoring.Settings`. Key/value `labels` group and filter
+  monitors, see `Sentinelix.Monitoring.Labels`.
 
   ## Secrets
 
@@ -23,7 +24,7 @@ defmodule Sentinelix.Monitoring.Monitor do
   import Ecto.Changeset
 
   alias Sentinelix.EncryptedMap
-  alias Sentinelix.Monitoring.{CheckResult, Incident, Settings}
+  alias Sentinelix.Monitoring.{CheckResult, Incident, Labels, Settings}
 
   @types [:http, :keyword, :tcp, :ping, :dns, :cert, :push, :postgres]
 
@@ -43,7 +44,7 @@ defmodule Sentinelix.Monitoring.Monitor do
     field :max_retries, :integer, default: 0
     field :timeout_ms, :integer, default: 30_000
     field :description, :string
-    field :tags, {:array, :string}, default: []
+    field :labels, Labels, default: %{}
 
     embeds_one :settings, Settings, on_replace: :update
     field :secrets, EncryptedMap, default: %{}, redact: true, skip_default_validation: true
@@ -86,7 +87,7 @@ defmodule Sentinelix.Monitoring.Monitor do
       :max_retries,
       :timeout_ms,
       :description,
-      :tags
+      :labels
     ])
     |> validate_required([
       :name,
@@ -113,7 +114,6 @@ defmodule Sentinelix.Monitoring.Monitor do
     )
     |> validate_number(:timeout_ms, greater_than_or_equal_to: @min_timeout_ms)
     |> validate_timeout_within_interval()
-    |> update_change(:tags, &normalize_tags/1)
     |> cast_settings()
     |> cast_secrets()
     |> check_constraint(:interval_seconds, name: :interval_seconds_min)
@@ -135,15 +135,6 @@ defmodule Sentinelix.Monitoring.Monitor do
     else
       changeset
     end
-  end
-
-  defp normalize_tags(nil), do: []
-
-  defp normalize_tags(tags) do
-    tags
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.uniq()
   end
 
   # Settings are always (re)validated against the current type, even when no

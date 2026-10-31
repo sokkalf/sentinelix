@@ -13,21 +13,21 @@ if Monitoring.list_monitors() == [] do
       name: "Example.com",
       type: :http,
       description: "Example HTTP monitor",
-      tags: ["example"],
+      labels: %{"env" => "example", "service" => "example.com"},
       settings: %{url: "https://example.com"}
     },
     %{
       name: "Example.com certificate",
       type: :cert,
       description: "Warns when the TLS certificate is about to expire",
-      tags: ["example"],
+      labels: %{"env" => "example", "service" => "example.com"},
       interval_seconds: 3600,
       settings: %{host: "example.com", port: 443, cert_warn_days: 30, cert_critical_days: 7}
     },
     %{
       name: "Example.com keyword",
       type: :keyword,
-      tags: ["example"],
+      labels: %{"env" => "example", "service" => "example.com"},
       enabled: false,
       interval_seconds: 300,
       settings: %{url: "https://example.com", keyword: "Example Domain"}
