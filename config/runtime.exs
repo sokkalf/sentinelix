@@ -178,6 +178,8 @@ if config_env() != :test do
   #                      (default 10, 0 disables)
   #   PUSH_RATE_LIMIT    push endpoint requests per minute and client IP
   #                      (default 300, 0 disables)
+  #   WALL_RATE_LIMIT    wall display page loads and (re)connects per
+  #                      minute and client IP (default 60, 0 disables)
   #   TRUSTED_PROXIES    comma separated IPs/CIDR ranges of reverse proxies
   #                      whose X-Forwarded-For header is trusted, e.g.
   #                      "127.0.0.1,::1,172.16.0.0/12". Unset: the header is
@@ -193,7 +195,11 @@ if config_env() != :test do
 
   config :sentinelix,
          Sentinelix.RateLimit,
-         reject_nil.(login: rate_limit.("LOGIN_RATE_LIMIT"), push: rate_limit.("PUSH_RATE_LIMIT"))
+         reject_nil.(
+           login: rate_limit.("LOGIN_RATE_LIMIT"),
+           push: rate_limit.("PUSH_RATE_LIMIT"),
+           wall: rate_limit.("WALL_RATE_LIMIT")
+         )
 
   if trusted_proxies = env_list.("TRUSTED_PROXIES", [",", " "]) do
     config :sentinelix, :trusted_proxies, trusted_proxies

@@ -10,7 +10,7 @@ defmodule Sentinelix.Accounts do
   require Logger
 
   alias Sentinelix.Accounts.{User, UserToken}
-  alias Sentinelix.Repo
+  alias Sentinelix.{DisplayTokens, Repo}
 
   ## Users
 
@@ -48,7 +48,8 @@ defmodule Sentinelix.Accounts do
   end
 
   @doc """
-  Deletes a user together with all of their sessions.
+  Deletes a user together with all of their sessions and display tokens
+  (`Sentinelix.DisplayTokens`; their open displays disconnect).
 
   Returns the deleted session tokens so connected LiveViews can be
   disconnected (see `SentinelixWeb.UserAuth.disconnect_sessions/1`).
@@ -61,14 +62,19 @@ defmodule Sentinelix.Accounts do
   def delete_user(%User{} = user) do
     Repo.transact(fn ->
       tokens = delete_all_user_session_tokens(user)
+      display_token_ids = DisplayTokens.delete_user_tokens(user)
 
       with {:ok, user} <- Repo.delete(user) do
-        {:ok, {user, tokens}}
+        {:ok, {user, tokens, display_token_ids}}
       end
     end)
     |> case do
-      {:ok, {user, tokens}} -> {:ok, user, tokens}
-      error -> error
+      {:ok, {user, tokens, display_token_ids}} ->
+        DisplayTokens.broadcast_revoked(display_token_ids)
+        {:ok, user, tokens}
+
+      error ->
+        error
     end
   end
 

@@ -27,10 +27,12 @@ config :sentinelix, Sentinelix.Stats,
 
 # Rate limits per client IP as {limit, period_ms} (nil disables); see
 # Sentinelix.RateLimit and config/runtime.exs (LOGIN_RATE_LIMIT,
-# PUSH_RATE_LIMIT, TRUSTED_PROXIES).
+# PUSH_RATE_LIMIT, WALL_RATE_LIMIT, TRUSTED_PROXIES). `wall` counts wall
+# display page loads and (re)connects.
 config :sentinelix, Sentinelix.RateLimit,
   login: {10, 60_000},
-  push: {300, 60_000}
+  push: {300, 60_000},
+  wall: {60, 60_000}
 
 config :sentinelix, :trusted_proxies, []
 
@@ -88,6 +90,10 @@ config :logger, :default_formatter,
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
+
+# Parameters whose values are never logged: passwords, and tokens (push
+# and wall display tokens, which are credentials in the path).
+config :phoenix, :filter_parameters, ["password", "token"]
 
 # Time zone database for maintenance window recurrence in named time zones.
 config :elixir, :time_zone_database, Tz.TimeZoneDatabase

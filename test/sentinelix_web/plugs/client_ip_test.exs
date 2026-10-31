@@ -81,4 +81,20 @@ defmodule SentinelixWeb.Plugs.ClientIPTest do
                {198, 51, 100, 7}
     end
   end
+
+  describe "from_connect_info/3" do
+    test "reads LiveView's peer data and x-headers like the plug reads a request" do
+      opts = [trusted_proxies: proxies(["10.0.0.0/8"])]
+      headers = [{"x-request-id", "abc"}, {"x-forwarded-for", "203.0.113.9, 198.51.100.7"}]
+
+      assert ClientIP.from_connect_info(%{address: {10, 1, 2, 3}}, headers, opts) ==
+               {198, 51, 100, 7}
+
+      assert ClientIP.from_connect_info(%{address: {192, 0, 2, 1}}, headers, opts) ==
+               {192, 0, 2, 1}
+
+      assert ClientIP.from_connect_info(%{address: {10, 1, 2, 3}}, nil, opts) == {10, 1, 2, 3}
+      assert ClientIP.from_connect_info(nil, headers, opts) == nil
+    end
+  end
 end

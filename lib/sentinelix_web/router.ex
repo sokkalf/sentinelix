@@ -18,6 +18,18 @@ defmodule SentinelixWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # Wall displays: no user session; the display token in the path is the
+  # credential (SentinelixWeb.WallAuth). The session is only fetched for
+  # LiveView's CSRF token. No referrer, so the token isn't sent on.
+  pipeline :wall do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :put_root_layout, html: {SentinelixWeb.Layouts, :root}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers, %{"referrer-policy" => "no-referrer"}
+    plug SentinelixWeb.WallAuth
+  end
+
   ## Public routes – NO authentication.
   #
   # Keep everything here free of auth plugs and hooks.
@@ -28,6 +40,16 @@ defmodule SentinelixWeb.Router do
     # Public status pages (#10): only published pages, see StatusPageLive.Public.
     live_session :public do
       live "/status/:slug", StatusPageLive.Public
+    end
+  end
+
+  # Wall/kiosk displays (#44): the saved views of a display token, see
+  # SentinelixWeb.WallAuth and SentinelixWeb.WallLive.
+  scope "/", SentinelixWeb do
+    pipe_through :wall
+
+    live_session :wall, on_mount: [SentinelixWeb.WallAuth] do
+      live "/wall/:token", WallLive
     end
   end
 
@@ -91,6 +113,9 @@ defmodule SentinelixWeb.Router do
       live "/maintenance/new", MaintenanceLive.Form, :new
       live "/maintenance/:id/edit", MaintenanceLive.Form, :edit
       live "/settings/users", Settings.UsersLive
+      live "/settings/displays", Settings.DisplaysLive, :index
+      live "/settings/displays/new", Settings.DisplaysLive, :new
+      live "/settings/displays/:id/edit", Settings.DisplaysLive, :edit
 
       live "/status-pages", StatusPageLive.Index, :index
       live "/status-pages/new", StatusPageLive.Index, :new

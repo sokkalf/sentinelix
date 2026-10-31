@@ -29,6 +29,9 @@ public status pages.
 * **Saved views:** name a filtered, grouped dashboard and find it in the
   sidebar; keep it personal, share it with everyone or with your OIDC
   groups, and pick one as your default dashboard.
+* **Wall displays:** saved views full screen on a TV or office screen, with a
+  revocable display token instead of a login, rotating through several
+  views; names and statuses only.
 * **Cloning:** "same checks as db1, but for db2" – copy a monitor's
   settings, labels and notification channels into a new one.
 * **Bulk actions** in the monitor list: label, pause, resume, attach
@@ -125,12 +128,13 @@ wrong.
 | `SMTP_TLS` | `starttls` (default; STARTTLS is required), `if_available`, `ssl` (implicit TLS, port 465) or `none`. Certificates are verified against the system CA store |
 | `NOTIFICATIONS_EMAIL_FROM` | Sender, e.g. `Sentinelix <alerts@example.com>` (default `sentinelix@localhost`) |
 
-### Reverse proxy and push endpoint
+### Reverse proxy, push endpoint and wall displays
 
 | Variable | Description |
 | --- | --- |
 | `TRUSTED_PROXIES` | Comma separated IP addresses / CIDR ranges of reverse proxies whose `X-Forwarded-For` header is trusted, e.g. `127.0.0.1,::1,172.16.0.0/12` |
 | `PUSH_RATE_LIMIT` | Push endpoint requests per minute and client IP (default 300, 0 disables) |
+| `WALL_RATE_LIMIT` | [Wall display](#wall-displays) page loads and (re)connects per minute and client IP (default 60, 0 disables) |
 
 ## Deployment
 
@@ -225,6 +229,7 @@ proxy:
 * `/status/<slug>` – published status pages (and the `/live` websocket and
   `/assets` they use)
 * `/api/push/<token>` – push monitors (must be reachable by whatever pushes)
+* `/wall/<token>` – [wall displays](#wall-displays) (and `/live`, `/assets`)
 * `/healthz` – health check, `/metrics` – Prometheus (bearer token)
 * `/login`, `/auth/oidc`, `/auth/oidc/callback` – sign-in
 
@@ -232,11 +237,15 @@ Everything else requires a session.
 
 ### Rate limiting
 
-Password logins (`POST /login`) and the push endpoint (`/api/push/<token>`)
+Password logins (`POST /login`), the push endpoint (`/api/push/<token>`)
+and wall displays (`/wall/<token>`, page loads and LiveView (re)connects)
 are rate limited per client IP in fixed one-minute windows
-(`LOGIN_RATE_LIMIT`, default 10; `PUSH_RATE_LIMIT`, default 300). Requests
-over the limit get `429 Too Many Requests` with a `Retry-After` header. The
-counters live in memory (ETS) and are per node.
+(`LOGIN_RATE_LIMIT`, default 10; `PUSH_RATE_LIMIT`, default 300;
+`WALL_RATE_LIMIT`, default 60). Requests over the limit get
+`429 Too Many Requests` with a `Retry-After` header (a wall display reloads
+itself when it may again). The counters live in memory (ETS) and are per
+node. Many wall displays behind one address (NAT) share a bucket: raise
+`WALL_RATE_LIMIT` if they reconnect at the same time, e.g. after a restart.
 
 ## Authentication
 
@@ -468,6 +477,58 @@ there is no admin role yet (if roles are added, admins should be able to
 manage shared views). Deleting a user deletes their views. A stored
 selector keeps working when labels disappear (it then matches nothing);
 one that no longer parses is shown with its error.
+
+## Wall displays
+
+A wall display shows saved views full screen on a TV, an office screen or a
+kiosk browser, without a logged in account: large status tiles readable
+from across the room, no navigation, light or dark (the theme toggle in the
+corner, or the system setting).
+
+Create one under **Settings → Wall displays** (`/settings/displays`, also
+linked from *Manage views*): pick one or more views you see, optionally a
+number of seconds per view to rotate through them, a name and an expiry.
+Sentinelix then shows the display's URL, `https://<host>/wall/<token>`,
+**once**: only a hash of the token is stored, so a lost URL can't be shown
+again. Revoke the display and create a new one instead.
+
+How a view is shown depends on its layout: *list* views get large tiles
+with status, response time and 24h uptime, *grid* views small tiles (many
+monitors on one screen), *matrix* views a large matrix. Grouped views show
+their groups by the label values (`oslo`). The header shows how many
+monitors are down, unreachable, pending or in maintenance, or "All up".
+
+What a display shows, and doesn't:
+
+* Only monitor names, statuses, response times and uptime, the group
+  values or matrix rows/columns of the view, and warning/maintenance icons.
+  Never targets, settings, labels, selectors, descriptions, check messages
+  or maintenance titles. Nothing on it links anywhere.
+* Only the display's views that **its creator sees at the time**: when a
+  view is made personal by its owner or scoped to groups the creator has
+  left (as of their next login), the display stops showing it (and shows
+  it again if they see it again). Deleting a view removes it from its
+  displays; deleting the user deletes their displays.
+* Users manage only their own displays.
+
+Revoking a display or deleting its creator disconnects open screens right
+away, an expired display within 30 seconds; they then show the same `404 Not Found` as any
+unknown or mistyped token, so a token can't be told apart from a revoked
+one. Displays update live and reconnect by themselves after a network loss
+or a restart (the token is in the URL, and every reconnect checks it
+again). While disconnected they show a *Connection lost* banner and dim
+the tiles, so a stale screen isn't mistaken for a green one.
+
+The token is part of the URL, which keeps kiosk setups simple (a bookmark,
+no cookies or logins to expire) but means it can show up where URLs do:
+
+* Sentinelix doesn't log it: requests are logged as `GET /wall/[FILTERED]`,
+  and `token` parameters are filtered from debug logs.
+* Pages send `Referrer-Policy: no-referrer` (and `Cache-Control: no-store`,
+  `X-Robots-Tag: noindex`), so the URL isn't passed on as a referrer.
+* Reverse proxy access logs and the browser's history do contain it: turn
+  off or filter access logs for `/wall/` at the proxy if that matters, and
+  treat the URL like a password.
 
 ## Cloning monitors
 
@@ -931,6 +992,12 @@ Sentinelix.Supervisor
   parameters (`Monitoring.View.to_params/1`, so new view settings need no
   migration) and checks who sees and changes it against the caller's
   `Accounts.Scope` (user and OIDC groups).
+* **Wall displays** – `Sentinelix.DisplayTokens` stores display tokens
+  hashed (SHA-256) with their views; `SentinelixWeb.WallAuth` rate limits
+  and verifies them on every page load and mount, and
+  `SentinelixWeb.WallLive` renders the views from the same live monitor
+  index as the dashboard (`SentinelixWeb.MonitorIndex`), keeping only
+  sanitized data in its assigns.
 * **Stats** – `Sentinelix.Stats` answers uptime/response time queries from
   hourly rollups plus recent raw results.
 * **Web** – LiveViews for the dashboard, monitors, maintenance, status pages
