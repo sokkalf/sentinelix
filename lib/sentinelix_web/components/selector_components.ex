@@ -56,6 +56,11 @@ defmodule SentinelixWeb.SelectorComponents do
     """
   end
 
+  @doc "The text of the `selector` URL parameter, `\"\"` without one."
+  @spec selector_param(map()) :: String.t()
+  def selector_param(%{"selector" => text}) when is_binary(text), do: text
+  def selector_param(_params), do: ""
+
   @doc """
   The values to complete: label keys in use with their values (as
   `Sentinelix.Monitoring.list_label_values/1` returns them, `""` for labels

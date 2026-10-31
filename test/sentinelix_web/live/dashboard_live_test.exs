@@ -134,6 +134,9 @@ defmodule SentinelixWeb.DashboardLiveTest do
       assert has_element?(view, "#selector-error", ~s{expected "," or ")" at column 13})
       assert has_element?(view, "#selector[value='env in (prod']")
       refute has_element?(view, "#monitor-#{web.id}")
+
+      {:ok, view, _html} = live(conn, "/?selector[]=env&q[]=x&label[]=y")
+      assert has_element?(view, "#monitor-#{web.id}")
     end
 
     test "completes label keys and values, user and automatic", %{conn: conn} do

@@ -347,7 +347,7 @@ defmodule SentinelixWeb.MonitorLive.Index do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    text = params["selector"] || ""
+    text = selector_param(params)
 
     socket =
       case Selector.parse(text) do

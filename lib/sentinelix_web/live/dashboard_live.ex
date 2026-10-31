@@ -412,7 +412,7 @@ defmodule SentinelixWeb.DashboardLive do
   # translated to terms: `?q=` (search, now `name~`), `?status=`,
   # `?label=` and `?tag=` (the filter that labels replaced).
   defp params_selector(params) do
-    text = params["selector"] || ""
+    text = selector_param(params)
 
     case Selector.parse(text) do
       {:ok, selector} -> {:ok, Enum.reduce(legacy_terms(params), selector, &Selector.add(&2, &1))}
