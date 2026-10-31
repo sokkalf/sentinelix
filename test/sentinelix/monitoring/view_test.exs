@@ -10,23 +10,53 @@ defmodule Sentinelix.Monitoring.ViewTest do
     assert View.to_params(%View{}) == []
   end
 
-  test "reads and writes selector, group-by and sort" do
-    params = %{"selector" => "env=prod, status=down", "group" => "service,site", "sort" => "name"}
+  test "reads and writes selector, group-by, sort and layout" do
+    params = %{
+      "selector" => "env=prod, status=down",
+      "group" => "service,site",
+      "sort" => "name",
+      "layout" => "grid"
+    }
 
     assert {:ok, view} = View.from_params(params)
     assert view.selector == Selector.parse!("env=prod, status=down")
     assert view.group_by == ["service", "site"]
     assert view.sort == :name
+    assert view.layout == :grid
     assert View.grouped?(view)
 
     assert View.to_params(view) == [
              selector: "env=prod, status=down",
              group: "service,site",
-             sort: "name"
+             sort: "name",
+             layout: "grid"
            ]
 
     assert View.from_params(Map.new(View.to_params(view), fn {k, v} -> {to_string(k), v} end)) ==
              {:ok, view}
+  end
+
+  test "reads and writes the layout" do
+    for layout <- [:grid, :matrix] do
+      params = %{"group" => "service,site", "layout" => Atom.to_string(layout)}
+      assert {:ok, %View{layout: ^layout} = view} = View.from_params(params)
+      assert View.to_params(view) == [group: "service,site", layout: Atom.to_string(layout)]
+    end
+
+    assert {:ok, %View{layout: :list}} = View.from_params(%{"layout" => "list"})
+    assert View.to_params(%View{layout: :list}) == []
+    assert View.to_params(%View{layout: :grid}) == [layout: "grid"]
+
+    # Unknown layouts and parameters that aren't text are the default.
+    assert {:ok, %View{layout: :list}} = View.from_params(%{"layout" => "table"})
+    assert {:ok, %View{layout: :list}} = View.from_params(%{"layout" => ["grid"]})
+  end
+
+  test "a matrix needs two group-by keys" do
+    assert View.matrix?(%View{layout: :matrix, group_by: ["service", "site"]})
+    refute View.matrix?(%View{layout: :matrix, group_by: ["service"]})
+    refute View.matrix?(%View{layout: :matrix})
+    refute View.matrix?(%View{layout: :grid, group_by: ["service", "site"]})
   end
 
   test "leaves out the sort when not grouping" do

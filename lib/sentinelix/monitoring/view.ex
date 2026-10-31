@@ -1,7 +1,7 @@
 defmodule Sentinelix.Monitoring.View do
   @moduledoc """
-  A view of the monitors: which to show (a selector), how to group them
-  and how to sort the groups. The state of the dashboard, kept in its URL
+  A view of the monitors: which to show (a selector), how to group them,
+  how to sort the groups and how to lay them out. The state of the dashboard, kept in its URL
   so a view can be bookmarked and shared (and stored as a saved view).
 
   `from_params/1` reads a view from URL parameters and `to_params/1`
@@ -14,6 +14,8 @@ defmodule Sentinelix.Monitoring.View do
       repeated keys are ignored.
     * `sort` – the order of groups, `problems` (default) or `name`, see
       `Sentinelix.Monitoring.Grouping.sort_groups/2`.
+    * `layout` – how monitors are shown, `list` (default), `grid` or
+      `matrix`, see `t:layout/0`.
 
   Parameters that aren't text are ignored. Links from before selectors
   still work: `q` (a name search) becomes a `name~` term, and `status`,
@@ -23,8 +25,9 @@ defmodule Sentinelix.Monitoring.View do
   alias Sentinelix.Monitoring.{Grouping, Labels, Selector}
 
   @max_group_by 2
+  @layouts [:list, :grid, :matrix]
 
-  defstruct selector: %Selector{}, group_by: [], sort: :problems
+  defstruct selector: %Selector{}, group_by: [], sort: :problems, layout: :list
 
   @typedoc """
   A view. `selector` is `nil` for a selector that doesn't parse, which
@@ -33,28 +36,46 @@ defmodule Sentinelix.Monitoring.View do
   @type t :: %__MODULE__{
           selector: Selector.t() | nil,
           group_by: [Labels.key()],
-          sort: Grouping.sort()
+          sort: Grouping.sort(),
+          layout: layout()
         }
+
+  @typedoc """
+  How the dashboard shows the monitors:
+
+    * `:list` – a row per monitor with its heartbeats (default).
+    * `:grid` – a small tile per monitor, many to a screen.
+    * `:matrix` – the first group-by key as rows and the second as
+      columns, a cell per combination with its worst status (see
+      `Sentinelix.Monitoring.Grouping.matrix/3`). Needs two group-by keys,
+      see `matrix?/1`.
+  """
+  @type layout :: :list | :grid | :matrix
 
   @doc "The most label keys to group by (nesting levels)."
   @spec max_group_by() :: pos_integer()
   def max_group_by, do: @max_group_by
+
+  @doc "The layouts, the default first."
+  @spec layouts() :: [layout()]
+  def layouts, do: @layouts
 
   @doc """
   Reads a view from URL parameters. A selector that doesn't parse gives
   `{:error, view, text, error}`, with the rest of the view and
   `selector: nil`.
 
-      iex> {:ok, view} = Sentinelix.Monitoring.View.from_params(%{"group" => "Site, env", "sort" => "name"})
-      iex> {view.group_by, view.sort}
-      {["site", "env"], :name}
+      iex> {:ok, view} = Sentinelix.Monitoring.View.from_params(%{"group" => "Site, env", "sort" => "name", "layout" => "matrix"})
+      iex> {view.group_by, view.sort, view.layout}
+      {["site", "env"], :name, :matrix}
   """
   @spec from_params(map()) ::
           {:ok, t()} | {:error, t(), String.t(), Selector.Error.t()}
   def from_params(params) do
     view = %__MODULE__{
       group_by: group_by_param(params["group"]),
-      sort: sort_param(params["sort"])
+      sort: sort_param(params["sort"]),
+      layout: layout_param(params["layout"])
     }
 
     text = text_param(params["selector"])
@@ -83,7 +104,8 @@ defmodule Sentinelix.Monitoring.View do
       selector:
         view.selector && !Selector.empty?(view.selector) && Selector.to_string(view.selector),
       group: view.group_by != [] && Enum.join(view.group_by, ","),
-      sort: (grouped?(view) and view.sort != :problems) && Atom.to_string(view.sort)
+      sort: (grouped?(view) and view.sort != :problems) && Atom.to_string(view.sort),
+      layout: view.layout != :list && Atom.to_string(view.layout)
     ]
     |> Enum.filter(fn {_key, value} -> is_binary(value) end)
   end
@@ -91,6 +113,14 @@ defmodule Sentinelix.Monitoring.View do
   @doc "Whether the view groups monitors."
   @spec grouped?(t()) :: boolean()
   def grouped?(%__MODULE__{group_by: group_by}), do: group_by != []
+
+  @doc """
+  Whether the view shows a matrix: the matrix layout with two group-by
+  keys (rows, then columns). With fewer keys the dashboard asks for them.
+  """
+  @spec matrix?(t()) :: boolean()
+  def matrix?(%__MODULE__{layout: :matrix, group_by: [_rows, _columns]}), do: true
+  def matrix?(%__MODULE__{}), do: false
 
   @doc """
   Parses group-by keys, given as a comma-separated string or a list, as
@@ -114,6 +144,8 @@ defmodule Sentinelix.Monitoring.View do
   defp sort_param(text) do
     Enum.find(Grouping.sorts(), :problems, &(Atom.to_string(&1) == text))
   end
+
+  defp layout_param(text), do: Enum.find(@layouts, :list, &(Atom.to_string(&1) == text))
 
   defp text_param(text) when is_binary(text), do: text
   defp text_param(_text), do: ""
