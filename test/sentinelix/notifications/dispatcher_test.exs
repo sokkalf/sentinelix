@@ -168,6 +168,46 @@ defmodule Sentinelix.Notifications.DispatcherTest do
     assert_notified(url, "[WARNING] Homepage has a warning")
   end
 
+  test "down, recovery and warnings go to the channels routed by selector too",
+       %{monitor: monitor} do
+    {:ok, monitor} = Monitoring.update_monitor(monitor, %{labels: %{"env" => "prod"}})
+    {attached, url_attached} = webhook()
+    {_routed, url_routed} = webhook(%{selector: "env=prod"})
+    {_disabled, _} = webhook(%{selector: "env=prod", enabled: false})
+    {_staging, _} = webhook(%{selector: "env=staging"})
+    {_no_selector, _} = webhook()
+    :ok = Notifications.put_monitor_channels(monitor, [attached])
+
+    status_changed(monitor, :up, :down)
+    assert_notified(url_attached, "[DOWN] Homepage is down")
+    assert_notified(url_routed, "[DOWN] Homepage is down")
+    refute_notified()
+
+    status_changed(monitor, :down, :up)
+    assert_notified(url_attached, "[UP] Homepage is back up")
+    assert_notified(url_routed, "[UP] Homepage is back up")
+    refute_notified()
+
+    warning(monitor, :warning_raised)
+    assert_notified(url_attached, "[WARNING] Homepage has a warning")
+    assert_notified(url_routed, "[WARNING] Homepage has a warning")
+    refute_notified()
+  end
+
+  test "routing uses the labels at event time, not the event's monitor",
+       %{monitor: monitor} do
+    {_channel, url} = webhook(%{selector: "env=prod"})
+
+    status_changed(monitor, :up, :down)
+    refute_notified()
+
+    {:ok, _} = Monitoring.update_monitor(monitor, %{labels: %{"env" => "prod"}})
+
+    # `monitor` (the event's copy) has no labels: they are read again.
+    status_changed(monitor, :down, :up)
+    assert_notified(url, "[UP] Homepage is back up")
+  end
+
   test "failing sends are retried", %{monitor: monitor} do
     {channel, url} = webhook()
     :ok = Notifications.put_monitor_channels(monitor, [channel])
