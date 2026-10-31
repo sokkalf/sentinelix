@@ -249,21 +249,6 @@ defmodule SentinelixWeb.MonitorComponents do
     """
   end
 
-  @doc """
-  Whether a monitor matches a free-text search (case-insensitive) on its
-  name, target or labels, user or automatic (written as `key=value`).
-  """
-  @spec matches_search?(Monitor.t(), String.t()) :: boolean()
-  def matches_search?(_monitor, ""), do: true
-
-  def matches_search?(monitor, query) do
-    query = String.downcase(query)
-
-    [monitor.name, target(monitor) | Labels.format(monitor.all_labels || monitor.labels)]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.any?(&String.contains?(String.downcase(&1), query))
-  end
-
   @doc "A human readable status label."
   def status_label(:up), do: "Up"
   def status_label(:down), do: "Down"
