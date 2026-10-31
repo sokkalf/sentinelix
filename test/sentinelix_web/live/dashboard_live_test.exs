@@ -83,19 +83,28 @@ defmodule SentinelixWeb.DashboardLiveTest do
       refute has_element?(view, "#monitor-#{other.id}")
     end
 
-    test "filters by search, status and label", %{conn: conn} do
+    test "filters by selector", %{conn: conn} do
       web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod", "legacy" => ""}})
       db = monitor_fixture(:tcp, %{name: "Database", labels: %{"env" => "internal"}})
       check_result_fixture(db, %{status: :down})
 
       {:ok, view, _html} = live(conn, ~p"/")
 
-      view |> form("#filter-form", %{q: "datab"}) |> render_change()
-      assert_patch(view, ~p"/?q=datab")
+      view |> form("#filter-form", %{selector: "Env = prod"}) |> render_change()
+      assert_patch(view, ~p"/?#{[selector: "env=prod"]}")
+      assert has_element?(view, "#monitor-#{web.id}")
+      refute has_element?(view, "#monitor-#{db.id}")
+
+      # Automatic labels, pseudo-labels and several terms.
+      {:ok, view, _html} = live(conn, ~p"/?#{[selector: "type=tcp, name~datab"]}")
       refute has_element?(view, "#monitor-#{web.id}")
       assert has_element?(view, "#monitor-#{db.id}")
 
-      {:ok, view, _html} = live(conn, ~p"/?status=down")
+      {:ok, view, _html} = live(conn, ~p"/?#{[selector: "env, !legacy"]}")
+      refute has_element?(view, "#monitor-#{web.id}")
+      assert has_element?(view, "#monitor-#{db.id}")
+
+      {:ok, view, _html} = live(conn, ~p"/?#{[selector: "status=down"]}")
       refute has_element?(view, "#monitor-#{web.id}")
       assert has_element?(view, "#monitor-#{db.id}")
 
@@ -103,9 +112,86 @@ defmodule SentinelixWeb.DashboardLiveTest do
       check_result_fixture(db, %{status: :up})
       refute has_element?(view, "#monitor-#{db.id}")
       assert has_element?(view, "#monitors-empty")
+    end
 
-      # Search matches labels written as key=value.
-      {:ok, view, _html} = live(conn, ~p"/?q=env%3Dintern")
+    test "shows selector errors inline", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+
+      {:ok, view, _html} = live(conn, ~p"/?#{[selector: "env=prod"]}")
+
+      # While typing, an invalid selector keeps the last valid one's monitors.
+      view |> form("#filter-form", %{selector: "env=prod, site="}) |> render_change()
+      assert has_element?(view, "#selector-error", "expected a value at column 16")
+      assert has_element?(view, "#selector[aria-invalid]")
+      assert has_element?(view, "#monitor-#{web.id}")
+
+      view |> form("#filter-form", %{selector: "env=prod"}) |> render_change()
+      assert_patch(view, ~p"/?#{[selector: "env=prod"]}")
+      refute has_element?(view, "#selector-error")
+
+      # An invalid selector in the URL shows no monitors.
+      {:ok, view, _html} = live(conn, ~p"/?#{[selector: "env in (prod"]}")
+      assert has_element?(view, "#selector-error", ~s{expected "," or ")" at column 13})
+      assert has_element?(view, "#selector[value='env in (prod']")
+      refute has_element?(view, "#monitor-#{web.id}")
+    end
+
+    test "completes label keys and values, user and automatic", %{conn: conn} do
+      monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod", "legacy" => ""}})
+      monitor_fixture(:tcp, %{name: "Database", labels: %{"env" => "internal"}})
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert has_element?(view, "#selector-suggestions option[value='env=prod']")
+      assert has_element?(view, "#selector-suggestions option[value='type=tcp']")
+      assert has_element?(view, "#selector-suggestions option[value='status=down']")
+
+      view |> form("#filter-form", %{selector: "legacy, host=db"}) |> render_change()
+
+      assert has_element?(
+               view,
+               "#selector-suggestions option[value='legacy, host=db.example.com']"
+             )
+
+      refute has_element?(view, "#selector-suggestions option[value='legacy, env=prod']")
+    end
+
+    test "badges add terms, status counters toggle them", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod", "legacy" => ""}})
+      db = monitor_fixture(:tcp, %{name: "Database", labels: %{"env" => "internal"}})
+
+      {:ok, view, _html} = live(conn, ~p"/?#{[selector: "env"]}")
+      view |> element("#monitor-#{web.id} a[data-label=legacy]") |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "env, legacy"]}")
+      refute has_element?(view, "#monitor-#{db.id}")
+
+      view |> element("#counter-pending") |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "env, legacy, status=pending"]}")
+      assert has_element?(view, "#monitor-#{web.id}")
+
+      # Another counter replaces the status, the same one removes it.
+      view |> element("#counter-up") |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "env, legacy, status=up"]}")
+      refute has_element?(view, "#monitor-#{web.id}")
+
+      view |> element("#counter-up") |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "env, legacy"]}")
+
+      view |> element("#clear-filters") |> render_click()
+      assert_patch(view, ~p"/")
+      assert has_element?(view, "#monitor-#{db.id}")
+    end
+
+    test "links from before selectors keep working", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod", "legacy" => ""}})
+      db = monitor_fixture(:tcp, %{name: "Database", labels: %{"env" => "internal"}})
+      check_result_fixture(db, %{status: :down})
+
+      {:ok, view, _html} = live(conn, ~p"/?q=datab")
+      assert has_element?(view, "#selector[value='name~datab']")
+      refute has_element?(view, "#monitor-#{web.id}")
+      assert has_element?(view, "#monitor-#{db.id}")
+
+      {:ok, view, _html} = live(conn, ~p"/?status=down")
       refute has_element?(view, "#monitor-#{web.id}")
       assert has_element?(view, "#monitor-#{db.id}")
 
@@ -118,39 +204,11 @@ defmodule SentinelixWeb.DashboardLiveTest do
       assert has_element?(view, "#monitor-#{web.id}")
       assert has_element?(view, "#monitor-#{db.id}")
 
-      view |> form("#filter-form", %{label: "env=internal"}) |> render_change()
-      assert_patch(view, ~p"/?#{[label: "env=internal"]}")
-      refute has_element?(view, "#monitor-#{web.id}")
-
-      # Automatic labels filter like user labels.
-      {:ok, view, _html} = live(conn, ~p"/?label=type=tcp")
-      refute has_element?(view, "#monitor-#{web.id}")
-      assert has_element?(view, "#monitor-#{db.id}")
-
-      assert has_element?(
-               view,
-               "select[name=label] optgroup[label=Automatic] option[value='type=tcp']"
-             )
-
-      assert has_element?(view, "select[name=label] option[value='host=db.example.com']")
-
-      # Clicking a label badge filters by it.
-      {:ok, view, _html} = live(conn, ~p"/")
-      view |> element("#monitor-#{web.id} a[data-label=legacy]") |> render_click()
-      assert_patch(view, ~p"/?label=legacy")
-      refute has_element?(view, "#monitor-#{db.id}")
-
-      # Links of the tag filter labels replaced keep working.
-      {:ok, view, _html} = live(conn, ~p"/?tag=legacy")
+      # The parameter of the tag filter that labels replaced.
+      {:ok, view, _html} = live(conn, ~p"/?tag=legacy&status=pending")
+      assert has_element?(view, "#selector[value='status=pending, legacy']")
       assert has_element?(view, "#monitor-#{web.id}")
       refute has_element?(view, "#monitor-#{db.id}")
-
-      view |> element("#clear-filters") |> render_click()
-      assert_patch(view, ~p"/")
-      assert has_element?(view, "#monitor-#{db.id}")
-
-      view |> element("#counter-up") |> render_click()
-      assert_patch(view, ~p"/?status=up")
     end
   end
 end
