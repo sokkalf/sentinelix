@@ -9,7 +9,8 @@ defmodule Sentinelix.Notifications.Event do
     * `:warning` – the monitor is up but reports a warning (e.g. a TLS
       certificate close to expiry)
     * `:warning_cleared` – the warning is gone
-    * `:test` – a test notification sent from the settings page
+    * `:test` – a test notification, of a channel (from the settings page)
+      or about a monitor (from its page)
 
   `title/1`, `text/1` and `to_map/1` render it in a provider-neutral way.
   """
@@ -67,16 +68,33 @@ defmodule Sentinelix.Notifications.Event do
   end
 
   @doc """
-  A test event, used by "Send test notification".
+  A test event, used by "Send test notification": of a channel (without a
+  monitor), or about a monitor, sent to the channels that notify it.
   """
-  @spec test() :: t()
-  def test do
+  @spec test(Monitor.t() | nil) :: t()
+  def test(monitor \\ nil)
+
+  def test(nil) do
     %__MODULE__{
       kind: :test,
       monitor_name: "Sentinelix",
       message: "This is a test notification from Sentinelix. If you can read it, it works!",
       timestamp: DateTime.utc_now(),
       url: SentinelixWeb.Endpoint.url()
+    }
+  end
+
+  def test(%Monitor{} = monitor) do
+    %__MODULE__{
+      kind: :test,
+      monitor_id: monitor.id,
+      monitor_name: monitor.name,
+      monitor_type: monitor.type,
+      message:
+        "This is a test notification from Sentinelix. " <>
+          "This channel is notified when #{monitor.name} goes down or recovers.",
+      timestamp: DateTime.utc_now(),
+      url: monitor_url(monitor.id)
     }
   end
 
@@ -107,7 +125,8 @@ defmodule Sentinelix.Notifications.Event do
   defp headline(%{kind: :up, monitor_name: name}), do: "#{name} is back up"
   defp headline(%{kind: :warning, monitor_name: name}), do: "#{name} has a warning"
   defp headline(%{kind: :warning_cleared, monitor_name: name}), do: "#{name} warning cleared"
-  defp headline(%{kind: :test}), do: "Test notification"
+  defp headline(%{kind: :test, monitor_id: nil}), do: "Test notification"
+  defp headline(%{kind: :test, monitor_name: name}), do: "Test notification for #{name}"
 
   @doc """
   The details as plain text lines (without the title).
