@@ -1,0 +1,21 @@
+#!/bin/sh
+# Imports monitors from YAML into the running server (all or nothing):
+#
+#   bin/import_monitors FILE [--dry-run] [--report-missing] [--selector SELECTOR]
+#
+# Runs inside the server (bin/sentinelix rpc), so changed monitors restart
+# right away. The arguments and the working directory are passed
+# Base64-encoded. See Sentinelix.Release.import_monitors/2.
+set -eu
+
+encode() {
+  printf '%s' "$1" | base64 | tr -d '\n'
+}
+
+args=""
+for arg in "$@"; do
+  args="$args\"$(encode "$arg")\", "
+done
+
+exec "$(dirname -- "$0")/sentinelix" rpc \
+  "Sentinelix.Release.import_monitors([$args], \"$(encode "$PWD")\")"
