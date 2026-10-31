@@ -158,6 +158,26 @@ defmodule Sentinelix.NotificationsTest do
       assert Notifications.channel_monitor_ids(channel) == [m3.id]
     end
 
+    test "attach_channels/2 and detach_channels/2" do
+      [m1, m2, m3] = for _ <- 1..3, do: monitor_fixture()
+      [a, b, c] = for _ <- 1..3, do: channel_fixture()
+      :ok = Notifications.put_monitor_channels(m1, [a])
+
+      assert :ok = Notifications.attach_channels([m1, m2.id, -1], [a, b.id, -1])
+      assert Enum.sort(Notifications.monitor_channel_ids(m1)) == Enum.sort([a.id, b.id])
+      assert Enum.sort(Notifications.monitor_channel_ids(m2)) == Enum.sort([a.id, b.id])
+      assert Notifications.monitor_channel_ids(m3) == []
+
+      :ok = Notifications.put_monitor_channels(m3, [a, c])
+      assert :ok = Notifications.detach_channels([m1, m3], [a.id, c])
+      assert Notifications.monitor_channel_ids(m1) == [b.id]
+      assert Enum.sort(Notifications.monitor_channel_ids(m2)) == Enum.sort([a.id, b.id])
+      assert Notifications.monitor_channel_ids(m3) == []
+
+      assert :ok = Notifications.attach_channels([], [a])
+      assert :ok = Notifications.detach_channels([m2], [])
+    end
+
     test "default channels are attached to new monitors" do
       default = channel_fixture(:webhook, %{default: true})
       _other = channel_fixture(:email)
