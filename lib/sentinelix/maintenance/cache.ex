@@ -10,6 +10,10 @@ defmodule Sentinelix.Maintenance.Cache do
     * on start,
     * when a window is created, updated or deleted (`refresh/0`, called by
       `Sentinelix.Maintenance`),
+    * when a monitor is created, updated (including bulk label changes) or
+      deleted while a window has a selector (`Sentinelix.Monitoring`'s
+      `"monitors"` events), so the monitors matching each selector
+      (`selector_ids`) follow label and name changes,
     * every minute, on the minute (a safety net for changes made outside
       the context).
 
@@ -17,9 +21,15 @@ defmodule Sentinelix.Maintenance.Cache do
   time, so window starts and ends take effect immediately, not on the next
   reload. On every reload the cache also computes which windows are active
   and broadcasts `{:maintenance_changed}` on the `"maintenance"` topic when
-  the windows or the set of active windows changed (so pages showing
-  maintenance badges can update when a window starts or ends), and always
-  on `refresh/0`.
+  the windows (including the monitors their selectors match) or the set of
+  active windows changed (so pages showing maintenance badges can update
+  when a window starts or ends, or a monitor joins or leaves one), and
+  always on `refresh/0`.
+
+  Monitor events arriving together (a bulk change sends one per monitor)
+  are handled with a single reload. The engine doesn't wait for it: it
+  evaluates selectors on the monitor struct (see
+  `Sentinelix.Maintenance.Window.applies_to?/2`).
 
   ## Options
 
@@ -33,6 +43,10 @@ defmodule Sentinelix.Maintenance.Cache do
 
   alias Sentinelix.Maintenance
   alias Sentinelix.Maintenance.Window
+  alias Sentinelix.Monitoring
+  alias Sentinelix.Monitoring.Monitor
+
+  @monitor_events [:monitor_created, :monitor_updated, :monitor_deleted]
 
   @key {__MODULE__, :windows}
 
@@ -66,6 +80,7 @@ defmodule Sentinelix.Maintenance.Cache do
   @impl true
   def init(opts) do
     state = %{autoload: Keyword.get(opts, :autoload, true), active: MapSet.new()}
+    :ok = Monitoring.subscribe_monitors()
 
     if state.autoload,
       do: {:ok, state, {:continue, :load}},
@@ -92,6 +107,17 @@ defmodule Sentinelix.Maintenance.Cache do
     {:noreply, if(state.autoload, do: schedule_tick(state), else: state)}
   end
 
+  # Only selectors depend on monitors: attached monitors are ids, and
+  # deleting a monitor deletes its attachments.
+  def handle_info({event, %Monitor{}}, state) when event in @monitor_events do
+    if Enum.any?(windows(), &(&1.parsed_selector != nil)) do
+      drain_monitor_events()
+      {:noreply, reload(state)}
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info(message, state) do
     Logger.debug("#{inspect(__MODULE__)} ignoring unexpected message #{inspect(message)}")
     {:noreply, state}
@@ -112,6 +138,14 @@ defmodule Sentinelix.Maintenance.Cache do
       # Keeps the previous windows; the next tick retries.
       Logger.error("Could not load maintenance windows: " <> Exception.message(error))
       state
+  end
+
+  defp drain_monitor_events do
+    receive do
+      {event, %Monitor{}} when event in @monitor_events -> drain_monitor_events()
+    after
+      0 -> :ok
+    end
   end
 
   # On the minute, so window starts and ends are broadcast promptly.

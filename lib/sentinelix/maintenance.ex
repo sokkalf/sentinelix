@@ -3,7 +3,8 @@ defmodule Sentinelix.Maintenance do
   Maintenance windows: planned periods during which monitors don't alert.
 
   See `Sentinelix.Maintenance.Window` for the schedule (one-off, daily or
-  weekly in a named time zone) and which monitors a window applies to.
+  weekly in a named time zone) and which monitors a window applies to (all,
+  attached ones and those matching a label selector).
 
   ## Engine integration
 
@@ -20,7 +21,10 @@ defmodule Sentinelix.Maintenance do
   notification dispatcher remembers the last notified status).
 
   `active?/2` only reads the windows cached by
-  `Sentinelix.Maintenance.Cache`, no database query per check.
+  `Sentinelix.Maintenance.Cache`, no database query per check. The engine
+  passes the monitor struct, so a window's selector is evaluated on the
+  monitor's current labels and name: a monitor created or relabeled to
+  match is in maintenance from its first check.
 
   ## Push monitors
 
@@ -34,15 +38,17 @@ defmodule Sentinelix.Maintenance do
   ## PubSub
 
   `{:maintenance_changed}` is broadcast on the `"maintenance"` topic (see
-  `subscribe/0`) when windows are created, updated or deleted and when a
-  window starts or ends (checked every minute).
+  `subscribe/0`) when windows are created, updated or deleted, when a
+  window starts or ends (checked every minute) and when monitor changes
+  change the monitors matching a window's selector.
   """
 
   import Ecto.Query, warn: false
 
   alias Phoenix.PubSub
   alias Sentinelix.Maintenance.{Cache, Window}
-  alias Sentinelix.Monitoring.Monitor
+  alias Sentinelix.Monitoring
+  alias Sentinelix.Monitoring.{Monitor, Selector}
   alias Sentinelix.Repo
 
   @pubsub Sentinelix.PubSub
@@ -64,12 +70,13 @@ defmodule Sentinelix.Maintenance do
   Whether `monitor` is in an active maintenance window at `now`.
 
   Called by the monitoring engine after every check; uses the cached
-  windows only.
+  windows only. See `Sentinelix.Maintenance.Window.applies_to?/2` for how
+  selectors are evaluated for a monitor struct and for an id.
   """
   @spec active?(Monitor.t() | pos_integer(), DateTime.t()) :: boolean()
-  def active?(monitor, %DateTime{} = now) do
-    id = monitor_id(monitor)
-    Enum.any?(Cache.windows(), &(Window.applies_to?(&1, id) and Window.active?(&1, now)))
+  def active?(monitor, %DateTime{} = now)
+      when is_struct(monitor, Monitor) or is_integer(monitor) do
+    Enum.any?(Cache.windows(), &(Window.applies_to?(&1, monitor) and Window.active?(&1, now)))
   end
 
   @doc """
@@ -103,7 +110,8 @@ defmodule Sentinelix.Maintenance do
   end
 
   @doc false
-  # The enabled windows with their monitor ids, for the cache.
+  # The enabled windows with their monitor ids, parsed selectors and the ids
+  # of the monitors matching them, for the cache.
   def load_windows do
     ids =
       from(wm in "maintenance_window_monitors",
@@ -116,7 +124,67 @@ defmodule Sentinelix.Maintenance do
     |> where([w], w.enabled)
     |> order_by([w], asc: w.id)
     |> Repo.all()
-    |> Enum.map(&%{&1 | monitor_ids: ids |> Map.get(&1.id, []) |> Enum.sort()})
+    |> Enum.map(fn window ->
+      %{
+        window
+        | monitor_ids: ids |> Map.get(window.id, []) |> Enum.sort(),
+          parsed_selector: Window.parsed_selector(window)
+      }
+    end)
+    |> put_selector_ids()
+  end
+
+  # Evaluates the selectors in memory, with the matcher the engine uses on
+  # monitor structs; one query for all windows.
+  defp put_selector_ids(windows) do
+    if Enum.any?(windows, &selects?/1) do
+      monitors =
+        Repo.all(
+          from m in Monitor,
+            select: %{id: m.id, name: m.name, all_labels: m.all_labels},
+            order_by: [asc: m.id]
+        )
+
+      Enum.map(windows, &put_matches(&1, monitors))
+    else
+      windows
+    end
+  end
+
+  defp put_matches(window, monitors) do
+    if selects?(window) do
+      selector = window.parsed_selector
+      %{window | selector_ids: for(m <- monitors, Selector.matches?(selector, m), do: m.id)}
+    else
+      window
+    end
+  end
+
+  defp selects?(%Window{all_monitors: all, parsed_selector: selector}),
+    do: not all and selector != nil
+
+  @doc """
+  The monitors a window's selector (a string or a parsed
+  `Sentinelix.Monitoring.Selector`) matches now, ordered by name: none for
+  an empty selector or one windows don't allow. For the preview in the
+  window form.
+  """
+  @spec selector_monitors(String.t() | Selector.t()) :: [Monitor.t()]
+  def selector_monitors(selector) when is_binary(selector) do
+    case Selector.parse(selector, allow: Window.selector_allow()) do
+      {:ok, selector} -> selector_monitors(selector)
+      {:error, _error} -> []
+    end
+  end
+
+  def selector_monitors(%Selector{} = selector) do
+    case Selector.validate(selector, allow: Window.selector_allow()) do
+      {:ok, selector} ->
+        if Selector.empty?(selector), do: [], else: Monitoring.list_monitors(selector: selector)
+
+      {:error, _error} ->
+        []
+    end
   end
 
   ## CRUD
@@ -146,13 +214,21 @@ defmodule Sentinelix.Maintenance do
 
   @doc """
   Creates a window. `:monitor_ids` (or `"monitor_ids"`) in `attrs` are the
-  monitors it applies to (ignored with `all_monitors: true`).
+  monitors it applies to, in addition to those matching `:selector` (both
+  are ignored with `all_monitors: true`).
 
       create_window(%{
         title: "Database upgrade",
         starts_at: ~U[2026-11-01 22:00:00Z],
         ends_at: ~U[2026-11-01 23:00:00Z],
         monitor_ids: [1, 2]
+      })
+
+      create_window(%{
+        title: "Oslo network work",
+        starts_at: ~U[2026-11-01 22:00:00Z],
+        ends_at: ~U[2026-11-01 23:00:00Z],
+        selector: "site=oslo"
       })
   """
   @spec create_window(map()) :: {:ok, Window.t()} | {:error, Ecto.Changeset.t()}
@@ -238,7 +314,4 @@ defmodule Sentinelix.Maintenance do
   end
 
   defp refreshed(error), do: error
-
-  defp monitor_id(%Monitor{id: id}), do: id
-  defp monitor_id(id) when is_integer(id), do: id
 end

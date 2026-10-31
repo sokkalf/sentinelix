@@ -102,6 +102,31 @@ defmodule Sentinelix.Maintenance.EngineTest do
     assert_receive {:notification_request, %{url: ^url, body: %{"event" => "down"}}}, 1_000
   end
 
+  test "a monitor created after a selector window, with matching labels, is in maintenance",
+       %{dispatcher: dispatcher} do
+    window_fixture(%{selector: "site=oslo"})
+
+    monitor = monitor_fixture(:http, %{max_retries: 0, labels: %{"site" => "oslo"}})
+    other = monitor_fixture(:http, %{max_retries: 0, labels: %{"site" => "bergen"}})
+    :ok = Monitoring.subscribe_monitor(monitor)
+    :ok = Monitoring.subscribe_monitor(other)
+
+    # The first checks: the engine evaluates the selector on the monitor,
+    # without waiting for the cache to see the new monitors.
+    FakeCheck.push(monitor, [{:down, %{message: "503"}}])
+    FakeCheck.push(other, [{:down, %{message: "503"}}])
+    start(monitor)
+    start(other)
+
+    assert_receive {:check_result, %{status: :maintenance, monitor_id: id}}, 2_000
+    assert id == monitor.id
+    assert_receive {:check_result, %{status: :down, monitor_id: other_id}}, 2_000
+    assert other_id == other.id
+    assert %{status: :pending} = Worker.info(monitor, @engine)
+    assert Monitoring.get_open_incident(monitor) == nil
+    sync(dispatcher)
+  end
+
   test "an outage notified before the window isn't notified again, a recovery is",
        %{monitor: monitor, url: url} do
     FakeCheck.push(monitor, [{:down, %{message: "503"}}])
