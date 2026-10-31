@@ -111,8 +111,9 @@ defmodule Sentinelix.Monitoring do
 
     * `:enabled` – only return enabled (`true`) or disabled (`false`) monitors
     * `:type` – only return monitors of the given type (or list of types)
-    * `:label` – only return monitors with the label `{key, value}`; a
-      label without a value (`{key, ""}`) matches any value of `key`, see
+    * `:label` – only return monitors with the label `{key, value}`, a
+      user or automatic label (`all_labels`); a label without a value
+      (`{key, ""}`) matches any value of `key`, see
       `Sentinelix.Monitoring.Labels.has?/2`. Can be given more than once.
   """
   @spec list_monitors(keyword()) :: [Monitor.t()]
@@ -135,16 +136,17 @@ defmodule Sentinelix.Monitoring do
         where(q, [m], m.type == ^type)
 
       {:label, {key, ""}}, q ->
-        where(q, [m], fragment("? \\? ?", m.labels, ^key))
+        where(q, [m], fragment("? \\? ?", m.all_labels, ^key))
 
       {:label, {key, value}}, q ->
-        where(q, [m], fragment("? @> ?", m.labels, ^%{key => value}))
+        where(q, [m], fragment("? @> ?", m.all_labels, ^%{key => value}))
     end)
   end
 
   @doc """
-  All label keys in use with their values, as a map of key => sorted
-  values (`""` for labels without a value). For autocompletion.
+  All user label keys in use with their values, as a map of key => sorted
+  values (`""` for labels without a value). For autocompletion in the
+  label editor, so automatic labels are not included.
   """
   @spec list_label_values() :: %{Labels.key() => [Labels.value()]}
   def list_label_values do

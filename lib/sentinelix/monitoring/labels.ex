@@ -4,21 +4,25 @@ defmodule Sentinelix.Monitoring.Labels do
   @max_labels 64
 
   @moduledoc """
-  Key/value labels on monitors (`env=prod`, `site=helsinki`, `host=db1`),
+  Key/value labels on monitors (`env=prod`, `site=helsinki`, `team=db`),
   to group and filter monitors along any dimension.
+
+  Besides the labels users set, every monitor has automatic labels
+  (`type`, `host`), see `Sentinelix.Monitoring.AutoLabels`.
 
   ## Representation
 
   Labels are a map of key => value, both strings. A label without a value
   (e.g. a former tag) has the value `""` and is written as just its key.
-  The map is stored as a `jsonb` object with a GIN index, so the database
-  can answer the label queries selectors need with indexed operators:
+  The maps are stored as `jsonb` objects; the union of user and automatic
+  labels, `monitors.all_labels`, has a GIN index, so the database can
+  answer the label queries selectors need with indexed operators:
 
-    * `labels @> '{"env": "prod"}'` – has the label `env=prod`,
-    * `labels ? 'env'` – has the key `env` (any value),
+    * `all_labels @> '{"env": "prod"}'` – has the label `env=prod`,
+    * `all_labels ? 'env'` – has the key `env` (any value),
 
   and the same checks in memory are `Map.fetch(labels, "env") == {:ok,
-  "prod"}` and `Map.has_key?(labels, "env")`.
+  "prod"}` and `Map.has_key?(labels, "env")` on `monitor.all_labels`.
 
   ## Rules
 
