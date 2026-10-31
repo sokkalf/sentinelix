@@ -1,7 +1,9 @@
 defmodule SentinelixWeb.DashboardLive.Rows do
   @moduledoc """
-  The monitor rows of one dashboard group (or of the whole list when not
-  grouping), as a stream.
+  The monitors of one dashboard group (or of all of them when not
+  grouping), as a stream: rows in the list layout, tiles
+  (`SentinelixWeb.MonitorComponents.monitor_tile/1`) in the grid layout
+  (see `Sentinelix.Monitoring.View`). Each is `monitor-<id>`.
 
   The dashboard passes the group's `entries` (from its index, sorted) on
   every change; the component compares them with what it rendered and
@@ -9,11 +11,11 @@ defmodule SentinelixWeb.DashboardLive.Rows do
   result therefore re-renders one row, and a group that isn't expanded
   isn't rendered at all (no component, no rows, no queries). The heartbeats
   of the rows to render are loaded in one query for all groups updated
-  together (`update_many/1`).
+  together (`update_many/1`); tiles have no heartbeats and need no query.
 
   All rows are re-rendered when the `view` changes (their label badges
-  link to the view with the label added) or when rows changed places (a
-  rename).
+  link to the view with the label added, and the layout may have changed)
+  or when rows changed places (a rename).
   """
 
   use SentinelixWeb, :live_component
@@ -43,9 +45,10 @@ defmodule SentinelixWeb.DashboardLive.Rows do
 
     results =
       plans
+      |> Enum.filter(fn {assigns, _socket, _plan} -> assigns.view.layout == :list end)
       |> Enum.flat_map(fn {_assigns, _socket, {_kind, entries, _deleted}} -> entries end)
       |> Enum.map(& &1.monitor.id)
-      |> then(&History.recent_results_by_monitor(@heartbeats, &1))
+      |> recent_results()
 
     Enum.map(plans, fn {assigns, socket, plan} -> apply_plan(socket, assigns, plan, results) end)
   end
@@ -109,7 +112,31 @@ defmodule SentinelixWeb.DashboardLive.Rows do
     })
   end
 
+  defp recent_results([]), do: %{}
+  defp recent_results(ids), do: History.recent_results_by_monitor(@heartbeats, ids)
+
   @impl true
+  def render(%{view: %{layout: :grid}} = assigns) do
+    ~H"""
+    <div
+      id={@dom_id}
+      phx-update="stream"
+      class="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-1.5 p-3"
+    >
+      <.monitor_tile
+        :for={{dom_id, row} <- @streams.rows}
+        id={dom_id}
+        monitor={row.monitor}
+        status={row.status}
+        response_time_ms={row.latest && row.latest.response_time_ms}
+        uptime={row.uptime}
+        warning={row.warning}
+        maintenance={row.maintenance}
+      />
+    </div>
+    """
+  end
+
   def render(assigns) do
     ~H"""
     <div id={@dom_id} phx-update="stream" class="divide-y divide-base-300">

@@ -23,6 +23,9 @@ public status pages.
   filter the dashboard and the monitor list.
 * **Grouping:** group the dashboard by any label (`service`, then `site`)
   with live group summaries; groups with problems come first, expanded.
+* **Layouts:** a list, a compact grid of status tiles (hundreds of monitors
+  on one screen), or a matrix of two labels (`service` × `site`) that shows
+  at a glance whether a problem is everywhere or only in one place.
 * **Cloning:** "same checks as db1, but for db2" – copy a monitor's
   settings, labels and notification channels into a new one.
 * **Bulk actions** in the monitor list: label, pause, resume, attach
@@ -397,6 +400,34 @@ Group-by and sort are part of the dashboard URL along with the selector
 (`/?selector=env%3Dprod&group=service,site&sort=name`), so a grouped
 dashboard can be bookmarked and shared. A collapsed group renders no rows,
 which keeps dashboards with hundreds of monitors light.
+
+### Layouts
+
+*Layout* (next to the selector) switches how the dashboard shows the
+monitors; it is part of the URL too (`&layout=grid`):
+
+* **List** (the default): a row per monitor with its labels, heartbeats,
+  24h uptime and latest response time.
+* **Grid**: a small tile per monitor, colored by its status, so 200 or more
+  fit on one screen. Hover over or tab to a tile for its status, last
+  response time and 24h uptime; click it for the monitor's page. The grid
+  is grouped, sorted and collapsed like the list.
+* **Matrix**: the first group-by key as rows and the second as columns
+  (*Rows by* `service`, *columns by* `site`). Each cell shows the worst
+  status of its monitors and how many there are: `1/3` means one of three
+  is in that state, `3` that all three are up; an empty cell has no
+  monitors. Hover over or tab to a cell for its counts per status and its
+  uptime. Click a cell, or a row or column header, to list its monitors
+  (the selector gets `service=api, site=helsinki`; the browser's back
+  button returns to the matrix). Rows follow the sort, columns are sorted
+  by name so they stay in place. Until two keys are chosen, the matrix asks
+  for them.
+
+Statuses don't rely on color alone: tiles and cells also have an icon per
+status (a check for up, a cross for down, a "no" sign for unreachable, a
+clock for pending, a wrench for maintenance, a pause sign for paused),
+unreachable and paused have a dashed border, and screen readers get the
+status as text.
 
 ## Cloning monitors
 
