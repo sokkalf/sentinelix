@@ -25,13 +25,17 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/sentinelix"
 import topbar from "../vendor/topbar"
 import Hooks from "./hooks"
+import {readDashboardGroups, storeDashboardGroups} from "./dashboard_groups"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
-  params: {_csrf_token: csrfToken},
+  // A function, so reconnects send the current state.
+  params: () => ({_csrf_token: csrfToken, dashboard_groups: readDashboardGroups()}),
   hooks: {...colocatedHooks, ...Hooks},
 })
+
+storeDashboardGroups()
 
 // Show progress bar on live navigation and form submits
 topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
