@@ -6,6 +6,7 @@ defmodule SentinelixWeb.Layouts do
   use SentinelixWeb, :html
 
   alias Sentinelix.Accounts.User
+  alias SentinelixWeb.SavedViewsNav
 
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
@@ -17,7 +18,9 @@ defmodule SentinelixWeb.Layouts do
   Renders the app layout.
 
   Logged in users get the app shell: a sidebar with the navigation (a drawer
-  on small screens), a top bar with the theme toggle and the user menu.
+  on small screens) and the user's saved views under the dashboard (see
+  `SentinelixWeb.SavedViewsNav`, so only render it in LiveViews), a top bar
+  with the theme toggle and the user menu.
   Without a user (login pages) a minimal centered layout is rendered.
 
   ## Examples
@@ -33,7 +36,9 @@ defmodule SentinelixWeb.Layouts do
     default: nil,
     doc: "the current [scope](https://phoenix.hexdocs.pm/scopes.html)"
 
-  attr :active, :atom, default: nil, doc: "the key of the active navigation item"
+  attr :active, :any,
+    default: nil,
+    doc: "the key of the active navigation item, `{:view, slug}` for a saved view"
 
   slot :inner_block, required: true
 
@@ -87,6 +92,13 @@ defmodule SentinelixWeb.Layouts do
                 >
                   <.icon name={item.icon} class="size-5" /> {item.label}
                 </.link>
+                <.live_component
+                  :if={item.key == :dashboard}
+                  module={SavedViewsNav}
+                  id={SavedViewsNav.id()}
+                  scope={@current_scope}
+                  active={@active}
+                />
               </li>
             </ul>
           </nav>
