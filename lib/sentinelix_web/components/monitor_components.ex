@@ -8,7 +8,7 @@ defmodule SentinelixWeb.MonitorComponents do
 
   alias Sentinelix.Monitoring.{CheckResult, Labels, Monitor}
 
-  @type display_status :: :up | :down | :pending | :maintenance | :paused
+  @type display_status :: :up | :down | :pending | :maintenance | :unreachable | :paused
 
   @type_labels %{
     http: "HTTP(S)",
@@ -147,7 +147,7 @@ defmodule SentinelixWeb.MonitorComponents do
   end
 
   @doc """
-  A status badge (up, down, pending, maintenance, paused).
+  A status badge (up, down, pending, maintenance, unreachable, paused).
   """
   attr :status, :atom, required: true
   attr :class, :any, default: nil
@@ -254,12 +254,14 @@ defmodule SentinelixWeb.MonitorComponents do
   def status_label(:down), do: "Down"
   def status_label(:pending), do: "Pending"
   def status_label(:maintenance), do: "Maintenance"
+  def status_label(:unreachable), do: "Unreachable"
   def status_label(:paused), do: "Paused"
 
   defp badge_class(:up), do: "badge-success"
   defp badge_class(:down), do: "badge-error"
   defp badge_class(:pending), do: "badge-warning"
   defp badge_class(:maintenance), do: "badge-info"
+  defp badge_class(:unreachable), do: "badge-error badge-soft"
   defp badge_class(:paused), do: "badge-ghost"
 
   @doc """
@@ -269,6 +271,7 @@ defmodule SentinelixWeb.MonitorComponents do
   def status_text_class(:down), do: "text-error"
   def status_text_class(:pending), do: "text-warning"
   def status_text_class(:maintenance), do: "text-info"
+  def status_text_class(:unreachable), do: "text-error/70"
   def status_text_class(_status), do: "text-base-content/50"
 
   @doc """
@@ -321,6 +324,7 @@ defmodule SentinelixWeb.MonitorComponents do
   defp pill_class(:down), do: "bg-error"
   defp pill_class(:pending), do: "bg-warning"
   defp pill_class(:maintenance), do: "bg-info"
+  defp pill_class(:unreachable), do: "bg-error/40"
 
   defp pill_title(result) do
     [

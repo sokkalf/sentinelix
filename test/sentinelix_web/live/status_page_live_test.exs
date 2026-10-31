@@ -125,6 +125,27 @@ defmodule SentinelixWeb.StatusPageLiveTest do
       assert has_element?(view, "#overall-status[data-status=maintenance]")
     end
 
+    test "unreachable monitors are shown as such and count as an outage", %{conn: conn} do
+      host = monitor_fixture(:ping)
+      monitor = monitor_fixture(:http, %{parent_id: host.id})
+      other = monitor_fixture()
+      check_result_fixture(monitor, %{status: :up})
+      check_result_fixture(monitor, %{status: :unreachable})
+      check_result_fixture(other, %{status: :up})
+      page = published_page_fixture([monitor, other])
+      [group] = StatusPages.get_status_page!(page.id).groups
+
+      {:ok, view, _html} = live(conn, ~p"/status/#{page.slug}")
+      row = "#monitor-#{group.id}-#{monitor.id}"
+      assert has_element?(view, "#{row}[data-status=unreachable]", "Unreachable")
+      assert has_element?(view, "#overall-status[data-status=partial_outage]")
+      # Unreachable time is downtime.
+      assert has_element?(view, row, "50.00%")
+
+      check_result_fixture(monitor, %{status: :unreachable})
+      assert has_element?(view, row, "33.33%")
+    end
+
     test "updates live", %{conn: conn} do
       monitor = monitor_fixture(:http, %{name: "Website"})
       check_result_fixture(monitor, %{status: :up})

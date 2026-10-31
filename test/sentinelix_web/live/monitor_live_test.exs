@@ -272,6 +272,32 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#next-check", "Not running")
     end
 
+    test "shows the parent and the dependents", %{conn: conn} do
+      host = monitor_fixture(:ping, %{name: "web1 ping"})
+      monitor = monitor_fixture(:tcp, %{name: "web1 ssh", parent_id: host.id})
+      child = monitor_fixture(:http, %{name: "Shop", parent_id: monitor.id})
+      check_result_fixture(host, %{status: :down})
+      check_result_fixture(child, %{status: :unreachable})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+      assert has_element?(view, "#parent a[href='/monitors/#{host.id}']", "web1 ping")
+      assert has_element?(view, "#parent", "Down")
+      assert has_element?(view, "#child-#{child.id}", "Shop")
+      assert has_element?(view, "#child-#{child.id}", "Unreachable")
+      refute has_element?(view, "#unreachable-notice")
+
+      # An unreachable result says why.
+      check_result = check_result_fixture(monitor, %{status: :unreachable, message: "refused"})
+      send(view.pid, {:check_result, check_result})
+      assert has_element?(view, "#monitor-status", "Unreachable")
+      assert has_element?(view, "#unreachable-notice", "web1 ping is down")
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{host}")
+      assert has_element?(view, "#parent", "Nothing")
+      assert has_element?(view, "#child-#{monitor.id}", "web1 ssh")
+      refute has_element?(view, "#child-#{child.id}")
+    end
+
     test "renders results, stats and incidents and updates live", %{conn: conn} do
       monitor = monitor_fixture(:cert, %{name: "Cert"})
       check_result_fixture(monitor, %{status: :up, response_time_ms: 10, message: "valid"})
@@ -763,6 +789,55 @@ defmodule SentinelixWeb.MonitorLiveTest do
       clone = Enum.find(Monitoring.list_monitors(), &(&1.id != source.id))
       assert clone.type == :push
       assert clone.settings.push_token != source.settings.push_token
+    end
+
+    test "suggests the ping monitor of the host as the parent", %{conn: conn} do
+      ping = monitor_fixture(:ping, %{name: "web1 ping", settings: %{host: "web1.example.com"}})
+      _other = monitor_fixture(:ping, %{name: "web2 ping", settings: %{host: "web2.example.com"}})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/new")
+      refute has_element?(view, "#suggested-parent")
+      assert has_element?(view, "#monitor_parent_id option[value='#{ping.id}']", "web1 ping")
+
+      view
+      |> form("#monitor-form",
+        monitor: %{name: "Shop", settings: %{url: "https://web1.example.com/shop"}}
+      )
+      |> render_change()
+
+      assert has_element?(view, "#suggested-parent", "web1 ping")
+      view |> element("#use-suggested-parent") |> render_click()
+      refute has_element?(view, "#suggested-parent")
+      assert has_element?(view, "#monitor_parent_id option[value='#{ping.id}'][selected]")
+
+      {:ok, _view, _html} =
+        view
+        |> form("#monitor-form")
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      assert %{parent_id: parent_id} = Repo.get_by!(Monitor, name: "Shop")
+      assert parent_id == ping.id
+    end
+
+    test "can't depend on itself or a dependent, cycles are rejected", %{conn: conn} do
+      a = monitor_fixture(:ping, %{name: "a"})
+      b = monitor_fixture(:tcp, %{name: "b", parent_id: a.id})
+      c = monitor_fixture(:http, %{name: "c"})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{a}/edit")
+      refute has_element?(view, "#monitor_parent_id option[value='#{a.id}']")
+      refute has_element?(view, "#monitor_parent_id option[value='#{b.id}']")
+      assert has_element?(view, "#monitor_parent_id option[value='#{c.id}']")
+
+      # Submitted anyway (e.g. b became a dependent after the form was opened).
+      {:ok, _} = Monitoring.update_monitor(c, %{parent_id: a.id})
+
+      assert view
+             |> form("#monitor-form")
+             |> render_submit(%{monitor: %{parent_id: c.id}}) =~ "would create a dependency cycle"
+
+      assert Monitoring.get_monitor!(a.id).parent_id == nil
     end
 
     test "shows the automatic labels and rejects their keys", %{conn: conn} do

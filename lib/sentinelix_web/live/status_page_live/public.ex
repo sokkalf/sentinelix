@@ -416,19 +416,21 @@ defmodule SentinelixWeb.StatusPageLive.Public do
 
   defp add_result(days, _result), do: days
 
-  defp empty_day(date), do: %{date: date, uptime: nil, up: 0, down: 0, pending: 0, maintenance: 0}
+  defp empty_day(date),
+    do: %{date: date, uptime: nil, up: 0, down: 0, pending: 0, maintenance: 0, unreachable: 0}
 
   defp count_result(day, status) do
     day = Map.update!(day, status, &(&1 + 1))
-    %{day | uptime: uptime(day.up, day.down)}
+    %{day | uptime: Stats.uptime_percent(day)}
   end
 
   defp total_uptime(days) do
-    uptime(Enum.sum_by(days, & &1.up), Enum.sum_by(days, & &1.down))
+    Stats.uptime_percent(%{
+      up: Enum.sum_by(days, & &1.up),
+      down: Enum.sum_by(days, & &1.down),
+      unreachable: Enum.sum_by(days, & &1.unreachable)
+    })
   end
-
-  defp uptime(0, 0), do: nil
-  defp uptime(up, down), do: up * 100 / (up + down)
 
   ## Presentation
 
@@ -438,6 +440,7 @@ defmodule SentinelixWeb.StatusPageLive.Public do
   defp status_label(:operational), do: "Operational"
   defp status_label(:degraded), do: "Degraded"
   defp status_label(:outage), do: "Outage"
+  defp status_label(:unreachable), do: "Unreachable"
   defp status_label(:maintenance), do: "Maintenance"
   defp status_label(:paused), do: "Paused"
   defp status_label(:unknown), do: "No data"
@@ -445,6 +448,7 @@ defmodule SentinelixWeb.StatusPageLive.Public do
   defp status_class(:operational), do: "badge-success"
   defp status_class(:degraded), do: "badge-warning"
   defp status_class(:outage), do: "badge-error"
+  defp status_class(:unreachable), do: "badge-error badge-soft"
   defp status_class(:maintenance), do: "badge-info"
   defp status_class(_status), do: "badge-ghost"
 
