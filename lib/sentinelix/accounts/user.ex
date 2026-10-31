@@ -33,6 +33,8 @@ defmodule Sentinelix.Accounts.User do
     field :hashed_password, :string, redact: true
     field :last_login_at, :utc_datetime
     field :groups, {:array, :string}, default: []
+    # The saved view shown at `/`, see `Sentinelix.SavedViews`.
+    field :default_view_id, :id
 
     timestamps(type: :utc_datetime)
   end
