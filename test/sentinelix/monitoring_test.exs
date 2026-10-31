@@ -321,6 +321,113 @@ defmodule Sentinelix.MonitoringTest do
     end
   end
 
+  describe "put_labels/2 and delete_labels/2" do
+    test "add, replace and remove labels on many monitors and broadcast the changed ones" do
+      a = monitor_fixture(:http, %{labels: %{"env" => "dev", "site" => "oslo"}})
+      b = monitor_fixture(:tcp)
+      c = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+      untouched = monitor_fixture(:http, %{labels: %{"env" => "dev"}})
+      Monitoring.subscribe_monitors()
+
+      assert {:ok, changed} = Monitoring.put_labels([a, b.id, c, -1], ["Env=prod", "legacy"])
+      assert ids(changed) == ids([a, b, c])
+
+      assert Monitoring.get_monitor!(a.id).labels == %{
+               "env" => "prod",
+               "site" => "oslo",
+               "legacy" => ""
+             }
+
+      assert Monitoring.get_monitor!(b.id).labels == %{"env" => "prod", "legacy" => ""}
+      assert Monitoring.get_monitor!(untouched.id).labels == %{"env" => "dev"}
+
+      for %{id: id} <- [a, b, c] do
+        assert_receive {:monitor_updated, %Monitor{id: ^id}}
+      end
+
+      # Monitors that already have the labels don't change.
+      assert {:ok, []} = Monitoring.put_labels([a, b], %{"env" => "prod"})
+
+      assert {:ok, changed} = Monitoring.delete_labels([a, b, untouched], [" ENV", "site"])
+      assert ids(changed) == ids([a, b, untouched])
+      assert Monitoring.get_monitor!(a.id).labels == %{"legacy" => ""}
+      assert Monitoring.get_monitor!(untouched.id).labels == %{}
+      assert Monitoring.get_monitor!(c.id).labels == %{"env" => "prod", "legacy" => ""}
+
+      a_id = a.id
+      assert_receive {:monitor_updated, %Monitor{id: ^a_id, labels: %{"legacy" => ""}}}
+    end
+
+    test "rejects invalid labels" do
+      monitor = monitor_fixture()
+
+      assert {:error, changeset} = Monitoring.put_labels([monitor], ["bad key"])
+      assert %{labels: [~s(invalid label key "bad key")]} = errors_on(changeset)
+      assert Monitoring.get_monitor!(monitor.id).labels == %{}
+    end
+
+    test "change all monitors or none" do
+      full = for i <- 1..63, into: %{}, do: {"k#{i}", ""}
+      ok = monitor_fixture()
+      too_many = monitor_fixture(:http, %{name: "Full", labels: full})
+      Monitoring.subscribe_monitors()
+
+      assert {:error, changeset} = Monitoring.put_labels([ok, too_many], ["a", "b"])
+      assert changeset.data.id == too_many.id
+      assert %{labels: ["at most 64 labels are allowed"]} = errors_on(changeset)
+
+      assert Monitoring.get_monitor!(ok.id).labels == %{}
+      ok_id = ok.id
+      refute_received {:monitor_updated, %Monitor{id: ^ok_id}}
+    end
+  end
+
+  describe "set_monitors_enabled/2" do
+    test "pauses and resumes monitors, broadcasting the changed ones" do
+      enabled = monitor_fixture()
+      paused = monitor_fixture(:http, %{enabled: false})
+      Monitoring.subscribe_monitors()
+
+      assert {:ok, [%Monitor{enabled: false} = changed]} =
+               Monitoring.set_monitors_enabled([enabled, paused.id], false)
+
+      assert changed.id == enabled.id
+      assert_receive {:monitor_updated, ^changed}
+      paused_id = paused.id
+      refute_received {:monitor_updated, %Monitor{id: ^paused_id}}
+
+      assert {:ok, resumed} = Monitoring.set_monitors_enabled([enabled, paused], true)
+      assert ids(resumed) == ids([enabled, paused])
+      assert Monitoring.get_monitor!(enabled.id).enabled
+      assert Monitoring.get_monitor!(paused.id).enabled
+    end
+  end
+
+  describe "delete_monitors/1" do
+    test "deletes the monitors with their history and broadcasts" do
+      a = monitor_fixture()
+      b = monitor_fixture()
+      kept = monitor_fixture()
+      check_result_fixture(a)
+      incident_fixture(b)
+      Monitoring.subscribe_monitors()
+
+      assert {:ok, deleted} = Monitoring.delete_monitors([a, b.id, -1])
+      assert ids(deleted) == ids([a, b])
+      refute Monitoring.get_monitor(a.id)
+      refute Monitoring.get_monitor(b.id)
+      assert Monitoring.get_monitor(kept.id)
+      assert Monitoring.latest_results(a) == []
+      assert Monitoring.list_incidents(b) == []
+
+      for %{id: id} <- [a, b] do
+        assert_receive {:monitor_deleted, %Monitor{id: ^id}}
+      end
+
+      assert {:ok, []} = Monitoring.delete_monitors([])
+    end
+  end
+
   describe "change_monitor/2" do
     test "returns a changeset" do
       assert %Ecto.Changeset{} = Monitoring.change_monitor(monitor_fixture())
