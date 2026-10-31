@@ -4,6 +4,7 @@ defmodule Sentinelix.Maintenance.WindowTest do
   import Sentinelix.DataCase, only: [errors_on: 1]
 
   alias Sentinelix.Maintenance.Window
+  alias Sentinelix.Monitoring.{Monitor, Selector}
 
   defp once(starts_at, ends_at, attrs \\ %{}) do
     struct!(
@@ -197,6 +198,41 @@ defmodule Sentinelix.Maintenance.WindowTest do
       assert Window.applies_to?(%Window{monitor_ids: [1, 2]}, 2)
       refute Window.applies_to?(%Window{monitor_ids: [1, 2]}, 3)
     end
+
+    test "selectors: evaluated on monitor structs, from the cached matches for ids" do
+      window = %Window{selector: "site=oslo", monitor_ids: [3], selector_ids: [1]}
+      oslo = %Monitor{id: 2, name: "web", all_labels: %{"site" => "oslo"}}
+      bergen = %Monitor{id: 1, name: "db", all_labels: %{"site" => "bergen"}}
+
+      # The struct's labels win over the (possibly stale) cached matches.
+      assert Window.applies_to?(window, oslo)
+      refute Window.applies_to?(window, bergen)
+      assert Window.applies_to?(window, 1)
+      refute Window.applies_to?(window, 2)
+
+      # Attached monitors are added (union).
+      assert Window.applies_to?(window, %Monitor{id: 3, name: "x", all_labels: %{}})
+      assert Window.applies_to?(window, 3)
+
+      # The parsed selector of a cached window is used as is.
+      cached = %{window | selector: "", parsed_selector: Selector.parse!("name~db")}
+      assert Window.applies_to?(cached, bergen)
+      refute Window.applies_to?(cached, oslo)
+
+      refute Window.applies_to?(%Window{}, oslo)
+    end
+  end
+
+  describe "parsed_selector/1" do
+    test "parses the stored selector; nil for none or an invalid one" do
+      assert Window.parsed_selector(%Window{selector: "site=oslo"}) ==
+               Selector.parse!("site=oslo")
+
+      assert Window.parsed_selector(%Window{selector: ""}) == nil
+      assert Window.parsed_selector(%Window{selector: nil}) == nil
+      assert Window.parsed_selector(%Window{selector: "status=down"}) == nil
+      assert Window.parsed_selector(%Window{selector: "site="}) == nil
+    end
   end
 
   describe "changeset/3" do
@@ -298,9 +334,37 @@ defmodule Sentinelix.Maintenance.WindowTest do
       }
 
       changeset = Window.changeset(%Window{monitors: []}, attrs, [])
-      assert "select at least one monitor or all monitors" in errors_on(changeset).monitors
+      assert "select monitors, a selector or all monitors" in errors_on(changeset).monitors
+
+      changeset = Window.changeset(%Window{monitors: []}, Map.put(attrs, :selector, " "), [])
+      assert "select monitors, a selector or all monitors" in errors_on(changeset).monitors
 
       assert Window.changeset(%Window{monitors: []}, Map.put(attrs, :all_monitors, true), []).valid?
+
+      assert Window.changeset(%Window{monitors: []}, Map.put(attrs, :selector, "env"), []).valid?
+    end
+
+    test "normalizes and validates the selector, without status terms" do
+      attrs = %{
+        title: "x",
+        all_monitors: true,
+        starts_at: ~U[2026-11-01 22:00:00Z],
+        ends_at: ~U[2026-11-01 23:00:00Z]
+      }
+
+      changeset = Window.changeset(%Window{}, Map.put(attrs, :selector, "Site = oslo,!legacy"))
+      assert get_change(changeset, :selector) == "site=oslo, !legacy"
+
+      changeset = Window.changeset(%Window{}, Map.put(attrs, :selector, "env=prod, status=down"))
+      assert ["status can't be used here at column 11"] = errors_on(changeset).selector
+
+      changeset = Window.changeset(%Window{}, Map.put(attrs, :selector, "env="))
+      assert [_error] = errors_on(changeset).selector
+
+      # Blank means none.
+      changeset = Window.changeset(%Window{selector: "env"}, Map.put(attrs, :selector, ""))
+      assert get_change(changeset, :selector) == ""
+      assert changeset.valid?
     end
   end
 

@@ -2,9 +2,20 @@ defmodule Sentinelix.Maintenance.Window do
   @moduledoc """
   A maintenance window: a period during which monitors are in maintenance.
 
-  A window applies to the monitors attached to it, or to all monitors
-  (including ones created later) with `all_monitors: true`. Disabled windows
-  are never active.
+  A window applies to
+
+    * all monitors (including ones created later) with `all_monitors: true`,
+    * otherwise to the monitors attached to it **and** the monitors matching
+      its `selector` (a label selector, see `Sentinelix.Monitoring.Selector`;
+      `""` for none). Either may be empty, not both.
+
+  Membership by selector is dynamic: a monitor created, relabeled or renamed
+  later is in the window as soon as it matches, and leaves it when it no
+  longer does. Selectors of windows can't have `status` terms (a window
+  chosen by status would change the status of its own monitors), see
+  `selector_allow/0`.
+
+  Disabled windows are never active.
 
   ## Schedule
 
@@ -32,9 +43,10 @@ defmodule Sentinelix.Maintenance.Window do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Sentinelix.Monitoring.Monitor
+  alias Sentinelix.Monitoring.{Monitor, Selector}
 
   @recurrences [:once, :daily, :weekly]
+  @selector_allow [:labels, :name]
   @max_minutes %{daily: 24 * 60, weekly: 7 * 24 * 60}
 
   schema "maintenance_windows" do
@@ -42,6 +54,7 @@ defmodule Sentinelix.Maintenance.Window do
     field :description, :string
     field :enabled, :boolean, default: true
     field :all_monitors, :boolean, default: false
+    field :selector, :string, default: ""
     field :timezone, :string, default: "Etc/UTC"
     field :recurrence, Ecto.Enum, values: @recurrences, default: :once
     field :starts_at, :utc_datetime
@@ -55,6 +68,10 @@ defmodule Sentinelix.Maintenance.Window do
     # The ids of the attached monitors, set by Sentinelix.Maintenance when
     # caching windows (so that the cache doesn't hold monitor structs).
     field :monitor_ids, {:array, :integer}, virtual: true, default: []
+    # Set by Sentinelix.Maintenance when caching windows: the parsed selector
+    # (nil without one) and the ids of the monitors it matched then.
+    field :parsed_selector, :any, virtual: true
+    field :selector_ids, {:array, :integer}, virtual: true, default: []
 
     many_to_many :monitors, Monitor,
       join_through: "maintenance_window_monitors",
@@ -72,6 +89,13 @@ defmodule Sentinelix.Maintenance.Window do
   def recurrences, do: @recurrences
 
   @doc """
+  The kinds of selector terms windows allow (the `:allow` option of
+  `Sentinelix.Monitoring.Selector.parse/2`): labels and names, no status.
+  """
+  @spec selector_allow() :: [Selector.kind()]
+  def selector_allow, do: @selector_allow
+
+  @doc """
   Changeset for creating and updating windows. `monitors`, if given,
   replaces the attached monitors.
   """
@@ -82,6 +106,7 @@ defmodule Sentinelix.Maintenance.Window do
       :description,
       :enabled,
       :all_monitors,
+      :selector,
       :timezone,
       :recurrence,
       :starts_at,
@@ -96,6 +121,9 @@ defmodule Sentinelix.Maintenance.Window do
     |> validate_required([:title, :timezone, :recurrence])
     |> validate_length(:title, min: 1, max: 255)
     |> validate_length(:description, max: 2000)
+    # A blank selector is cast to nil; the column stores "" for none.
+    |> update_change(:selector, &(&1 || ""))
+    |> Selector.validate_selector(:selector, allow: @selector_allow)
     |> validate_timezone()
     |> put_utc_times()
     |> validate_schedule()
@@ -210,10 +238,11 @@ defmodule Sentinelix.Maintenance.Window do
   defp validate_monitors(changeset) do
     monitors = get_field(changeset, :monitors)
 
-    if get_field(changeset, :all_monitors) or not is_list(monitors) or monitors != [] do
+    if get_field(changeset, :all_monitors) or not is_list(monitors) or monitors != [] or
+         (get_field(changeset, :selector) || "") != "" do
       changeset
     else
-      add_error(changeset, :monitors, "select at least one monitor or all monitors")
+      add_error(changeset, :monitors, "select monitors, a selector or all monitors")
     end
   end
 
@@ -242,11 +271,48 @@ defmodule Sentinelix.Maintenance.Window do
   ## Schedule calculation
 
   @doc """
-  Whether the window applies to the monitor with the given id.
+  Whether the window applies to a monitor: all monitors, an attached
+  monitor (`monitor_ids`) or one matching the selector.
+
+  Given a monitor struct, the selector is evaluated on it in memory
+  (`Sentinelix.Monitoring.Selector.matches?/3` on its labels and name), so
+  the answer is current even for a monitor created or changed a moment ago.
+  Given an id, the window's `selector_ids` are used, the matches computed
+  when the window was cached (`Sentinelix.Maintenance.Cache` recomputes
+  them when monitors change).
   """
-  @spec applies_to?(t(), pos_integer()) :: boolean()
-  def applies_to?(%__MODULE__{all_monitors: true}, _monitor_id), do: true
-  def applies_to?(%__MODULE__{monitor_ids: ids}, monitor_id), do: monitor_id in ids
+  @spec applies_to?(t(), Monitor.t() | pos_integer()) :: boolean()
+  def applies_to?(%__MODULE__{all_monitors: true}, _monitor), do: true
+
+  def applies_to?(%__MODULE__{monitor_ids: ids} = window, %Monitor{id: id} = monitor),
+    do: id in ids or selects?(window, monitor)
+
+  def applies_to?(%__MODULE__{monitor_ids: ids, selector_ids: selector_ids}, monitor_id)
+      when is_integer(monitor_id),
+      do: monitor_id in ids or monitor_id in selector_ids
+
+  defp selects?(window, monitor) do
+    case parsed_selector(window) do
+      nil -> false
+      selector -> Selector.matches?(selector, monitor)
+    end
+  end
+
+  @doc """
+  The window's selector, parsed, or `nil` if it has none (or, in case a
+  stored one became invalid, an invalid one). Uses `parsed_selector` when
+  the window was loaded for the cache.
+  """
+  @spec parsed_selector(t()) :: Selector.t() | nil
+  def parsed_selector(%__MODULE__{parsed_selector: %Selector{} = selector}), do: selector
+  def parsed_selector(%__MODULE__{selector: text}) when text in [nil, ""], do: nil
+
+  def parsed_selector(%__MODULE__{selector: text}) do
+    case Selector.parse(text, allow: @selector_allow) do
+      {:ok, selector} -> if Selector.empty?(selector), do: nil, else: selector
+      {:error, _error} -> nil
+    end
+  end
 
   @doc """
   Whether the window is active at `now`.

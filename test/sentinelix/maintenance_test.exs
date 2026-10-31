@@ -8,6 +8,7 @@ defmodule Sentinelix.MaintenanceTest do
   alias Sentinelix.Maintenance
   alias Sentinelix.Maintenance.{Cache, Window}
   alias Sentinelix.Monitoring
+  alias Sentinelix.Monitoring.Selector
 
   setup :reset_maintenance_cache
 
@@ -49,6 +50,46 @@ defmodule Sentinelix.MaintenanceTest do
                })
 
       assert errors_on(changeset).monitors != []
+    end
+
+    test "create_window/1 with a selector instead of monitors" do
+      assert {:ok, window} =
+               Maintenance.create_window(%{
+                 "title" => "Oslo",
+                 "starts_at" => "2026-11-01T22:00:00Z",
+                 "ends_at" => "2026-11-01T23:00:00Z",
+                 "selector" => "Site=oslo"
+               })
+
+      assert window.selector == "site=oslo"
+      assert window.monitors == []
+
+      assert {:error, changeset} =
+               Maintenance.create_window(%{
+                 title: "Down",
+                 starts_at: ~U[2026-11-01 22:00:00Z],
+                 ends_at: ~U[2026-11-01 23:00:00Z],
+                 selector: "status=down"
+               })
+
+      assert ["status can't be used here at column 1"] = errors_on(changeset).selector
+    end
+
+    test "selector_monitors/1 previews the matching monitors" do
+      a = monitor_fixture(:http, %{name: "B web", labels: %{"site" => "oslo"}})
+      b = monitor_fixture(:http, %{name: "A db", labels: %{"site" => "oslo"}})
+      _other = monitor_fixture(:http, %{labels: %{"site" => "bergen"}})
+
+      assert Enum.map(Maintenance.selector_monitors("site=oslo"), & &1.id) == [b.id, a.id]
+
+      assert Maintenance.selector_monitors(Selector.parse!("name~web")) |> Enum.map(& &1.id) == [
+               a.id
+             ]
+
+      assert Maintenance.selector_monitors("") == []
+      assert Maintenance.selector_monitors("site=") == []
+      assert Maintenance.selector_monitors("status=down") == []
+      assert Maintenance.selector_monitors(Selector.parse!("status=down")) == []
     end
 
     test "update_window/2 replaces monitors only when given" do
@@ -112,6 +153,87 @@ defmodule Sentinelix.MaintenanceTest do
       assert Maintenance.active?(monitor_fixture(), DateTime.utc_now())
     end
 
+    test "selector windows apply to monitors created later with matching labels" do
+      window = window_fixture(%{selector: "site=oslo, !legacy"})
+      :ok = Maintenance.subscribe()
+      now = DateTime.utc_now()
+
+      oslo = monitor_fixture(:http, %{labels: %{"site" => "oslo"}})
+      bergen = monitor_fixture(:http, %{labels: %{"site" => "bergen"}})
+
+      # The engine passes the struct: in maintenance right away.
+      assert Maintenance.active?(oslo, now)
+      refute Maintenance.active?(bergen, now)
+
+      # The cache recomputed the matches from the "monitors" events, for
+      # lookups by id (badges) and broadcast the change.
+      sync_cache()
+      assert_received {:maintenance_changed}
+      assert Maintenance.active?(oslo.id, now)
+      refute Maintenance.active?(bergen.id, now)
+      assert Map.keys(Maintenance.active_windows_for([oslo.id, bergen.id])) == [oslo.id]
+      assert [%{id: id, selector_ids: [oslo_id]}] = Cache.windows()
+      assert {id, oslo_id} == {window.id, oslo.id}
+    end
+
+    test "selector membership follows label, name and bulk changes and deletes" do
+      window_fixture(%{selector: "site=oslo"})
+      named = window_fixture(%{selector: "name~edge"})
+      a = monitor_fixture(:http, %{name: "a", labels: %{"site" => "bergen"}})
+      b = monitor_fixture(:http, %{name: "b"})
+      c = monitor_fixture(:http, %{name: "c", labels: %{"site" => "oslo"}})
+      now = DateTime.utc_now()
+
+      matching = fn ->
+        sync_cache()
+        [a, b, c] |> Enum.map(& &1.id) |> Enum.filter(&Maintenance.active?(&1, now))
+      end
+
+      assert matching.() == [c.id]
+
+      {:ok, a} = Monitoring.update_monitor(a, %{labels: %{"site" => "oslo"}})
+      assert Maintenance.active?(a, now)
+      assert matching.() == [a.id, c.id]
+
+      {:ok, [_b]} = Monitoring.put_labels([b, c], ["site=oslo"])
+      assert matching.() == [a.id, b.id, c.id]
+
+      {:ok, [_a, _b, _c]} = Monitoring.delete_labels([a, b, c], ["site"])
+      assert matching.() == []
+
+      # Renamed into the name selector.
+      {:ok, b} = Monitoring.update_monitor(b, %{name: "edge-1"})
+      assert matching.() == [b.id]
+      assert [%{selector_ids: [b_id]}] = Enum.filter(Cache.windows(), &(&1.id == named.id))
+      assert b_id == b.id
+
+      {:ok, _} = Monitoring.delete_monitor(b)
+      assert matching.() == []
+      assert Enum.all?(Cache.windows(), &(&1.selector_ids == []))
+    end
+
+    test "a selector adds to the attached monitors" do
+      attached = monitor_fixture()
+      labeled = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+      other = monitor_fixture()
+      window_fixture(%{monitor_ids: [attached.id], selector: "env=prod"})
+      now = DateTime.utc_now()
+
+      for monitor <- [attached, labeled], do: assert(Maintenance.active?(monitor, now))
+      for monitor <- [attached, labeled], do: assert(Maintenance.active?(monitor.id, now))
+      refute Maintenance.active?(other, now)
+      refute Maintenance.active?(other.id, now)
+    end
+
+    test "monitor changes don't reload the cache without selector windows" do
+      window_fixture(%{all_monitors: true})
+      :ok = Maintenance.subscribe()
+
+      monitor_fixture(:http, %{labels: %{"site" => "oslo"}})
+      sync_cache()
+      refute_received {:maintenance_changed}
+    end
+
     test "doesn't query the database" do
       monitor = monitor_fixture()
       window_fixture(%{monitor_ids: [monitor.id]})
@@ -132,6 +254,16 @@ defmodule Sentinelix.MaintenanceTest do
       on_exit(fn -> :telemetry.detach(handler) end)
 
       assert Maintenance.active?(monitor, DateTime.utc_now())
+      refute_received {:query, ^ref}
+
+      # Nor do selectors.
+      window_fixture(%{selector: "site=oslo"})
+      monitor = monitor_fixture(:http, %{labels: %{"site" => "oslo"}})
+      sync_cache()
+      flush_queries(ref)
+
+      assert Maintenance.active?(monitor, DateTime.utc_now())
+      assert Maintenance.active?(monitor.id, DateTime.utc_now())
       refute_received {:query, ^ref}
     end
 
@@ -183,6 +315,17 @@ defmodule Sentinelix.MaintenanceTest do
       refute Maintenance.active?(monitor, DateTime.utc_now())
       assert [%{id: id}] = Cache.windows()
       assert id == window.id
+    end
+  end
+
+  # Waits until the cache has handled the monitor events sent so far.
+  defp sync_cache, do: :sys.get_state(Cache)
+
+  defp flush_queries(ref) do
+    receive do
+      {:query, ^ref} -> flush_queries(ref)
+    after
+      0 -> :ok
     end
   end
 end
