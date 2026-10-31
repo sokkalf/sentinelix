@@ -156,6 +156,36 @@ defmodule Sentinelix.Monitoring.Grouping do
     |> sort_groups(sort)
   end
 
+  @doc """
+  Groups entries into a matrix: `row_key` values as rows and `column_key`
+  values as columns, e.g. `service` × `site`.
+
+  `rows` are the groups of `group(entries, [row_key, column_key], opts)`,
+  each with its cells as nested groups, sorted by the `:sort` option.
+  `columns` are the groups by `column_key` alone: the union of the column
+  values of all rows, with the summary of each column, always sorted by
+  name (`:name`) so columns stay in place as statuses change. A row has
+  no cell for a column it has no monitors in; see `cell/2`.
+  """
+  @spec matrix([entry()], [Labels.key()], keyword()) :: %{
+          rows: [Group.t()],
+          columns: [Group.t()]
+        }
+  def matrix(entries, [row_key, column_key], opts \\ []) do
+    %{
+      rows: group(entries, [row_key, column_key], opts),
+      columns: group(entries, [column_key], sort: :name)
+    }
+  end
+
+  @doc """
+  The cell of a matrix row (see `matrix/3`) in a column: the row's nested
+  group with the column's value, `nil` for an empty cell.
+  """
+  @spec cell(Group.t(), Group.t()) :: Group.t() | nil
+  def cell(%Group{groups: cells}, %Group{key: key, value: value}),
+    do: Enum.find(cells, &(&1.key == key and &1.value == value))
+
   defp segment(key, nil), do: "!" <> key
   defp segment(key, value), do: key <> "=" <> value
 

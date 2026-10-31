@@ -88,6 +88,44 @@ defmodule Sentinelix.Monitoring.GroupingTest do
            ]
   end
 
+  test "a matrix: rows with cells, the union of columns" do
+    entries = [
+      entry(1, "a", %{"service" => "web", "site" => "oslo"}, :up),
+      entry(2, "b", %{"service" => "api", "site" => "helsinki"}, :down),
+      entry(3, "c", %{"service" => "api", "site" => "oslo"}, :up),
+      entry(4, "d", %{"service" => "api", "site" => "oslo"}, :pending),
+      entry(5, "e", %{"site" => "bergen"}, :up)
+    ]
+
+    %{rows: rows, columns: columns} = Grouping.matrix(entries, ["service", "site"])
+
+    # Rows problems first; columns by name, from all rows, with summaries.
+    assert Enum.map(rows, & &1.value) == ["api", "web", nil]
+    assert Enum.map(columns, & &1.value) == ["bergen", "helsinki", "oslo"]
+    assert Enum.map(columns, & &1.worst) == [:up, :down, :pending]
+    assert Enum.map(columns, & &1.total) == [1, 1, 3]
+
+    [api, web, none] = rows
+    [bergen, helsinki, oslo] = columns
+
+    assert %Group{id: "service=api,site=oslo", total: 2, worst: :pending} =
+             Grouping.cell(api, oslo)
+
+    assert %Group{worst: :down} = Grouping.cell(api, helsinki)
+    assert Grouping.cell(api, bergen) == nil
+    assert Grouping.cell(web, helsinki) == nil
+    assert %Group{id: "!service,site=bergen"} = Grouping.cell(none, bergen)
+
+    # Sorted by name, the rows too; the "(none)" column last.
+    entries = [entry(6, "f", %{"service" => "api"}, :up) | entries]
+    %{rows: rows, columns: columns} = Grouping.matrix(entries, ["service", "site"], sort: :name)
+    assert Enum.map(rows, & &1.value) == ["api", "web", nil]
+    assert Enum.map(columns, & &1.id) == ["site=bergen", "site=helsinki", "site=oslo", "!site"]
+    assert %Group{total: 1} = Grouping.cell(hd(rows), List.last(columns))
+
+    assert Grouping.matrix([], ["service", "site"]) == %{rows: [], columns: []}
+  end
+
   test "summarizes counts, the worst status, problems and the uptime" do
     entries = [
       entry(1, "a", %{"env" => "prod"}, :up, %{up: 90, down: 10, unreachable: 0}),
