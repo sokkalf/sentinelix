@@ -30,7 +30,8 @@ defmodule Sentinelix.Metrics do
     * `sentinelix_monitor_cert_days_remaining` – days until the certificate
       expires, for monitors whose last check reported it (cert monitors).
     * `sentinelix_monitor_labels` – always 1; carries the monitor's labels
-      (see `Sentinelix.Monitoring.Labels`) as `label_<key>="<value>"`, in
+      (see `Sentinelix.Monitoring.Labels`), automatic ones included
+      (`label_type`, `label_host`), as `label_<key>="<value>"`, in
       the style of kube-state-metrics' `kube_pod_labels`.
 
   ## Monitor labels
@@ -126,7 +127,7 @@ defmodule Sentinelix.Metrics do
 
       %{
         labels: labels(monitor),
-        monitor_labels: monitor.labels,
+        monitor_labels: monitor.all_labels,
         enabled: monitor.enabled,
         status: status(monitor, info, result),
         warning: info != nil and info.warning == true,
