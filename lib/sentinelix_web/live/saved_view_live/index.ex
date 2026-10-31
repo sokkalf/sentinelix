@@ -3,7 +3,8 @@ defmodule SentinelixWeb.SavedViewLive.Index do
   The saved views page (`/views`): the views the user sees (their own and
   the ones others share with them), picking the default view for `/`, and,
   for the user's own views, renaming them and changing who sees them
-  (`/views/<slug>/edit`), reordering and deleting them.
+  (`/views/<slug>/edit`), reordering and deleting them. Views are shown on
+  wall displays from `SentinelixWeb.Settings.DisplaysLive`.
 
   Views are saved and their filters changed on the dashboard
   (`SentinelixWeb.DashboardLive`). Only the owner of a view changes it; the
@@ -52,6 +53,9 @@ defmodule SentinelixWeb.SavedViewLive.Index do
             Your views and the views others share with you. Only a view's owner can change it.
           </:subtitle>
           <:actions>
+            <.button navigate={~p"/settings/displays"} id="wall-displays">
+              <.icon name="hero-tv" class="size-4" /> Wall displays
+            </.button>
             <.button navigate={~p"/"}>
               <.icon name="hero-bookmark" class="size-4" /> Save a view on the dashboard
             </.button>

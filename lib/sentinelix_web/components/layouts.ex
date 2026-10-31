@@ -217,6 +217,12 @@ defmodule SentinelixWeb.Layouts do
            path: ~p"/settings/notifications"
          },
          %{
+           key: :displays,
+           label: "Wall displays",
+           icon: "hero-tv",
+           path: ~p"/settings/displays"
+         },
+         %{
            key: :users,
            label: "Users & sessions",
            icon: "hero-users",

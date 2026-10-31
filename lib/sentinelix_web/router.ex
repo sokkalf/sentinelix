@@ -113,6 +113,9 @@ defmodule SentinelixWeb.Router do
       live "/maintenance/new", MaintenanceLive.Form, :new
       live "/maintenance/:id/edit", MaintenanceLive.Form, :edit
       live "/settings/users", Settings.UsersLive
+      live "/settings/displays", Settings.DisplaysLive, :index
+      live "/settings/displays/new", Settings.DisplaysLive, :new
+      live "/settings/displays/:id/edit", Settings.DisplaysLive, :edit
 
       live "/status-pages", StatusPageLive.Index, :index
       live "/status-pages/new", StatusPageLive.Index, :new
