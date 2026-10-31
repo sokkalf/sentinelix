@@ -380,7 +380,8 @@ not changed.
 * Push monitors get a new push token (the original's keeps working for the
   original).
 * Maintenance windows and status pages are not copied; add the new monitor
-  to them separately.
+  to them separately (windows with a selector pick it up if its labels
+  match).
 
 ## Bulk actions
 
@@ -590,7 +591,17 @@ Maintenance windows are managed at `/maintenance`. A window is one-off (start
 and end) or recurring (daily, or weekly on chosen weekdays, at a start time
 for a duration), in a named time zone (IANA, e.g. `Europe/Oslo`; daylight
 saving time is handled; new windows default to `DEFAULT_TIMEZONE`), and
-applies to selected monitors or to all monitors.
+applies to
+
+* **all monitors**, including ones created later;
+* **selected monitors**; or
+* the monitors **matching a [selector](#selectors)** (`site=oslo`,
+  `env=prod, !legacy`), plus optionally some selected ones. Membership is
+  dynamic: a monitor created, relabeled (also with bulk actions) or renamed
+  to match is in the window from its next check, and one that no longer
+  matches leaves it. The form previews the monitors the selector matches
+  now. `status` terms aren't allowed: a window chosen by status would
+  change its own monitors' status.
 
 * During a window checks keep running, but results are recorded as
   `maintenance`: the monitor's status doesn't change, no incidents are opened
