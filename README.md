@@ -468,6 +468,23 @@ optional description and footer, and ordered groups of monitors; once
 banner, each monitor's current status with 90-day daily uptime bars, active
 maintenance and the incidents of the last 7 days, and updates live.
 
+A group is either a **fixed list** of monitors or chooses them by
+**selector** (see [Selectors](#selectors)), e.g. `env=prod, service in
+(web,api)`: monitors that are created, relabelled or renamed so that they
+match join the group (and the published page, live) automatically, and
+leave it when they no longer match. Group selectors may use labels and
+names but not `status=`, so services don't vanish from the page when they
+go down. A selector group needs a selector; there is no "all monitors"
+group, so a page never publishes every monitor by accident (write a
+selector such as `type` for that).
+
+In a selector group the matches are ordered by name. Monitors added to it
+by hand are **pinned**: shown first, in the order you give them, even if the
+selector doesn't match them (they're marked *not matched* in the editor).
+Switching a group between the two kinds keeps its own monitors. While you
+type a selector, the editor previews exactly which monitors the group would
+show on the public page.
+
 By default only a monitor's name and status are shown. Enable *show details*
 on a page to also show monitor targets (URLs, hosts) and check and incident
 messages – only do that if they may be public.
