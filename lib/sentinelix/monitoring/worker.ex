@@ -382,10 +382,13 @@ defmodule Sentinelix.Monitoring.Worker do
 
     task_timer = Process.send_after(self(), {:check_timeout, task.ref}, monitor.timeout_ms)
 
+    # Whatever started this check, it decides instead of a confirmation by
+    # the parent that is still awaited.
     %{
       state
       | task: task,
         task_timer: task_timer,
+        confirming: false,
         timer: nil,
         next_check_at: nil,
         started_at: System.monotonic_time()
