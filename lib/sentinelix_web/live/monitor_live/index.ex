@@ -37,6 +37,12 @@ defmodule SentinelixWeb.MonitorLive.Index do
         Monitors
         <:subtitle>{@count} {if @count == 1, do: "monitor", else: "monitors"} configured</:subtitle>
         <:actions>
+          <.button href={export_path(@selector)} id="export-monitors">
+            <.icon name="hero-arrow-down-tray" class="size-4" /> Export
+          </.button>
+          <.button navigate={~p"/monitors/import"} id="import-monitors">
+            <.icon name="hero-arrow-up-tray" class="size-4" /> Import
+          </.button>
           <.button navigate={~p"/monitors/new"} variant="primary" id="new-monitor">
             <.icon name="hero-plus" class="size-4" /> Add monitor
           </.button>
@@ -654,6 +660,19 @@ defmodule SentinelixWeb.MonitorLive.Index do
   defp assign_suggestions(socket) do
     suggestions = suggestions(socket.assigns.selector_text, socket.assigns.completion)
     assign(socket, suggestions: suggestions)
+  end
+
+  # The YAML download of the monitors matching the list's selector: its
+  # label and name terms, as a status isn't configuration (all monitors
+  # while the selector is invalid).
+  defp export_path(nil), do: ~p"/monitors/export"
+
+  defp export_path(selector) do
+    {stored, _status} = Selector.split_status(selector)
+
+    if Selector.empty?(stored),
+      do: ~p"/monitors/export",
+      else: ~p"/monitors/export?#{[selector: Selector.to_string(stored)]}"
   end
 
   defp filter_path(selector) do
