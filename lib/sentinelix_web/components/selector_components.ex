@@ -98,11 +98,30 @@ defmodule SentinelixWeb.SelectorComponents do
   def suggestions(text, values) do
     {head, fragment, context} = split(text)
 
-    context
-    |> complete(fragment, values)
-    |> Enum.map(&(head <> &1))
-    |> Enum.reject(&(&1 == text))
+    completions =
+      context
+      |> complete(fragment, values)
+      |> Enum.map(&(head <> &1))
+      |> Enum.reject(&(&1 == text))
+
+    case completions do
+      [] -> next_terms(text, values)
+      completions -> completions
+    end
     |> Enum.take(@max_suggestions)
+  end
+
+  # Nothing left to complete in a valid selector: suggest the next term.
+  defp next_terms(text, values) do
+    trimmed = String.trim_trailing(text)
+
+    case Selector.parse(trimmed) do
+      {:ok, %Selector{terms: [_term | _rest]}} ->
+        Enum.map(complete(:term, "", values), &(trimmed <> ", " <> &1))
+
+      _empty_or_invalid ->
+        []
+    end
   end
 
   # Splits the text into what stays (`head`), the part being typed and

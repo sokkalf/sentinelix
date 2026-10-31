@@ -42,7 +42,14 @@ defmodule SentinelixWeb.SelectorComponentsTest do
       assert suggestions("env!=") == ["env!=dev", "env!=prod"]
       assert suggestions("env = d") == ["env=dev"]
       assert suggestions("status in (up), status!=m") == ["status in (up), status!=maintenance"]
-      assert suggestions("site=x") == []
+      assert suggestions("site=x, env=x") |> hd() == "site=x, env=x, env"
+    end
+
+    test "suggests the next term when nothing is left to complete" do
+      assert ["env=prod, env", "env=prod, env=dev" | _rest] = suggestions("env=prod")
+      assert ["legacy, env" | _rest] = suggestions("legacy")
+      assert suggestions("env=prod, site=") == ["env=prod, site=oslo"]
+      assert suggestions("env=prod, site=x y") == []
     end
 
     test "completes absent keys, not pseudo-labels" do
@@ -53,7 +60,7 @@ defmodule SentinelixWeb.SelectorComponentsTest do
       assert suggestions("env in (") == ["env in (dev", "env in (prod"]
       assert suggestions("env notin (dev, p") == ["env notin (dev, prod"]
       assert suggestions("env in (dev), site in (o") == ["env in (dev), site in (oslo"]
-      assert suggestions("env in (dev)") == []
+      assert suggestions("env in (dev) ") |> hd() == "env in (dev), env"
     end
 
     test "ignores separators in quoted values" do
