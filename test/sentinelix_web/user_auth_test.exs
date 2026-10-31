@@ -49,6 +49,17 @@ defmodule SentinelixWeb.UserAuthTest do
         conn |> put_session(:user_token, token) |> UserAuth.fetch_current_scope_for_user([])
 
       assert conn.assigns.current_scope.user.id == user.id
+      assert conn.assigns.current_scope.groups == []
+    end
+
+    test "puts the user's OIDC groups in the scope", %{conn: conn} do
+      user = oidc_user_fixture(%{groups: ["ops"]})
+      token = Accounts.generate_user_session_token(user)
+
+      conn =
+        conn |> put_session(:user_token, token) |> UserAuth.fetch_current_scope_for_user([])
+
+      assert conn.assigns.current_scope.groups == ["ops"]
     end
 
     test "assigns nil without a token", %{conn: conn} do

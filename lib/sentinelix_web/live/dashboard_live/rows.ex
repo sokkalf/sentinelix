@@ -13,9 +13,10 @@ defmodule SentinelixWeb.DashboardLive.Rows do
   of the rows to render are loaded in one query for all groups updated
   together (`update_many/1`); tiles have no heartbeats and need no query.
 
-  All rows are re-rendered when the `view` changes (their label badges
-  link to the view with the label added, and the layout may have changed)
-  or when rows changed places (a rename).
+  All rows are re-rendered when the `view` or `path_opts` change (their
+  label badges link to the view with the label added, see
+  `SentinelixWeb.DashboardLive.view_path/2`, and the layout may have
+  changed) or when rows changed places (a rename).
   """
 
   use SentinelixWeb, :live_component
@@ -59,7 +60,8 @@ defmodule SentinelixWeb.DashboardLive.Rows do
     ids = Enum.map(entries, & &1.monitor.id)
 
     case socket.assigns do
-      %{view: view, ids: old_ids, rendered: rendered} when view == assigns.view ->
+      %{view: view, path_opts: path_opts, ids: old_ids, rendered: rendered}
+      when view == assigns.view and path_opts == assigns.path_opts ->
         kept = MapSet.new(ids)
         old = MapSet.new(old_ids)
 
@@ -79,7 +81,7 @@ defmodule SentinelixWeb.DashboardLive.Rows do
   defp apply_plan(socket, assigns, {kind, entries, deleted}, results) do
     socket =
       socket
-      |> assign(Map.take(assigns, [:id, :dom_id, :view]))
+      |> assign(Map.take(assigns, [:id, :dom_id, :view, :path_opts]))
       |> assign(
         ids: Enum.map(assigns.entries, & &1.monitor.id),
         rendered: Map.new(assigns.entries, &{&1.monitor.id, &1})
@@ -169,7 +171,7 @@ defmodule SentinelixWeb.DashboardLive.Rows do
               </span>
               <.label_badges
                 labels={row.monitor.labels}
-                patch={&DashboardLive.add_term_path(@view, Selector.label_term(&1))}
+                patch={&DashboardLive.add_term_path(@view, Selector.label_term(&1), @path_opts)}
               />
               <span
                 :if={row.warning}

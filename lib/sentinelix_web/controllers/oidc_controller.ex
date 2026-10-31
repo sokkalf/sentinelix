@@ -93,7 +93,8 @@ defmodule SentinelixWeb.OIDCController do
       oidc_issuer: claims["iss"],
       oidc_subject: claims["sub"],
       email: string_claim(claims, "email"),
-      name: string_claim(claims, "name") || string_claim(claims, "preferred_username")
+      name: string_claim(claims, "name") || string_claim(claims, "preferred_username"),
+      groups: Policy.groups(claims, Auth.oidc_config().groups_claim)
     }
   end
 

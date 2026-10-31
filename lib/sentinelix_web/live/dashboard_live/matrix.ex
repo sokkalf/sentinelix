@@ -53,6 +53,7 @@ defmodule SentinelixWeb.DashboardLive.Matrix do
   attr :rows, :list, required: true
   attr :columns, :list, required: true
   attr :view, View, required: true
+  attr :path_opts, :list, default: [], doc: "see `SentinelixWeb.DashboardLive.view_path/2`"
 
   def matrix(assigns) do
     [row_key, column_key] = assigns.view.group_by
@@ -77,14 +78,19 @@ defmodule SentinelixWeb.DashboardLive.Matrix do
               class="px-1 align-bottom font-normal"
               data-column={column.id}
             >
-              <.header_link group={column} view={@view} class="justify-center" />
+              <.header_link
+                group={column}
+                view={@view}
+                path_opts={@path_opts}
+                class="justify-center"
+              />
             </th>
           </tr>
         </thead>
         <tbody>
           <tr :for={row <- @rows} :key={row.id} data-row={row.id}>
             <th scope="row" class="pr-2 text-left font-normal">
-              <.header_link group={row} view={@view} />
+              <.header_link group={row} view={@view} path_opts={@path_opts} />
             </th>
             <td :for={column <- @columns} :key={column.id} class="p-0">
               <.cell
@@ -92,6 +98,7 @@ defmodule SentinelixWeb.DashboardLive.Matrix do
                 row={row}
                 column={column}
                 view={@view}
+                path_opts={@path_opts}
               />
             </td>
           </tr>
@@ -103,6 +110,7 @@ defmodule SentinelixWeb.DashboardLive.Matrix do
 
   attr :group, Group, required: true
   attr :view, View, required: true
+  attr :path_opts, :list, required: true
   attr :class, :any, default: nil
 
   # A row or column header: its value and worst status, linking to its
@@ -110,7 +118,7 @@ defmodule SentinelixWeb.DashboardLive.Matrix do
   defp header_link(assigns) do
     ~H"""
     <.link
-      patch={DashboardLive.view_path(filter_view(@view, [@group]))}
+      patch={DashboardLive.view_path(filter_view(@view, [@group]), @path_opts)}
       class={[
         "flex items-center gap-1.5 rounded-field px-1 py-0.5 hover:bg-base-200",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-base-content",
@@ -131,6 +139,7 @@ defmodule SentinelixWeb.DashboardLive.Matrix do
   attr :row, Group, required: true
   attr :column, Group, required: true
   attr :view, View, required: true
+  attr :path_opts, :list, required: true
 
   defp cell(%{cell: nil} = assigns) do
     ~H"""
@@ -163,7 +172,7 @@ defmodule SentinelixWeb.DashboardLive.Matrix do
     ~H"""
     <.link
       id={@dom_id}
-      patch={DashboardLive.view_path(filter_view(@view, [@row, @column]))}
+      patch={DashboardLive.view_path(filter_view(@view, [@row, @column]), @path_opts)}
       aria-describedby={@dom_id <> "-details"}
       data-cell={@cell.id}
       data-status={@worst}

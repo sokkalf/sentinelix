@@ -34,6 +34,27 @@ defmodule Sentinelix.AccountsTest do
       assert Repo.aggregate(User, :count) == 1
     end
 
+    test "stores the groups and replaces them on every login" do
+      {:ok, user} = Accounts.upsert_oidc_user(Map.put(@attrs, :groups, ["ops", "dev"]))
+      assert user.groups == ["dev", "ops"]
+
+      {:ok, user} = Accounts.upsert_oidc_user(Map.put(@attrs, :groups, ["ops"]))
+      assert user.groups == ["ops"]
+
+      {:ok, user} = Accounts.upsert_oidc_user(@attrs)
+      assert user.groups == []
+      assert Repo.reload!(user).groups == []
+    end
+
+    test "normalizes the groups" do
+      long = String.duplicate("x", 256)
+
+      {:ok, user} =
+        Accounts.upsert_oidc_user(Map.put(@attrs, :groups, [" ops ", "", "ops", long, "dev"]))
+
+      assert user.groups == ["dev", "ops"]
+    end
+
     test "the same subject at another issuer is another user" do
       {:ok, user} = Accounts.upsert_oidc_user(@attrs)
       {:ok, other} = Accounts.upsert_oidc_user(%{@attrs | oidc_issuer: "https://other.example"})

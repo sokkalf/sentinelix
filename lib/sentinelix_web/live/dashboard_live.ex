@@ -30,6 +30,19 @@ defmodule SentinelixWeb.DashboardLive do
       (`SentinelixWeb.DashboardLive.Matrix`). The matrix asks for the keys
       while fewer than two are chosen.
 
+  ## Saved views
+
+  A view can be saved under a name (`Sentinelix.SavedViews`) and is then
+  shown at `/views/<slug>`. Changing it there keeps the slug in the path
+  (`/views/<slug>?group=site`): the URL parameters replace the stored view,
+  so its owner can "Update view" with them, and "Reset" goes back to it.
+  A changed view that is all defaults is `?selector=` (an empty selector),
+  since no parameters means the stored view.
+
+  At `/` without parameters a user who picked a default view sees it (the
+  URL is patched to `/views/<slug>`). The unfiltered dashboard is then
+  `/?selector=`, which "Show all monitors" links to.
+
   ## Expanded groups
 
   Groups with problems (down, unreachable or pending) are expanded, the
@@ -46,9 +59,11 @@ defmodule SentinelixWeb.DashboardLive do
 
   import SentinelixWeb.MonitorComponents
   import SentinelixWeb.SelectorComponents
+  import SentinelixWeb.SavedViewComponents
 
-  alias Sentinelix.{Maintenance, Monitoring, Stats}
+  alias Sentinelix.{Maintenance, Monitoring, SavedViews, Stats}
   alias Sentinelix.Monitoring.{Grouping, Selector, View}
+  alias Sentinelix.SavedViews.SavedView
   alias SentinelixWeb.DashboardLive.{Matrix, Rows}
 
   @uptime_window {24, :hour}
@@ -59,22 +74,133 @@ defmodule SentinelixWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} active={:dashboard}>
+    <Layouts.app
+      flash={@flash}
+      current_scope={@current_scope}
+      active={if @saved_view, do: {:view, @saved_view.slug}, else: :dashboard}
+    >
       <.header>
-        Dashboard
-        <:subtitle>Live status of all monitors</:subtitle>
+        {if @saved_view, do: @saved_view.name, else: "Dashboard"}
+        <:subtitle>
+          <%= if @saved_view do %>
+            <span id="saved-view-info" class="inline-flex flex-wrap items-center gap-2">
+              <.visibility_badge view={@saved_view} />
+              <span>Saved view by {owner_name(@saved_view, @current_scope)}</span>
+              <span :if={@modified} id="view-modified" class="badge badge-sm badge-warning">
+                changed
+              </span>
+              <.link
+                patch={view_path(%View{}, explicit: @default_view != nil)}
+                id="show-all"
+                class="link link-hover"
+              >
+                Show all monitors
+              </.link>
+            </span>
+          <% else %>
+            Live status of all monitors
+          <% end %>
+        </:subtitle>
         <:actions>
-          <.button navigate={~p"/monitors/new"} variant="primary" id="new-monitor">
-            <.icon name="hero-plus" class="size-4" /> Add monitor
-          </.button>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <%= if @saved_view do %>
+              <button
+                type="button"
+                id="toggle-default"
+                phx-click="toggle_default"
+                class="btn btn-ghost btn-sm"
+                title={
+                  if default?(@default_view, @saved_view),
+                    do: "Your default view (shown at /). Click to unset.",
+                    else: "Show this view at / (your default view)"
+                }
+              >
+                <.icon
+                  name={
+                    if default?(@default_view, @saved_view), do: "hero-star-solid", else: "hero-star"
+                  }
+                  class="size-4"
+                />
+                {if default?(@default_view, @saved_view), do: "Default", else: "Make default"}
+              </button>
+              <.link
+                :if={@modified}
+                patch={~p"/views/#{@saved_view.slug}"}
+                id="reset-view"
+                class="btn btn-ghost btn-sm"
+              >
+                Reset
+              </.link>
+              <.button
+                :if={@modified and SavedViews.owner?(@current_scope, @saved_view)}
+                type="button"
+                id="update-view"
+                phx-click="update_view"
+                disabled={not savable?(assigns)}
+              >
+                <.icon name="hero-check" class="size-4" /> Update view
+              </.button>
+              <.button
+                :if={SavedViews.owner?(@current_scope, @saved_view)}
+                navigate={~p"/views/#{@saved_view.slug}/edit"}
+                id="edit-view"
+              >
+                <.icon name="hero-pencil-square" class="size-4" /> Edit
+              </.button>
+            <% end %>
+            <.button
+              type="button"
+              id="save-view"
+              phx-click="new_view"
+              disabled={not savable?(assigns)}
+              title={if savable?(assigns), do: nil, else: "Fix the selector to save this view"}
+            >
+              <.icon name="hero-bookmark" class="size-4" />
+              {if @saved_view, do: "Save as new view", else: "Save view"}
+            </.button>
+            <.button navigate={~p"/monitors/new"} variant="primary" id="new-monitor">
+              <.icon name="hero-plus" class="size-4" /> Add monitor
+            </.button>
+          </div>
         </:actions>
       </.header>
+
+      <.form
+        :if={@save_form}
+        for={@save_form}
+        id="save-view-form"
+        phx-change="validate_view"
+        phx-submit="save_view"
+        class="rounded-box border border-base-300 bg-base-100 p-4"
+      >
+        <h2 class="mb-2 font-semibold">Save this view</h2>
+        <div class="grid gap-x-6 sm:grid-cols-2">
+          <div><.saved_view_fields form={@save_form} groups={@current_scope.groups} /></div>
+          <div class="text-sm text-base-content/70">
+            <p>
+              Saves the filter, grouping, sort and layout shown below under a name. It's
+              listed in the sidebar of everyone who can see it; only you can change it.
+            </p>
+            <.input
+              type="checkbox"
+              name="default"
+              id="save-view-default"
+              label="Make it my default view (shown at /)"
+              value={false}
+            />
+          </div>
+        </div>
+        <div class="mt-2 flex gap-2">
+          <.button variant="primary" phx-disable-with="Saving...">Save view</.button>
+          <.button type="button" phx-click="cancel_save" id="cancel-save">Cancel</.button>
+        </div>
+      </.form>
 
       <div id="status-counters" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <.link
           :for={status <- @statuses}
           id={"counter-#{status}"}
-          patch={view_path(%{@view | selector: toggle_status(@view.selector, status)})}
+          patch={view_path(%{@view | selector: toggle_status(@view.selector, status)}, @path_opts)}
           class={[
             "rounded-box border bg-base-100 p-4 transition hover:border-base-content/30",
             if(status_selected?(@view.selector, status),
@@ -158,7 +284,7 @@ defmodule SentinelixWeb.DashboardLive do
           </select>
           <.link
             :if={@selector_text != ""}
-            patch={view_path(%{@view | selector: %Selector{}})}
+            patch={view_path(%{@view | selector: %Selector{}}, @path_opts)}
             class="btn btn-ghost btn-sm"
             id="clear-filters"
           >
@@ -217,6 +343,7 @@ defmodule SentinelixWeb.DashboardLive do
           rows={@groups}
           columns={@columns}
           view={@view}
+          path_opts={@path_opts}
         />
 
         <div
@@ -230,6 +357,7 @@ defmodule SentinelixWeb.DashboardLive do
             group={group}
             overrides={@overrides}
             view={@view}
+            path_opts={@path_opts}
           />
         </div>
 
@@ -241,6 +369,7 @@ defmodule SentinelixWeb.DashboardLive do
           dom_id="monitors"
           entries={group.entries}
           view={@view}
+          path_opts={@path_opts}
         />
       </div>
     </Layouts.app>
@@ -267,6 +396,7 @@ defmodule SentinelixWeb.DashboardLive do
   attr :group, Grouping.Group, required: true
   attr :overrides, :map, required: true
   attr :view, View, required: true
+  attr :path_opts, :list, required: true
   attr :level, :integer, default: 0
 
   defp group_section(assigns) do
@@ -287,6 +417,7 @@ defmodule SentinelixWeb.DashboardLive do
             group={child}
             overrides={@overrides}
             view={@view}
+            path_opts={@path_opts}
             level={@level + 1}
           />
         </div>
@@ -297,6 +428,7 @@ defmodule SentinelixWeb.DashboardLive do
           dom_id={@dom_id <> "-rows"}
           entries={@group.entries}
           view={@view}
+          path_opts={@path_opts}
         />
       </div>
     </section>
@@ -409,6 +541,8 @@ defmodule SentinelixWeb.DashboardLive do
       socket
       |> assign(page_title: "Dashboard", statuses: @statuses, index: index, layouts: @layouts)
       |> assign(view: %View{}, selector_text: "", selector_error: nil, suggestions: [])
+      |> assign(saved_view: nil, modified: false, path_opts: [], save_form: nil)
+      |> assign(default_view: SavedViews.default_view(socket.assigns.current_scope))
       |> assign(overrides: restore_overrides(socket), groups: [], columns: [])
       |> assign_summary()
 
@@ -417,6 +551,52 @@ defmodule SentinelixWeb.DashboardLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
+    case socket.assigns.live_action do
+      :saved -> saved_view_params(params, socket)
+      :index -> dashboard_params(params, socket)
+    end
+  end
+
+  # `/` without parameters shows the default view, if any.
+  defp dashboard_params(params, socket) when params == %{} do
+    case socket.assigns.default_view do
+      %SavedView{slug: slug} ->
+        {:noreply, push_patch(socket, to: ~p"/views/#{slug}", replace: true)}
+
+      nil ->
+        apply_view(params, assign(socket, saved_view: nil, modified: false, path_opts: []))
+    end
+  end
+
+  defp dashboard_params(params, socket) do
+    socket =
+      assign(socket,
+        saved_view: nil,
+        modified: false,
+        path_opts: [explicit: socket.assigns.default_view != nil]
+      )
+
+    apply_view(params, socket)
+  end
+
+  # A saved view, changed by the URL parameters if there are any.
+  defp saved_view_params(%{"slug" => slug} = params, socket) do
+    case SavedViews.get_view(socket.assigns.current_scope, slug) do
+      nil ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "That view doesn't exist or isn't shared with you.")
+         |> push_navigate(to: view_path(%View{}, explicit: true))}
+
+      saved ->
+        params = Map.delete(params, "slug")
+        modified = params != %{}
+        socket = assign(socket, saved_view: saved, modified: modified, path_opts: [saved: saved])
+        apply_view(if(modified, do: params, else: saved.params), socket)
+    end
+  end
+
+  defp apply_view(params, socket) do
     socket =
       case View.from_params(params) do
         {:ok, view} ->
@@ -432,8 +612,26 @@ defmodule SentinelixWeb.DashboardLive do
           assign(socket, view: view, selector_text: text, selector_error: error)
       end
 
-    {:noreply, socket |> assign_suggestions() |> assign_groups()}
+    {:noreply, socket |> assign_modified() |> assign_suggestions() |> assign_groups()}
   end
+
+  # A changed view that's the same as the stored one isn't changed.
+  defp assign_modified(%{assigns: %{saved_view: %SavedView{} = saved}} = socket) do
+    assign(socket,
+      modified:
+        socket.assigns.modified and
+          (socket.assigns.selector_error != nil or
+             not SavedViews.same_view?(saved, socket.assigns.view))
+    )
+  end
+
+  defp assign_modified(socket), do: socket
+
+  # Only a view with a valid selector can be saved.
+  defp savable?(assigns), do: assigns.view.selector != nil and assigns.selector_error == nil
+
+  defp default?(%SavedView{id: id}, %SavedView{id: id}), do: true
+  defp default?(_default, _view), do: false
 
   @impl true
   def handle_event("filter", params, socket) do
@@ -441,7 +639,10 @@ defmodule SentinelixWeb.DashboardLive do
 
     case View.from_params(Map.take(params, ~w(selector group sort layout))) do
       {:ok, view} ->
-        {:noreply, socket |> assign_suggestions() |> push_patch(to: view_path(view))}
+        {:noreply,
+         socket
+         |> assign_suggestions()
+         |> push_patch(to: view_path(view, socket.assigns.path_opts))}
 
       # Shown inline; the list keeps showing the last valid selector's
       # monitors (regrouped when the grouping changed).
@@ -451,7 +652,7 @@ defmodule SentinelixWeb.DashboardLive do
 
         if current == socket.assigns.view,
           do: {:noreply, socket},
-          else: {:noreply, push_patch(socket, to: view_path(current))}
+          else: {:noreply, push_patch(socket, to: view_path(current, socket.assigns.path_opts))}
     end
   end
 
@@ -469,6 +670,97 @@ defmodule SentinelixWeb.DashboardLive do
   def handle_event(event, _params, socket) when event in ["expand_all", "collapse_all"] do
     groups = Grouping.flatten(socket.assigns.groups)
     {:noreply, put_overrides(socket, groups, event == "expand_all")}
+  end
+
+  def handle_event("new_view", _params, socket) do
+    form =
+      socket.assigns.current_scope
+      |> SavedViews.change_view(%SavedView{})
+      |> to_form()
+
+    {:noreply, assign(socket, save_form: form)}
+  end
+
+  def handle_event("cancel_save", _params, socket), do: {:noreply, assign(socket, save_form: nil)}
+
+  def handle_event("validate_view", %{"saved_view" => attrs}, socket) do
+    form =
+      socket.assigns.current_scope
+      |> SavedViews.change_view(%SavedView{}, attrs)
+      |> to_form(action: :validate)
+
+    {:noreply, assign(socket, save_form: form)}
+  end
+
+  def handle_event("save_view", %{"saved_view" => attrs} = params, socket) do
+    scope = socket.assigns.current_scope
+
+    with true <- savable?(socket.assigns) || {:error, :invalid_view},
+         {:ok, saved} <- SavedViews.create_view(scope, socket.assigns.view, attrs) do
+      socket =
+        if params["default"] == "true", do: put_default_view(socket, saved), else: socket
+
+      {:noreply,
+       socket
+       |> assign(save_form: nil)
+       |> put_flash(:info, "View \"#{saved.name}\" saved.")
+       |> push_patch(to: ~p"/views/#{saved.slug}")}
+    else
+      {:error, :invalid_view} ->
+        {:noreply, put_flash(socket, :error, "Fix the selector to save this view.")}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, save_form: to_form(changeset))}
+    end
+  end
+
+  def handle_event("update_view", _params, %{assigns: %{saved_view: %SavedView{}}} = socket) do
+    %{current_scope: scope, saved_view: saved, view: view} = socket.assigns
+
+    result =
+      if savable?(socket.assigns),
+        do: SavedViews.update_view_params(scope, saved, view),
+        else: {:error, :invalid_view}
+
+    case result do
+      {:ok, saved} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "View \"#{saved.name}\" updated.")
+         |> push_patch(to: ~p"/views/#{saved.slug}")}
+
+      {:error, :forbidden} ->
+        {:noreply, put_flash(socket, :error, "Only the owner of a view can change it.")}
+
+      {:error, :invalid_view} ->
+        {:noreply, put_flash(socket, :error, "Fix the selector to save this view.")}
+
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_flash(socket, :error, "The view could not be updated.")}
+    end
+  end
+
+  def handle_event("toggle_default", _params, %{assigns: %{saved_view: %SavedView{}}} = socket) do
+    %{saved_view: saved, default_view: default} = socket.assigns
+
+    if default?(default, saved),
+      do: {:noreply, put_default_view(socket, nil)},
+      else: {:noreply, put_default_view(socket, saved)}
+  end
+
+  def handle_event(event, _params, socket) when event in ["update_view", "toggle_default"],
+    do: {:noreply, socket}
+
+  defp put_default_view(socket, view) do
+    scope = socket.assigns.current_scope
+
+    case SavedViews.set_default_view(scope, view) do
+      {:ok, user} ->
+        assign(socket, current_scope: %{scope | user: user}, default_view: view)
+
+      {:error, :not_found} ->
+        put_flash(socket, :error, "That view isn't shared with you.")
+    end
   end
 
   @impl true
@@ -536,19 +828,44 @@ defmodule SentinelixWeb.DashboardLive do
 
   @doc """
   The dashboard path of a view (see `Sentinelix.Monitoring.View.to_params/1`).
+
+  ## Options
+
+    * `:saved` – the `Sentinelix.SavedViews.SavedView` being changed: the
+      path is that view's (`/views/<slug>`), with the parameters when the
+      view differs from the stored one.
+    * `:explicit` – when true, a view that is all defaults is
+      `/?selector=` rather than `/` (which shows the user's default view).
   """
-  @spec view_path(View.t()) :: String.t()
-  def view_path(%View{} = view) do
-    case View.to_params(view) do
-      [] -> ~p"/"
-      params -> ~p"/?#{params}"
+  @spec view_path(View.t(), keyword()) :: String.t()
+  def view_path(%View{} = view, opts \\ []) do
+    params = View.to_params(view)
+
+    case Keyword.get(opts, :saved) do
+      %SavedView{slug: slug} = saved ->
+        if SavedViews.same_view?(saved, view),
+          do: ~p"/views/#{slug}",
+          else: ~p"/views/#{slug}?#{explicit_params(params)}"
+
+      nil ->
+        cond do
+          params != [] -> ~p"/?#{params}"
+          Keyword.get(opts, :explicit, false) -> ~p"/?#{explicit_params(params)}"
+          true -> ~p"/"
+        end
     end
   end
 
-  @doc "The dashboard path of a view with a selector term added."
-  @spec add_term_path(View.t(), Selector.Term.t()) :: String.t()
-  def add_term_path(%View{} = view, term),
-    do: view_path(%{view | selector: Selector.add(view.selector || %Selector{}, term)})
+  defp explicit_params([]), do: [selector: ""]
+  defp explicit_params(params), do: params
+
+  @doc """
+  The dashboard path of a view with a selector term added (options as for
+  `view_path/2`).
+  """
+  @spec add_term_path(View.t(), Selector.Term.t(), keyword()) :: String.t()
+  def add_term_path(%View{} = view, term, opts \\ []),
+    do: view_path(%{view | selector: Selector.add(view.selector || %Selector{}, term)}, opts)
 
   ## Index
 

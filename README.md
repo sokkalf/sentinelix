@@ -26,6 +26,9 @@ public status pages.
 * **Layouts:** a list, a compact grid of status tiles (hundreds of monitors
   on one screen), or a matrix of two labels (`service` × `site`) that shows
   at a glance whether a problem is everywhere or only in one place.
+* **Saved views:** name a filtered, grouped dashboard and find it in the
+  sidebar; keep it personal, share it with everyone or with your OIDC
+  groups, and pick one as your default dashboard.
 * **Cloning:** "same checks as db1, but for db2" – copy a monitor's
   settings, labels and notification channels into a new one.
 * **Bulk actions** in the monitor list: label, pause, resume, attach
@@ -105,7 +108,7 @@ wrong.
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | Client credentials (omit the secret for a public client with PKCE) |
 | `OIDC_SCOPES` | Default `openid profile email` |
 | `OIDC_PROVIDER_NAME` | Button label: "Sign in with ..." (default `SSO`) |
-| `OIDC_GROUPS_CLAIM` | Claim with the user's groups (default `groups`; dotted paths such as `realm_access.roles` work) |
+| `OIDC_GROUPS_CLAIM` | Claim with the user's groups (default `groups`; dotted paths such as `realm_access.roles` work), for the allow-list and [saved views](#saved-views) |
 | `OIDC_ALLOWED_GROUPS` / `OIDC_ALLOWED_EMAILS` / `OIDC_ALLOWED_DOMAINS` | Comma separated allow-lists, see [OpenID Connect](#openid-connect) |
 | `OIDC_ALLOW_INSECURE_HTTP` | `true` to allow a plain `http://` issuer (development only) |
 | `LOCAL_AUTH_ENABLED` | Local password login; default `true` when OIDC is not configured, `false` when it is |
@@ -250,7 +253,8 @@ your IdP with:
   * **Post-logout redirect URI:** `https://<your host>/login` (used for
     RP-initiated logout when the IdP advertises an `end_session_endpoint`)
   * **Scopes:** `openid profile email` (plus whatever scope makes your IdP
-    include the groups claim, e.g. `groups`, if you use `OIDC_ALLOWED_GROUPS`)
+    include the groups claim, e.g. `groups`, if you use `OIDC_ALLOWED_GROUPS`
+    or share saved views with groups)
 
 The host is `PHX_HOST` (with `PHX_SCHEME`/`PHX_URL_PORT`). PKCE (S256) is
 used automatically when the IdP supports it. Then set `OIDC_ISSUER`,
@@ -264,6 +268,11 @@ realm roles work). Claims from the userinfo endpoint are merged into the ID
 token claims, so a groups claim that only the userinfo endpoint returns works
 too. Users are created on their first login and identified by issuer +
 subject, not by email.
+
+The user's groups are stored at every login, replacing the ones from the
+last login, so [saved views](#saved-views) can be shared with groups. A
+change at the IdP takes effect at the user's next login. Local users have
+no groups.
 
 ### Local break-glass login
 
@@ -428,6 +437,37 @@ status (a check for up, a cross for down, a "no" sign for unreachable, a
 clock for pending, a wrench for maintenance, a pause sign for paused),
 unreachable and paused have a dashed border, and screen readers get the
 status as text.
+
+## Saved views
+
+A saved view is a dashboard URL with a name: the selector, grouping, sort
+and layout. Set up the dashboard, use **Save view**, give it a name and
+choose who sees it:
+
+* **Personal**: only you.
+* **Shared**: all users.
+* **Groups**: users in any of the OIDC groups you choose (see
+  [OpenID Connect](#openid-connect)). You can only choose groups you are a
+  member of; local users have none.
+
+Saved views are listed in the sidebar under *Dashboard*, your own first, in
+your order, then the ones others share with you, by name. A view is shown
+at `/views/<slug>`; the slug comes from the name when the view is saved and
+stays when it's renamed, so links and bookmarks keep working. Changing the
+filters on a saved view keeps you on it (`/views/prod?group=site`, marked
+*changed*): **Update view** stores the change, **Reset** goes back and
+**Save as new view** saves a copy.
+
+**Make default** (the star) shows a view at `/` instead of the plain
+dashboard; `/?selector=` (*Show all monitors*) still shows all monitors.
+*Manage views* (`/views`) renames, reorders and deletes your views, changes
+who sees them and picks your default.
+
+Only the owner of a view can change or delete it, also for shared views:
+there is no admin role yet (if roles are added, admins should be able to
+manage shared views). Deleting a user deletes their views. A stored
+selector keeps working when labels disappear (it then matches nothing);
+one that no longer parses is shown with its error.
 
 ## Cloning monitors
 
@@ -887,6 +927,10 @@ Sentinelix.Supervisor
   succeeded in the engine's registry and broadcasts it to its children,
   which read their parent's state there when a check of theirs fails (see
   [Dependencies](#dependencies)).
+* **Saved views** – `Sentinelix.SavedViews` stores a view as its URL
+  parameters (`Monitoring.View.to_params/1`, so new view settings need no
+  migration) and checks who sees and changes it against the caller's
+  `Accounts.Scope` (user and OIDC groups).
 * **Stats** – `Sentinelix.Stats` answers uptime/response time queries from
   hourly rollups plus recent raw results.
 * **Web** – LiveViews for the dashboard, monitors, maintenance, status pages
