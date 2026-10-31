@@ -111,7 +111,12 @@ defmodule SentinelixWeb.PostgresPasswordTest do
           refute inspect(events, limit: :infinity, printable_limit: :infinity) =~ password
           refute inspect(Monitoring.get_monitor!(monitor.id)) =~ password
 
-          for page <- [~p"/monitors", ~p"/monitors/#{monitor}", ~p"/monitors/#{monitor}/edit"] do
+          for page <- [
+                ~p"/monitors",
+                ~p"/monitors/#{monitor}",
+                ~p"/monitors/#{monitor}/edit",
+                ~p"/monitors/#{monitor}/clone"
+              ] do
             {:ok, _view, html} = live(conn, page)
             refute html =~ password, "#{page} renders the password"
           end
