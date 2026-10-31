@@ -38,6 +38,19 @@ defmodule Sentinelix.SavedViewsTest do
       refute SavedViews.same_view?(saved, %View{})
     end
 
+    test "round-trips the layout" do
+      scope = scope()
+      params = %{"group" => "site,env", "layout" => "matrix"}
+
+      {:ok, saved} = SavedViews.create_view(scope, view(params), %{name: "Matrix"})
+
+      assert saved.params == params
+      assert {:ok, %View{layout: :matrix, group_by: ["site", "env"]}} = SavedViews.to_view(saved)
+
+      {:ok, saved} = SavedViews.update_view_params(scope, saved, view(%{"layout" => "grid"}))
+      assert {:ok, %View{layout: :grid}} = SavedViews.to_view(saved)
+    end
+
     test "gives every view a unique slug" do
       scope = scope()
 

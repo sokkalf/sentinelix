@@ -59,6 +59,24 @@ defmodule SentinelixWeb.SavedViewLiveTest do
       assert has_element?(view, "#nav-view-production a[aria-current=page]", "Production")
     end
 
+    test "saves and shows the layout", %{conn: conn} do
+      monitor_fixture(:http, %{name: "Web", labels: %{"site" => "osl"}})
+      {:ok, view, _html} = live(conn, ~p"/?#{[group: "site", layout: "grid"]}")
+
+      view |> element("#save-view") |> render_click()
+      view |> form("#save-view-form", saved_view: %{name: "Tiles"}) |> render_submit()
+
+      assert_patch(view, ~p"/views/tiles")
+
+      assert Repo.get_by!(SavedView, slug: "tiles").params == %{
+               "group" => "site",
+               "layout" => "grid"
+             }
+
+      {:ok, view, _html} = live(conn, ~p"/views/tiles")
+      assert has_element?(view, "#layout option[value=grid][selected]")
+    end
+
     test "shows errors and only offers the user's groups", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/")
       view |> element("#save-view") |> render_click()
