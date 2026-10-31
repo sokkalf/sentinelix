@@ -172,6 +172,13 @@ defmodule SentinelixWeb.MonitorLive.Form do
             <button type="button" id="add-label" phx-click="add_label" class="btn btn-ghost btn-sm">
               <.icon name="hero-plus" class="size-4" /> Add label
             </button>
+            <div
+              id="automatic-labels"
+              class="mt-3 flex flex-wrap items-center gap-2 border-t border-base-300 pt-3 text-xs text-base-content/60"
+            >
+              <span>Automatic:</span>
+              <.label_badges labels={%{}} automatic={@auto_labels} class="badge-sm" />
+            </div>
           </section>
 
           <section class="rounded-box border border-base-300 bg-base-100 p-4 sm:p-6">
@@ -945,6 +952,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
       params: params,
       label_rows: label_rows(params, changeset),
       label_errors: Enum.map(form[:labels].errors, &translate_error/1),
+      auto_labels: Ecto.Changeset.get_field(changeset, :auto_labels),
       secret_fields: Enum.map(Monitor.secret_fields(type), &String.to_existing_atom/1),
       stored_secrets: Map.new(stored, fn {key, value} -> {key, value != nil} end),
       secret_errors: secret_errors(socket, changeset, type, params)
