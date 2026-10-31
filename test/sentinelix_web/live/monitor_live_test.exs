@@ -102,6 +102,13 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert Monitoring.get_monitor!(web.id).labels == %{"env" => "prod"}
       assert Monitoring.get_monitor!(other.id).labels == %{"site" => "oslo"}
 
+      # Automatic labels can't be set or removed.
+      submit_bulk(view, "#bulk-labels-form", %{labels: "host=web1"}, "add")
+      assert render(view) =~ "host is an automatic label"
+      submit_bulk(view, "#bulk-labels-form", %{labels: "type"}, "remove")
+      assert render(view) =~ "type is an automatic label"
+      assert Monitoring.get_monitor!(web.id).labels == %{"env" => "prod"}
+
       view |> element("#bulk-pause") |> render_click()
       assert render(view) =~ "2 monitors paused."
       refute Monitoring.get_monitor!(web.id).enabled
@@ -226,6 +233,10 @@ defmodule SentinelixWeb.MonitorLiveTest do
       {:ok, view, html} = live(conn, ~p"/monitors/#{monitor}")
       assert has_element?(view, "[data-label='env=prod']", "env=prod")
       assert has_element?(view, "[data-label=legacy]", "legacy")
+      refute has_element?(view, "[data-label=legacy][data-automatic]")
+      # Automatic labels follow, marked as such.
+      assert has_element?(view, "[data-automatic][data-label='type=http']")
+      assert has_element?(view, "[data-automatic][data-label='host=example.com']")
 
       assert html =~ "Empty"
       assert html =~ "https://example.com/health"
@@ -624,7 +635,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
           name: "db1",
           interval_seconds: 120,
           max_retries: 3,
-          labels: %{"host" => "db1", "service" => "billing"},
+          labels: %{"instance" => "db1", "service" => "billing"},
           settings: %{host: "db1.example.com", port: 5432}
         })
 
@@ -639,8 +650,9 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#settings-fields[data-type=tcp]")
       assert has_element?(view, "[name='monitor[settings][host]'][value='db1.example.com']")
       assert has_element?(view, "#monitor_interval_seconds[value='120']")
-      assert has_element?(view, "#monitor_labels_0_key[value=host]")
+      assert has_element?(view, "#monitor_labels_0_key[value=instance]")
       assert has_element?(view, "#monitor_labels_0_value[value=db1]")
+      assert has_element?(view, "#automatic-labels [data-label='host=db1.example.com']")
       # The source's channels, not the defaults.
       assert has_element?(view, "#channel-#{channel.id}[checked]")
       refute has_element?(view, "#channel-#{default.id}[checked]")
@@ -651,7 +663,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
           monitor: %{
             name: "db2",
             settings: %{host: "db2.example.com"},
-            labels: %{"0" => %{key: "host", value: "db2"}, "1" => %{key: "service"}}
+            labels: %{"0" => %{key: "instance", value: "db2"}, "1" => %{key: "service"}}
           }
         )
         |> render_submit()
@@ -666,7 +678,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
                type: :tcp,
                interval_seconds: 120,
                max_retries: 3,
-               labels: %{"host" => "db2", "service" => "billing"},
+               labels: %{"instance" => "db2", "service" => "billing"},
                settings: %{host: "db2.example.com", port: 5432}
              } = clone
 
@@ -728,6 +740,31 @@ defmodule SentinelixWeb.MonitorLiveTest do
       clone = Enum.find(Monitoring.list_monitors(), &(&1.id != source.id))
       assert clone.type == :push
       assert clone.settings.push_token != source.settings.push_token
+    end
+
+    test "shows the automatic labels and rejects their keys", %{conn: conn} do
+      monitor = monitor_fixture(:tcp, %{settings: %{host: "db.example.com", port: 5432}})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}/edit")
+      assert has_element?(view, "#automatic-labels [data-label='type=tcp']")
+      assert has_element?(view, "#automatic-labels [data-label='host=db.example.com']")
+
+      # They follow the settings as they are edited.
+      view
+      |> form("#monitor-form", monitor: %{settings: %{host: "DB2.example.com."}})
+      |> render_change()
+
+      assert has_element?(view, "#automatic-labels [data-label='host=db2.example.com']")
+
+      view |> element("#add-label") |> render_click()
+
+      html =
+        view
+        |> form("#monitor-form", monitor: %{labels: %{"0" => %{key: "host", value: "db1"}}})
+        |> render_submit()
+
+      assert html =~ "host is an automatic label, use another key"
+      assert Monitoring.get_monitor!(monitor.id).labels == %{}
     end
 
     test "edits labels with autocompletion of keys and values", %{conn: conn} do

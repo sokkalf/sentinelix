@@ -39,10 +39,24 @@ defmodule Sentinelix.MonitoringTest do
       assert ids(Monitoring.list_monitors(label: {"env", ""}, label: {"site", "oslo"})) ==
                ids([prod])
     end
+
+    test "filters by automatic labels like user labels" do
+      web = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+      db = monitor_fixture(:tcp, %{settings: %{host: "DB.example.com", port: 5432}})
+      push = monitor_fixture(:push)
+
+      assert ids(Monitoring.list_monitors(label: {"type", "http"})) == ids([web])
+      assert ids(Monitoring.list_monitors(label: {"host", "db.example.com"})) == ids([db])
+      assert ids(Monitoring.list_monitors(label: {"host", ""})) == ids([web, db])
+      assert ids(Monitoring.list_monitors(label: {"type", ""})) == ids([web, db, push])
+
+      assert ids(Monitoring.list_monitors(label: {"type", "http"}, label: {"env", "prod"})) ==
+               ids([web])
+    end
   end
 
   describe "list_label_values/0" do
-    test "returns the keys in use with their sorted values" do
+    test "returns the user label keys in use with their sorted values" do
       assert Monitoring.list_label_values() == %{}
 
       monitor_fixture(:http, %{labels: %{"env" => "prod", "site" => "oslo"}})
@@ -200,6 +214,47 @@ defmodule Sentinelix.MonitoringTest do
 
       assert {:error, changeset} = Monitoring.update_monitor(updated, %{labels: ["bad key"]})
       assert %{labels: [~s(invalid label key "bad key")]} = errors_on(changeset)
+    end
+
+    test "derives the automatic labels and keeps all_labels in sync" do
+      monitor = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+
+      assert monitor.auto_labels == %{"type" => "http", "host" => "example.com"}
+
+      assert monitor.all_labels ==
+               %{"env" => "prod", "type" => "http", "host" => "example.com"}
+
+      assert {:ok, updated} =
+               Monitoring.update_monitor(monitor, %{
+                 type: :tcp,
+                 settings: %{host: "DB.Example.com.", port: 5432}
+               })
+
+      assert updated.auto_labels == %{"type" => "tcp", "host" => "db.example.com"}
+
+      assert updated.all_labels ==
+               %{"env" => "prod", "type" => "tcp", "host" => "db.example.com"}
+
+      assert Monitoring.get_monitor!(monitor.id).all_labels == updated.all_labels
+
+      assert {:ok, toggled} = Monitoring.toggle_monitor(updated)
+      assert toggled.all_labels == updated.all_labels
+
+      assert {:ok, push} = Monitoring.update_monitor(toggled, %{type: :push})
+      assert push.all_labels == %{"env" => "prod", "type" => "push"}
+    end
+
+    test "rejects user labels with the keys of automatic labels" do
+      monitor = monitor_fixture(:http)
+
+      assert {:error, changeset} = Monitoring.update_monitor(monitor, %{labels: ["host=web1"]})
+      assert %{labels: ["host is an automatic label, use another key"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               Monitoring.update_monitor(monitor, %{labels: ["Type=x", "host", "env"]})
+
+      assert %{labels: ["host and type are automatic labels, use other keys"]} =
+               errors_on(changeset)
     end
 
     test "with invalid data returns an error changeset" do
@@ -366,6 +421,22 @@ defmodule Sentinelix.MonitoringTest do
       assert Monitoring.get_monitor!(monitor.id).labels == %{}
     end
 
+    test "can't set or remove automatic labels" do
+      monitor = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+
+      assert {:error, changeset} = Monitoring.put_labels([monitor], ["Host=web1", "site=oslo"])
+      assert %{labels: ["host is an automatic label, use another key"]} = errors_on(changeset)
+
+      assert {:error, changeset} = Monitoring.delete_labels([monitor], ["env", "type", "HOST"])
+
+      assert %{labels: ["host and type are automatic labels, use other keys"]} =
+               errors_on(changeset)
+
+      monitor = Monitoring.get_monitor!(monitor.id)
+      assert monitor.labels == %{"env" => "prod"}
+      assert %{"type" => "http", "host" => "example.com"} = monitor.all_labels
+    end
+
     test "change all monitors or none" do
       full = for i <- 1..63, into: %{}, do: {"k#{i}", ""}
       ok = monitor_fixture()
@@ -446,7 +517,7 @@ defmodule Sentinelix.MonitoringTest do
           max_retries: 2,
           timeout_ms: 5_000,
           description: "Primary",
-          labels: %{"env" => "prod", "host" => "db1"},
+          labels: %{"env" => "prod", "instance" => "db1"},
           settings: %{host: "db1.example.com", port: 5432}
         })
 
@@ -462,7 +533,7 @@ defmodule Sentinelix.MonitoringTest do
                max_retries: 2,
                timeout_ms: 5_000,
                description: "Primary",
-               labels: %{"env" => "prod", "host" => "db1"},
+               labels: %{"env" => "prod", "instance" => "db1"},
                settings: %Settings{host: "db1.example.com", port: 5432}
              } = clone
 

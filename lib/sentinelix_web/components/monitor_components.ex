@@ -192,33 +192,53 @@ defmodule SentinelixWeb.MonitorComponents do
   a value), sorted by key. Renders nothing without labels. With `patch`, a
   function of the `{key, value}` label returning a path, each badge links
   there (e.g. to filter by the label).
+
+  `automatic` labels (see `Sentinelix.Monitoring.AutoLabels`) follow the
+  user's labels as muted, dashed badges, marked with `data-automatic`.
   """
   attr :labels, :map, required: true
+  attr :automatic, :map, default: %{}
   attr :class, :any, default: "badge-xs"
   attr :patch, :any, default: nil, doc: "fn {key, value} -> path end"
 
   def label_badges(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :badges,
+        Enum.map(Labels.to_list(assigns.labels), &{&1, false}) ++
+          Enum.map(Labels.to_list(assigns.automatic), &{&1, true})
+      )
+
     ~H"""
-    <%= for {key, value} = label <- Labels.to_list(@labels) do %>
+    <%= for {{key, value} = label, automatic} <- @badges do %>
       <.link
         :if={@patch}
         patch={@patch.(label)}
-        class={["badge badge-ghost gap-0 font-mono hover:badge-neutral", @class]}
+        class={[label_badge_class(automatic), "hover:badge-neutral", @class]}
         title={"Filter by #{Labels.format(label)}"}
         data-label={Labels.format(label)}
+        data-automatic={automatic}
       >
         <.label_text key={key} value={value} />
       </.link>
       <span
         :if={!@patch}
-        class={["badge badge-ghost gap-0 font-mono", @class]}
+        class={[label_badge_class(automatic), @class]}
+        title={automatic && "Automatic label"}
         data-label={Labels.format(label)}
+        data-automatic={automatic}
       >
         <.label_text key={key} value={value} />
       </span>
     <% end %>
     """
   end
+
+  defp label_badge_class(false), do: "badge badge-ghost gap-0 font-mono"
+
+  defp label_badge_class(true),
+    do: "badge badge-outline border-dashed gap-0 font-mono text-base-content/60"
 
   attr :key, :string, required: true
   attr :value, :string, required: true
@@ -231,7 +251,7 @@ defmodule SentinelixWeb.MonitorComponents do
 
   @doc """
   Whether a monitor matches a free-text search (case-insensitive) on its
-  name, target or labels (written as `key=value`).
+  name, target or labels, user or automatic (written as `key=value`).
   """
   @spec matches_search?(Monitor.t(), String.t()) :: boolean()
   def matches_search?(_monitor, ""), do: true
@@ -239,7 +259,7 @@ defmodule SentinelixWeb.MonitorComponents do
   def matches_search?(monitor, query) do
     query = String.downcase(query)
 
-    [monitor.name, target(monitor) | Labels.format(monitor.labels)]
+    [monitor.name, target(monitor) | Labels.format(monitor.all_labels || monitor.labels)]
     |> Enum.reject(&is_nil/1)
     |> Enum.any?(&String.contains?(String.downcase(&1), query))
   end

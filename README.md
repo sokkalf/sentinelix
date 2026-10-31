@@ -18,7 +18,7 @@ public status pages.
   charts, uptime over 24 hours / 7 / 30 / 90 days and incident history
   (LiveView, updates without reloading).
 * **Labels:** key/value labels on monitors (`env=prod`, `site=oslo`) to
-  group, filter and search them.
+  group, filter and search them, plus automatic `type` and `host` labels.
 * **Cloning:** "same checks as db1, but for db2" – copy a monitor's
   settings, labels and notification channels into a new one.
 * **Bulk actions** in the monitor list: label, pause, resume, attach
@@ -270,7 +270,7 @@ users are never modified by these variables).
 ## Labels
 
 Monitors carry key/value labels such as `env=prod`, `site=helsinki`,
-`service=billing` or `host=db1` instead of folders: group and filter them
+`service=billing` or `team=db` instead of folders: group and filter them
 along any dimension. A label's value is optional (`deprecated`).
 
 * **Keys** are lowercase letters, digits, `_`, `.`, `-` and `/`, starting
@@ -285,6 +285,26 @@ use. The dashboard filters by a label (pick it in the label filter or click
 a label badge: `/?label=env=prod`; a bare key like `/?label=env` matches any
 value), and the dashboard and monitor list search also matches labels
 written as `key=value`.
+
+### Automatic labels
+
+Every monitor also has read-only automatic labels, derived from its
+settings whenever it is saved:
+
+* `type`: the monitor type (`http`, `keyword`, `tcp`, `ping`, `dns`,
+  `cert`, `push` or `postgres`).
+* `host`: the host it checks: the host of the URL (HTTP and keyword
+  monitors) or the hostname or IP address (TCP, ping, DNS, certificate and
+  PostgreSQL monitors), lowercased, without port or trailing dot
+  (`https://WWW.Example.com:8443/` gives `host=www.example.com`). Push
+  monitors have none.
+
+They filter and search like your own labels (`/?label=type=tcp`,
+`/?label=host=db1.example.com`) and appear as muted, dashed badges on the
+monitor page and in the monitor form. `type` and `host` are reserved: your
+own labels can't use them. Labels named `type` or `host` from before
+automatic labels were dropped where they equalled the automatic one and
+renamed to `user/type` and `user/host` otherwise.
 
 Tags of earlier versions became labels without a value, normalized to the
 key rules (`Web Server` became `web-server`); tags written as `key=value`
@@ -429,7 +449,7 @@ a monitor is deleted:
 | `sentinelix_monitor_response_time_ms` | response time of the latest check |
 | `sentinelix_monitor_last_check_timestamp_seconds` | Unix time of the latest check |
 | `sentinelix_monitor_cert_days_remaining` | days until the certificate expires (certificate checks) |
-| `sentinelix_monitor_labels` | always 1; the monitor's [labels](#labels) as `label_<key>="<value>"` |
+| `sentinelix_monitor_labels` | always 1; the monitor's [labels](#labels), automatic ones included, as `label_<key>="<value>"` |
 
 Monitor labels are only on `sentinelix_monitor_labels`, not on every gauge:
 user-defined labels would multiply the number of series and change them
