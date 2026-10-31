@@ -26,7 +26,8 @@ public status pages.
 * **Bulk actions** in the monitor list: label, pause, resume, attach
   notification channels to or delete many monitors at once.
 * **Notifications** by email, generic webhook, Slack, Discord, Telegram,
-  ntfy and Gotify, on down, recovery and certificate warnings.
+  ntfy and Gotify, on down, recovery and certificate warnings, routed per
+  monitor or by selector (`env=prod` → ntfy).
 * **Maintenance windows** (one-off or recurring, time zone aware) that
   suppress alerts.
 * **Dependencies:** while a host's ping monitor is down, the monitors on
@@ -542,11 +543,36 @@ metrics and BEAM VM metrics (`vm_*`).
 
 Notification channels are managed at `/settings/notifications` (email,
 generic webhook, Slack, Discord, Telegram, ntfy, Gotify). A channel is sent
-to when a monitor it is attached to goes down, recovers, or raises/clears a
-warning (e.g. a TLS certificate close to expiry). Channels marked *default*
-are attached to new monitors automatically; the monitors of a channel can be
-chosen on its edit page. Failed sends are retried (3 attempts, exponential
-backoff).
+to when one of its monitors goes down, recovers, or raises/clears a warning
+(e.g. a TLS certificate close to expiry). Failed sends are retried (3
+attempts, exponential backoff). Disabled channels are never sent to.
+
+A channel's monitors are the ones **attached** to it plus the ones its
+**selector** matches:
+
+* **Attached:** check the monitors on the channel's edit page, or the
+  channels in the monitor form, or use the bulk actions. Channels marked
+  *default* are attached to new monitors automatically.
+* **By selector:** give the channel a [selector](#selectors) to notify every
+  monitor it matches, now or later: `env=prod` on an ntfy channel and
+  `env=staging` on an email channel route production alerts to phones and
+  staging alerts to email, without attaching anything. Selectors take label
+  and name terms (`status=` can't be used: the notification itself is the
+  status change). The channel's edit page marks the monitors the selector
+  matches as you type.
+
+An **empty selector routes nothing** (only the attached monitors are
+notified), unlike an empty selector on the dashboard, which shows every
+monitor. To route every monitor, use a label every monitor has, such as
+`type`.
+
+Routing is resolved for each notification from the monitor's labels at that
+moment, so adding `env=prod` to a monitor routes its next alert to the
+`env=prod` channels right away. A monitor's page lists the channels that
+notify it and why (*attached*, *via selector*), and its form marks the
+channels the labels being edited route to. **Send test** on a monitor's page
+sends a test notification to exactly the channels a real alert would go to;
+**Test** on the settings page tests a single channel.
 
 * Channel configs (tokens, webhook URLs) are encrypted in the database with a
   key derived from `SECRET_KEY_BASE` and are never shown again in the UI
@@ -702,8 +728,9 @@ Sentinelix.Supervisor
   (`run(monitor) :: {:up | :down, details}`), registered per monitor type in
   `Sentinelix.Checks`.
 * **Notifications** – `Notifications.Dispatcher` subscribes to
-  `"status_changes"` and sends to the monitor's channels through provider
-  modules (`Sentinelix.Notifications.Providers.*`).
+  `"status_changes"` and sends to the monitor's channels (attached or routed
+  by selector, resolved per event) through provider modules
+  (`Sentinelix.Notifications.Providers.*`).
 * **Maintenance** – the engine asks `Sentinelix.Maintenance` after every
   check whether the monitor is in a window.
 * **Dependencies** – every worker publishes whether its latest check
