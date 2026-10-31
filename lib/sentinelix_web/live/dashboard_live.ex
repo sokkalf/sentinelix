@@ -62,8 +62,8 @@ defmodule SentinelixWeb.DashboardLive do
   import SentinelixWeb.SelectorComponents
   import SentinelixWeb.SavedViewComponents
 
-  alias Sentinelix.SavedViews
   alias Sentinelix.Monitoring.{Grouping, Selector, View}
+  alias Sentinelix.SavedViews
   alias Sentinelix.SavedViews.SavedView
   alias SentinelixWeb.DashboardLive.{Matrix, Rows}
   alias SentinelixWeb.MonitorIndex
