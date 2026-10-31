@@ -501,7 +501,7 @@ defmodule Sentinelix.MonitoringTest do
           max_retries: 2,
           timeout_ms: 5_000,
           description: "Primary",
-          labels: %{"env" => "prod", "host" => "db1"},
+          labels: %{"env" => "prod", "instance" => "db1"},
           settings: %{host: "db1.example.com", port: 5432}
         })
 
@@ -517,7 +517,7 @@ defmodule Sentinelix.MonitoringTest do
                max_retries: 2,
                timeout_ms: 5_000,
                description: "Primary",
-               labels: %{"env" => "prod", "host" => "db1"},
+               labels: %{"env" => "prod", "instance" => "db1"},
                settings: %Settings{host: "db1.example.com", port: 5432}
              } = clone
 

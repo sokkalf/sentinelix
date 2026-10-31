@@ -628,7 +628,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
           name: "db1",
           interval_seconds: 120,
           max_retries: 3,
-          labels: %{"host" => "db1", "service" => "billing"},
+          labels: %{"instance" => "db1", "service" => "billing"},
           settings: %{host: "db1.example.com", port: 5432}
         })
 
@@ -643,8 +643,9 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#settings-fields[data-type=tcp]")
       assert has_element?(view, "[name='monitor[settings][host]'][value='db1.example.com']")
       assert has_element?(view, "#monitor_interval_seconds[value='120']")
-      assert has_element?(view, "#monitor_labels_0_key[value=host]")
+      assert has_element?(view, "#monitor_labels_0_key[value=instance]")
       assert has_element?(view, "#monitor_labels_0_value[value=db1]")
+      assert has_element?(view, "#automatic-labels [data-label='host=db1.example.com']")
       # The source's channels, not the defaults.
       assert has_element?(view, "#channel-#{channel.id}[checked]")
       refute has_element?(view, "#channel-#{default.id}[checked]")
@@ -655,7 +656,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
           monitor: %{
             name: "db2",
             settings: %{host: "db2.example.com"},
-            labels: %{"0" => %{key: "host", value: "db2"}, "1" => %{key: "service"}}
+            labels: %{"0" => %{key: "instance", value: "db2"}, "1" => %{key: "service"}}
           }
         )
         |> render_submit()
@@ -670,7 +671,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
                type: :tcp,
                interval_seconds: 120,
                max_retries: 3,
-               labels: %{"host" => "db2", "service" => "billing"},
+               labels: %{"instance" => "db2", "service" => "billing"},
                settings: %{host: "db2.example.com", port: 5432}
              } = clone
 
