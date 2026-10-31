@@ -50,6 +50,27 @@ defmodule SentinelixWeb.MonitorComponentsTest do
       assert visible =~ "42 ms"
       assert visible =~ "–"
     end
+
+    test "without a link: no link, no tooltip, no maintenance titles" do
+      html =
+        tile(%{
+          size: "lg",
+          status: :maintenance,
+          response_time_ms: 42,
+          maintenance: [%{title: "Secret upgrade"}],
+          navigate: false
+        })
+
+      assert html |> LazyHTML.query("a") |> Enum.count() == 0
+      assert html |> LazyHTML.query("[role=tooltip]") |> Enum.count() == 0
+      assert html |> LazyHTML.query("div#tile[data-status=maintenance]") |> Enum.count() == 1
+      assert html |> LazyHTML.query("#tile .hero-wrench-screwdriver-micro") |> Enum.count() == 1
+
+      text = LazyHTML.text(html)
+      assert text =~ "Web"
+      assert text =~ "42 ms"
+      refute text =~ "Secret upgrade"
+    end
   end
 
   test "every status has an icon" do

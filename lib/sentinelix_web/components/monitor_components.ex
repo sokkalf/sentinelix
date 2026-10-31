@@ -320,6 +320,11 @@ defmodule SentinelixWeb.MonitorComponents do
   warning and maintenance) show as a tooltip on hover and keyboard focus,
   and are the tile's accessible description.
 
+  With `navigate={false}` the tile is a plain box instead: no link and no
+  tooltip (wall displays have nothing to click and nothing behind a login
+  to link to). The maintenance windows then only switch the icon on;
+  their titles aren't shown.
+
   Sizes:
 
     * `"sm"` – a small tile with the name, for many monitors on a screen
@@ -335,9 +340,35 @@ defmodule SentinelixWeb.MonitorComponents do
   attr :warning, :boolean, default: false
   attr :maintenance, :list, default: [], doc: "the active maintenance windows"
   attr :size, :string, values: ~w(sm lg), default: "sm"
-  attr :navigate, :string, default: nil, doc: "defaults to the monitor's page"
+  attr :navigate, :any, default: nil, doc: "defaults to the monitor's page, `false` for no link"
   attr :class, :any, default: nil
   attr :rest, :global
+
+  def monitor_tile(%{navigate: false} = assigns) do
+    ~H"""
+    <div
+      id={@id}
+      data-status={@status}
+      class={[
+        "relative flex rounded-field border",
+        tile_size_class(@size),
+        status_tile_class(@status),
+        @class
+      ]}
+      {@rest}
+    >
+      <.tile_content
+        monitor={@monitor}
+        status={@status}
+        size={@size}
+        response_time_ms={@response_time_ms}
+        uptime={@uptime}
+        warning={@warning}
+        maintenance={@maintenance}
+      />
+    </div>
+    """
+  end
 
   def monitor_tile(assigns) do
     assigns =
@@ -361,28 +392,15 @@ defmodule SentinelixWeb.MonitorComponents do
       ]}
       {@rest}
     >
-      <span class="flex min-w-0 items-center gap-1.5">
-        <span class={@status != :down && status_text_class(@status)}>
-          <.status_icon status={@status} class={tile_icon_class(@size)} />
-        </span>
-        <span class="min-w-0 truncate font-medium">{@monitor.name}</span>
-        <span :if={@size == "sm"} class="sr-only">, {status_label(@status)}</span>
-        <.icon
-          :if={@warning}
-          name="hero-exclamation-triangle-micro"
-          class="size-3 shrink-0 text-warning"
-        />
-        <.icon
-          :if={@maintenance != []}
-          name="hero-wrench-screwdriver-micro"
-          class="size-3 shrink-0"
-        />
-      </span>
-      <span :if={@size == "lg"} class="flex items-baseline gap-3 text-sm tabular-nums">
-        <span class="font-semibold">{status_label(@status)}</span>
-        <span>{format_ms(@response_time_ms)}</span>
-        <span>{format_uptime(@uptime)}</span>
-      </span>
+      <.tile_content
+        monitor={@monitor}
+        status={@status}
+        size={@size}
+        response_time_ms={@response_time_ms}
+        uptime={@uptime}
+        warning={@warning}
+        maintenance={@maintenance}
+      />
       <span
         id={@details_id}
         role="tooltip"
@@ -406,6 +424,41 @@ defmodule SentinelixWeb.MonitorComponents do
         </span>
       </span>
     </.link>
+    """
+  end
+
+  attr :monitor, :map, required: true
+  attr :status, :atom, required: true
+  attr :size, :string, required: true
+  attr :response_time_ms, :any, required: true
+  attr :uptime, :any, required: true
+  attr :warning, :boolean, required: true
+  attr :maintenance, :list, required: true
+
+  defp tile_content(assigns) do
+    ~H"""
+    <span class="flex min-w-0 items-center gap-1.5">
+      <span class={@status != :down && status_text_class(@status)}>
+        <.status_icon status={@status} class={tile_icon_class(@size)} />
+      </span>
+      <span class="min-w-0 truncate font-medium">{@monitor.name}</span>
+      <span :if={@size == "sm"} class="sr-only">, {status_label(@status)}</span>
+      <.icon
+        :if={@warning}
+        name="hero-exclamation-triangle-micro"
+        class="size-3 shrink-0 text-warning"
+      />
+      <.icon
+        :if={@maintenance != []}
+        name="hero-wrench-screwdriver-micro"
+        class="size-3 shrink-0"
+      />
+    </span>
+    <span :if={@size == "lg"} class="flex items-baseline gap-3 text-sm tabular-nums">
+      <span class="font-semibold">{status_label(@status)}</span>
+      <span>{format_ms(@response_time_ms)}</span>
+      <span>{format_uptime(@uptime)}</span>
+    </span>
     """
   end
 
