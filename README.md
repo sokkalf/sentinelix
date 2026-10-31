@@ -336,8 +336,8 @@ env=prod, site in (oslo,helsinki), service!=legacy, !deprecated, host
 Two keys are pseudo-labels instead of labels (so labels of your own named
 `status` or `name` can't be selected):
 
-* `status`: the current status, `up`, `down`, `pending`, `maintenance` or
-  `paused` (with `=`, `!=`, `in` and `notin`): `status=down`,
+* `status`: the current status, `up`, `down`, `pending`, `maintenance`,
+  `unreachable` or `paused` (with `=`, `!=`, `in` and `notin`): `status=down`,
   `status in (down,pending)`.
 * `name`: the monitor's name, with any operator that takes a value:
   `name~api` (name contains "api", ignoring case), `name="Web 1"`.
