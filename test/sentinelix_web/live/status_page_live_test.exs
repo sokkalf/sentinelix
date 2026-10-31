@@ -183,6 +183,80 @@ defmodule SentinelixWeb.StatusPageLiveTest do
       {:ok, _} = StatusPages.update_status_page(page, %{slug: "renamed-#{page.id}"})
       assert_redirect(view, ~p"/status/renamed-#{page.id}")
     end
+
+    test "selector groups follow monitor changes", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      dev = monitor_fixture(:http, %{name: "Dev", labels: %{"env" => "dev"}})
+      page = status_page_fixture(%{published: true})
+      group = group_fixture(page, %{name: "Prod", selector: "env=prod"})
+      row = fn monitor -> "#monitor-#{group.id}-#{monitor.id}" end
+
+      {:ok, view, _html} = live(conn, ~p"/status/#{page.slug}")
+      assert has_element?(view, row.(web))
+      refute has_element?(view, row.(dev))
+
+      # created
+      api = monitor_fixture(:http, %{name: "API", labels: %{"env" => "prod"}})
+      render_reloaded(view)
+      assert has_element?(view, row.(api))
+      assert row_order(view, group) == [api.id, web.id]
+
+      # relabelled in bulk, and the new member's results update live
+      {:ok, _} = Monitoring.put_labels([dev], ["env=prod"])
+      render_reloaded(view)
+      assert has_element?(view, row.(dev))
+      check_result_fixture(dev, %{status: :down})
+      assert has_element?(view, "#{row.(dev)}[data-status=outage]")
+
+      {:ok, _} = Monitoring.delete_labels([web, dev], ["env"])
+      render_reloaded(view)
+      refute has_element?(view, row.(web))
+      refute has_element?(view, row.(dev))
+
+      # renamed: the matches are ordered by name
+      {:ok, [web]} = Monitoring.put_labels([web], ["env=prod"])
+      render_reloaded(view)
+      assert row_order(view, group) == [api.id, web.id]
+      {:ok, _} = Monitoring.update_monitor(api, %{name: "Zeta API"})
+      render_reloaded(view)
+      assert row_order(view, group) == [web.id, api.id]
+
+      # deleted
+      {:ok, _} = Monitoring.delete_monitor(api)
+      render_reloaded(view)
+      refute has_element?(view, row.(api))
+
+      # a name selector
+      {:ok, _} = StatusPages.update_group(group, %{selector: "name~de"})
+      assert has_element?(view, row.(dev))
+      refute has_element?(view, row.(web))
+      {:ok, _} = Monitoring.update_monitor(web, %{name: "Web (decommissioned)"})
+      render_reloaded(view)
+      assert has_element?(view, row.(web))
+    end
+
+    test "selector groups don't leak labels or selectors", %{conn: conn} do
+      monitor =
+        monitor_fixture(:http, %{
+          name: "Shop",
+          labels: %{"team" => "skunkworks"},
+          settings: %{url: @secret_url}
+        })
+
+      page = status_page_fixture(%{published: true})
+      group_fixture(page, %{name: "Ours", selector: "team=skunkworks"})
+
+      {:ok, view, html} = live(conn, ~p"/status/#{page.slug}")
+      assert html =~ "Shop"
+      refute html =~ "skunkworks"
+      refute html =~ "team"
+      refute html =~ "secret"
+
+      {:ok, _} = Monitoring.put_labels([monitor], ["tier=gold"])
+      html = render_reloaded(view)
+      assert html =~ "Shop"
+      refute html =~ "gold"
+    end
   end
 
   describe "admin logged out" do
@@ -273,11 +347,101 @@ defmodule SentinelixWeb.StatusPageLiveTest do
                "Websites"
              ]
 
-      view |> form("#rename-group-#{web.id}", name: "Web") |> render_submit()
+      view |> element("#edit-group-#{web.id}") |> render_click()
+      view |> form("#group-form-#{web.id}", group: %{name: ""}) |> render_submit()
+      assert group(page, web).name == "Websites"
+      view |> form("#group-form-#{web.id}", group: %{name: "Web"}) |> render_submit()
       assert group(page, web).name == "Web"
+      refute has_element?(view, "#group-form-#{web.id}")
 
       view |> element("#delete-group-#{backend.id}") |> render_click()
       assert Enum.map(StatusPages.get_status_page!(page.id).groups, & &1.name) == ["Web"]
+    end
+
+    test "manages selector groups with a preview", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      api = monitor_fixture(:http, %{name: "API", labels: %{"env" => "prod"}})
+      dev = monitor_fixture(:http, %{name: "Dev", labels: %{"env" => "dev"}})
+      page = status_page_fixture(%{published: true})
+
+      {:ok, view, _html} = live(conn, ~p"/status-pages/#{page.id}")
+
+      # the selector appears with the kind, and previews its matches
+      html = view |> form("#new-group-form", group: %{kind: "selector"}) |> render_change()
+      assert html =~ "an empty selector would match every monitor"
+
+      view
+      |> form("#new-group-form",
+        group: %{name: "Prod", kind: "selector", selector: "status=down"}
+      )
+      |> render_change()
+
+      assert has_element?(view, "#new-group-form-selector-error", "status can't be used here")
+      refute has_element?(view, "#new-group-form-preview")
+
+      view
+      |> form("#new-group-form", group: %{name: "Prod", kind: "selector", selector: "env=p"})
+      |> render_change()
+
+      assert has_element?(view, "#new-group-form-selector-suggestions option[value='env=prod']")
+
+      view
+      |> form("#new-group-form", group: %{name: "Prod", kind: "selector", selector: "env=prod"})
+      |> render_change()
+
+      assert has_element?(view, "#new-group-form-preview", "Shows 2 monitors publicly")
+      assert has_element?(view, "#new-group-form-preview-#{api.id}")
+      assert has_element?(view, "#new-group-form-preview-#{web.id}")
+      refute has_element?(view, "#new-group-form-preview-#{dev.id}")
+
+      # a blank selector is refused
+      view
+      |> form("#new-group-form", group: %{name: "All", kind: "selector", selector: ""})
+      |> render_submit()
+
+      assert [] = StatusPages.get_status_page!(page.id).groups
+
+      view
+      |> form("#new-group-form", group: %{name: "Prod", kind: "selector", selector: "env=prod"})
+      |> render_submit()
+
+      [prod] = StatusPages.get_status_page!(page.id).groups
+      assert prod.selector == "env=prod"
+      assert has_element?(view, "#group-#{prod.id}-selector", "env=prod")
+      assert has_element?(view, "#matched-#{prod.id}-#{api.id}")
+      assert member_names(page, prod) == ["API", "Web"]
+
+      # pin a match, and a monitor the selector doesn't match
+      view |> element("#pin-#{prod.id}-#{web.id}") |> render_click()
+      view |> form("#add-monitor-#{prod.id}", monitor_id: dev.id) |> render_submit()
+      assert member_names(page, prod) == ["Web", "Dev", "API"]
+      [pm_web, pm_dev] = group(page, prod).page_monitors
+      assert has_element?(view, "#page-monitor-#{pm_dev.id}", "not matched")
+      refute has_element?(view, "#page-monitor-#{pm_web.id}", "not matched")
+
+      # unpin
+      view |> element("#remove-page-monitor-#{pm_web.id}") |> render_click()
+      assert member_names(page, prod) == ["Dev", "API", "Web"]
+
+      # edit the selector: the preview includes the pinned monitor
+      view |> element("#edit-group-#{prod.id}") |> render_click()
+
+      view
+      |> form("#group-form-#{prod.id}", group: %{selector: "name~we"})
+      |> render_change()
+
+      assert has_element?(view, "#group-form-#{prod.id}-preview", "Shows 2 monitors")
+      assert has_element?(view, "#group-form-#{prod.id}-preview-#{dev.id}")
+      refute has_element?(view, "#group-form-#{prod.id}-preview-#{api.id}")
+
+      view |> form("#group-form-#{prod.id}", group: %{selector: "name~we"}) |> render_submit()
+      assert member_names(page, prod) == ["Dev", "Web"]
+
+      # back to a fixed list: the pinned monitors stay
+      view |> element("#edit-group-#{prod.id}") |> render_click()
+      view |> form("#group-form-#{prod.id}", group: %{kind: "fixed"}) |> render_submit()
+      assert %{selector: nil} = group(page, prod)
+      assert member_names(page, prod) == ["Dev"]
     end
 
     test "publishes and edits the settings", %{conn: conn} do
@@ -329,4 +493,23 @@ defmodule SentinelixWeb.StatusPageLiveTest do
   end
 
   defp monitor_names(page, g), do: Enum.map(group(page, g).page_monitors, & &1.monitor.name)
+
+  # The group's monitors in display order (pinned and matched).
+  defp member_names(page, g), do: Enum.map(group(page, g).monitors, & &1.name)
+
+  # The ids of the monitors in a group of the public page, in order.
+  defp row_order(view, group) do
+    html = view |> element("#group-#{group.id}") |> render()
+
+    ~r/id="monitor-#{group.id}-(\d+)"/
+    |> Regex.scan(html, capture: :all_but_first)
+    |> Enum.map(fn [id] -> String.to_integer(id) end)
+  end
+
+  # Monitor changes reload the page with a message the page sends itself,
+  # after the render that follows the change: render once more.
+  defp render_reloaded(view) do
+    render(view)
+    render(view)
+  end
 end
