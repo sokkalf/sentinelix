@@ -96,11 +96,11 @@ defmodule Sentinelix.Monitoring.SelectorTest do
 
     test "checks how pseudo-labels are used" do
       assert error("status=broken") ==
-               {~s(unknown status "broken", expected one of up, down, pending, maintenance, paused),
+               {~s(unknown status "broken", expected one of up, down, pending, maintenance, unreachable, paused),
                 7}
 
       assert error("env=prod, status in (up, nope)") ==
-               {~s(unknown status "nope", expected one of up, down, pending, maintenance, paused),
+               {~s(unknown status "nope", expected one of up, down, pending, maintenance, unreachable, paused),
                 25}
 
       assert error("status") == {"status takes =, !=, in or notin", 0}
