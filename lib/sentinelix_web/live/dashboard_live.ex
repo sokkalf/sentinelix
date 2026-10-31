@@ -421,26 +421,34 @@ defmodule SentinelixWeb.DashboardLive do
   end
 
   defp legacy_terms(params) do
-    search =
-      case String.trim(params["q"] || "") do
-        "" -> []
-        text -> [Selector.name_term(text)]
-      end
-
-    status =
-      case Enum.find(@statuses, &(Atom.to_string(&1) == params["status"])) do
-        nil -> []
-        status -> [Selector.status_term(status)]
-      end
-
-    label =
-      case Labels.parse(params["label"] || params["tag"] || "") do
-        {:ok, label} -> [Selector.label_term(label)]
-        {:error, _message} -> []
-      end
-
-    search ++ status ++ label
+    search_term(params["q"]) ++
+      status_term(params["status"]) ++ label_term(params["label"] || params["tag"])
   end
+
+  defp search_term(text) when is_binary(text) do
+    case String.trim(text) do
+      "" -> []
+      text -> [Selector.name_term(text)]
+    end
+  end
+
+  defp search_term(_text), do: []
+
+  defp status_term(status) do
+    case Enum.find(@statuses, &(Atom.to_string(&1) == status)) do
+      nil -> []
+      status -> [Selector.status_term(status)]
+    end
+  end
+
+  defp label_term(label) when is_binary(label) do
+    case Labels.parse(label) do
+      {:ok, label} -> [Selector.label_term(label)]
+      {:error, _message} -> []
+    end
+  end
+
+  defp label_term(_label), do: []
 
   defp status_selected?(nil, _status), do: false
 

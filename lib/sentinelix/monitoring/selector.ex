@@ -297,21 +297,21 @@ defmodule Sentinelix.Monitoring.Selector do
 
       case operator(rest) do
         {op, length} when op in @value_ops ->
-          with {:ok, value, rest, pos} <- parse_value(Enum.drop(rest, length), pos + length),
-               {:ok, term} <- build_term(key, op, [value], start) do
-            {:ok, {term, start}, rest, pos}
-          end
+          parse_operand(key, op, &parse_value/2, Enum.drop(rest, length), pos + length, start)
 
         {op, length} when op in [:in, :notin] and pos > key_end ->
-          with {:ok, values, rest, pos} <- parse_list(Enum.drop(rest, length), pos + length),
-               {:ok, term} <- build_term(key, op, values, start) do
-            {:ok, {term, start}, rest, pos}
-          end
+          parse_operand(key, op, &parse_list/2, Enum.drop(rest, length), pos + length, start)
 
         _none ->
-          with {:ok, term} <- build_term(key, :exists, [], start),
-               do: {:ok, {term, start}, after_key, key_end}
+          parse_operand(key, :exists, &{:ok, [], &1, &2}, after_key, key_end, start)
       end
+    end
+  end
+
+  defp parse_operand(key, op, parser, chars, pos, start) do
+    with {:ok, operand, rest, pos} <- parser.(chars, pos),
+         {:ok, term} <- build_term(key, op, List.wrap(operand), start) do
+      {:ok, {term, start}, rest, pos}
     end
   end
 
@@ -689,6 +689,8 @@ defmodule Sentinelix.Monitoring.Selector do
   defp like_pattern(text), do: "%" <> String.replace(text, ["\\", "%", "_"], &("\\" <> &1)) <> "%"
 
   defimpl String.Chars do
-    def to_string(selector), do: Sentinelix.Monitoring.Selector.to_string(selector)
+    alias Sentinelix.Monitoring.Selector
+
+    def to_string(selector), do: Selector.to_string(selector)
   end
 end

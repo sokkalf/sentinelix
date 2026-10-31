@@ -245,8 +245,8 @@ defmodule Sentinelix.Monitoring.SelectorTest do
     end
 
     test "matches names", %{monitor: monitor} do
-      assert matches?("name~web, name~\"B 1\", name=\"Web 1\", name!=web", monitor)
-      assert matches?("name in (\"Web 1\", x), name notin (\"web 1\"), name!~db", monitor)
+      assert matches?(~s(name~web, name~"B 1", name="Web 1", name!=web), monitor)
+      assert matches?(~s{name in ("Web 1", x), name notin ("web 1"), name!~db}, monitor)
       refute matches?("name~db", monitor)
       refute matches?("name=web", monitor)
     end
