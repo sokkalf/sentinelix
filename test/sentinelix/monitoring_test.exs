@@ -605,8 +605,22 @@ defmodule Sentinelix.MonitoringTest do
       assert [%Monitor{id: id}] = Monitoring.list_children(parent)
       assert id == child.id
 
+      :ok = Monitoring.subscribe_monitor(child)
       {:ok, _} = Monitoring.delete_monitor(parent)
       assert Monitoring.get_monitor!(child.id).parent_id == nil
+      assert_receive {:monitor_updated, %Monitor{id: ^id, parent_id: nil}}
+    end
+
+    test "deleting many monitors detaches their remaining children" do
+      [a, b] = [monitor_fixture(:ping), monitor_fixture(:ping)]
+      inner = monitor_fixture(:http, %{parent_id: a.id})
+      child = monitor_fixture(:http, %{parent_id: b.id})
+      :ok = Monitoring.subscribe_monitor(child)
+
+      {:ok, _} = Monitoring.delete_monitors([a, b, inner])
+      assert Monitoring.get_monitor!(child.id).parent_id == nil
+      child_id = child.id
+      assert_receive {:monitor_updated, %Monitor{id: ^child_id, parent_id: nil}}
     end
 
     test "the parent can be changed and removed" do

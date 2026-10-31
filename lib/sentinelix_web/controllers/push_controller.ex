@@ -14,7 +14,8 @@ defmodule SentinelixWeb.PushController do
   Responses (JSON):
 
     * `200 {"ok": true, "status": "up"}` – recorded; `status` is the
-      monitor's resulting status (`up`, `down`, `pending` or `maintenance`)
+      monitor's resulting status (`up`, `down`, `pending`, `maintenance` or
+      `unreachable`)
     * `400` – invalid `status` parameter
     * `404` – unknown token or the monitor is disabled
     * `429` – rate limit exceeded (with a `retry-after` header)

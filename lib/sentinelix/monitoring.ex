@@ -17,6 +17,8 @@ defmodule Sentinelix.Monitoring do
 
   Bulk changes (`put_labels/2`, `delete_labels/2`, `set_monitors_enabled/2`,
   `delete_monitors/1`) send one of these events per changed monitor.
+  Deleting a monitor sends `:monitor_updated` for each of its children,
+  which lose their parent.
 
   Topic `"monitor:<id>"` (see `subscribe_monitor/1`) – everything about a
   single monitor:
@@ -305,12 +307,37 @@ defmodule Sentinelix.Monitoring do
 
   @doc """
   Deletes a monitor together with its check results and incidents.
+
+  Its children lose their parent; each is broadcast as `{:monitor_updated,
+  child}`.
   """
   @spec delete_monitor(Monitor.t()) :: {:ok, Monitor.t()} | {:error, Ecto.Changeset.t()}
   def delete_monitor(%Monitor{} = monitor) do
+    children = child_ids([monitor.id])
+
     monitor
     |> Repo.delete()
     |> broadcast_monitor_change(:monitor_deleted)
+    |> tap(fn
+      {:ok, _monitor} -> broadcast_detached(children)
+      _error -> :ok
+    end)
+  end
+
+  # The ids of the children of the given monitors, except those among them.
+  defp child_ids(ids) do
+    Repo.all(from m in Monitor, where: m.parent_id in ^ids and m.id not in ^ids, select: m.id)
+  end
+
+  # The database detached the children of deleted monitors (`ON DELETE SET
+  # NULL`); broadcast them so that their workers restart without a parent.
+  defp broadcast_detached([]), do: :ok
+
+  defp broadcast_detached(ids) do
+    Monitor
+    |> where([m], m.id in ^ids)
+    |> Repo.all()
+    |> Enum.each(&broadcast_monitor_change({:ok, &1}, :monitor_updated))
   end
 
   ## Bulk changes
@@ -375,11 +402,13 @@ defmodule Sentinelix.Monitoring do
   Deletes the given monitors (structs or ids; unknown ids are ignored)
   together with their check results and incidents, in one statement.
   Returns the deleted monitors; each is broadcast as `{:monitor_deleted,
-  monitor}`, like `delete_monitor/1`.
+  monitor}`, like `delete_monitor/1`, and their remaining children as
+  `{:monitor_updated, child}`.
   """
   @spec delete_monitors([monitor_ref()]) :: {:ok, [Monitor.t()]}
   def delete_monitors(monitors) do
     ids = Enum.map(monitors, &monitor_id/1)
+    children = child_ids(ids)
 
     {_count, deleted} =
       Monitor
@@ -388,6 +417,7 @@ defmodule Sentinelix.Monitoring do
       |> Repo.delete_all()
 
     Enum.each(deleted, &broadcast_monitor_change({:ok, &1}, :monitor_deleted))
+    broadcast_detached(children)
     {:ok, deleted}
   end
 

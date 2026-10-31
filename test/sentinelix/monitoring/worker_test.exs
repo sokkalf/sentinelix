@@ -19,7 +19,10 @@ defmodule Sentinelix.Monitoring.WorkerTest do
 
     start_supervised!(
       {Engine,
-       name: @engine, manager: false, jitter: 0, checks: %{http: FakeCheck, cert: FakeCheck}}
+       name: @engine,
+       manager: false,
+       jitter: 0,
+       checks: %{http: FakeCheck, cert: FakeCheck, ping: FakeCheck, tcp: FakeCheck}}
     )
 
     :ok
@@ -301,6 +304,174 @@ defmodule Sentinelix.Monitoring.WorkerTest do
     check_now(monitor)
 
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+  end
+
+  describe "dependencies" do
+    defp assert_result(monitor, status) do
+      id = monitor.id
+      assert_receive {:check_result, %{status: ^status, monitor_id: ^id} = result}, 2_000
+      result
+    end
+
+    defp refute_status_changed(monitor) do
+      id = monitor.id
+      refute_received {:status_changed, %{id: ^id}, _, _, _}
+    end
+
+    # A ping monitor that is down: its first check failed.
+    defp down_parent do
+      parent = monitor_fixture(:ping)
+      start(parent, [{:down, %{message: "host down"}}])
+      assert_result(parent, :down)
+      parent
+    end
+
+    test "failures while the parent is down are unreachable and don't alert" do
+      parent = down_parent()
+      child = monitor_fixture(:http, %{parent_id: parent.id})
+      start(child, [{:down, %{message: "refused"}}, {:up, %{}}, {:down, %{}}])
+
+      result = assert_result(child, :unreachable)
+      assert result.message == "refused"
+      assert %{status: :pending, retries: 0, unreachable: true} = Worker.info(child, @engine)
+      refute_status_changed(child)
+      assert Monitoring.get_open_incident(child) == nil
+
+      # A child that answers is up, whatever its parent says.
+      check_now(child)
+      assert_result(child, :up)
+      assert_receive {:status_changed, %{id: id}, :pending, :up, _}
+      assert id == child.id
+
+      check_now(child)
+      assert_result(child, :unreachable)
+      assert %{status: :up, unreachable: true} = Worker.info(child, @engine)
+      refute_status_changed(child)
+    end
+
+    test "children are re-checked when the parent recovers" do
+      parent = monitor_fixture(:ping)
+      child = monitor_fixture(:http, %{parent_id: parent.id})
+      start(parent, [{:up, %{}}, {:down, %{}}, {:up, %{}}])
+      assert_result(parent, :up)
+      start(child, [{:up, %{}}, {:down, %{}}])
+      assert_result(child, :up)
+      child_id = child.id
+      assert_receive {:status_changed, %{id: ^child_id}, :pending, :up, _}
+
+      check_now(parent)
+      assert_result(parent, :down)
+      check_now(child)
+      assert_result(child, :unreachable)
+
+      # Back up: the child is checked again right away (and is up).
+      check_now(parent)
+      assert_result(parent, :up)
+      assert_result(child, :up)
+      assert %{status: :up, unreachable: false} = Worker.info(child, @engine)
+      refute_status_changed(child)
+    end
+
+    test "a child still failing after the parent recovered goes down" do
+      parent = down_parent()
+      child = monitor_fixture(:http, %{parent_id: parent.id})
+      start(child, [{:down, %{}}, {:down, %{}}, {:down, %{message: "still refused"}}])
+      assert_result(child, :unreachable)
+
+      FakeCheck.push(parent, [{:up, %{}}])
+      check_now(parent)
+      assert_result(parent, :up)
+
+      # The re-check fails: the parent is asked once more (it is up), then
+      # the child goes down.
+      assert_result(child, :pending)
+      assert_result(parent, :up)
+      result = assert_result(child, :down)
+      assert result.message == "still refused"
+      child_id = child.id
+      assert_receive {:status_changed, %{id: ^child_id}, :pending, :down, ^result}
+      assert Monitoring.get_open_incident(child)
+    end
+
+    test "a child failing before its parent's next check asks the parent first" do
+      parent = monitor_fixture(:ping)
+      child = monitor_fixture(:http, %{parent_id: parent.id, max_retries: 0})
+      start(parent, [{:up, %{}}, {:down, %{}}])
+      assert_result(parent, :up)
+      start(child, [{:up, %{}}, {:down, %{}}, {:down, %{}}])
+      assert_result(child, :up)
+
+      # The child notices first: instead of going down it waits for the
+      # parent, which turns out to be down.
+      check_now(child)
+      assert_result(child, :pending)
+      assert_result(parent, :down)
+      assert_result(child, :unreachable)
+
+      assert results(child) == [:up, :pending, :unreachable]
+      assert Monitoring.get_open_incident(child) == nil
+      assert Monitoring.get_open_incident(parent)
+    end
+
+    test "with retries left the child retries without asking the parent" do
+      parent = monitor_fixture(:ping)
+      child = monitor_fixture(:http, %{parent_id: parent.id, max_retries: 1})
+      start(parent, [{:up, %{}}])
+      assert_result(parent, :up)
+      start(child, [{:down, %{}}])
+
+      assert_result(child, :pending)
+      assert Worker.info(child, @engine).retries == 1
+      parent_id = parent.id
+      refute_receive {:check_result, %{monitor_id: ^parent_id}}, 100
+    end
+
+    test "suppression is transitive" do
+      host = down_parent()
+      service = monitor_fixture(:tcp, %{parent_id: host.id})
+      start(service, [{:down, %{}}])
+      assert_result(service, :unreachable)
+
+      child = monitor_fixture(:http, %{parent_id: service.id})
+      start(child, [{:down, %{}}])
+      assert_result(child, :unreachable)
+      refute_status_changed(service)
+      refute_status_changed(child)
+    end
+
+    test "a parent without a worker doesn't suppress anything" do
+      parent = monitor_fixture(:ping)
+      child = monitor_fixture(:http, %{parent_id: parent.id})
+      start(child, [{:down, %{}}])
+
+      assert_result(child, :down)
+      child_id = child.id
+      assert_receive {:incident_opened, %{monitor_id: ^child_id}}
+    end
+
+    test "publishes whether the latest check succeeded" do
+      monitor = monitor_fixture(:ping)
+      assert Worker.reachable?(monitor, @engine) == nil
+
+      start(monitor, [{:up, %{}}, {:down, %{}}])
+      assert_result(monitor, :up)
+      assert Worker.reachable?(monitor, @engine) == true
+
+      check_now(monitor)
+      assert_result(monitor, :down)
+      assert Worker.reachable?(monitor, @engine) == false
+    end
+
+    test "a restarted child knows it was unreachable" do
+      parent = monitor_fixture(:ping)
+      child = monitor_fixture(:http, %{parent_id: parent.id, timeout_ms: 1_000})
+      check_result_fixture(child, %{status: :unreachable})
+      start(child, [:hang])
+
+      assert %{status: :pending, unreachable: true} = Worker.info(child, @engine)
+      # Restored as unknown for its own children.
+      assert Worker.reachable?(child, @engine) == false
+    end
   end
 
   test "check_now without a running worker" do

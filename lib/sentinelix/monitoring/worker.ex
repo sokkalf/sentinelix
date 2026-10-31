@@ -32,6 +32,8 @@ defmodule Sentinelix.Monitoring.Worker do
       used → `:pending` (retried after `retry_interval_seconds`).
     * check `:down` otherwise → `:down`.
 
+  Maintenance and a parent that is down leave the status alone (see below).
+
   Every check is persisted with `Sentinelix.Monitoring.record_result/2`
   using the resulting status. When the status changes, the worker
 
@@ -77,6 +79,42 @@ defmodule Sentinelix.Monitoring.Worker do
   evaluation resumes with the next check after the window. The application
   configures `Sentinelix.Maintenance` (maintenance windows) as that module.
 
+  ## Dependencies
+
+  A monitor with a parent (`parent_id`, e.g. the ping monitor of its host)
+  doesn't alert while the parent is down: the parent's incident covers it.
+
+  Every worker publishes whether its latest check succeeded (`reachable`,
+  the raw result, whatever status was recorded) as its value in the
+  engine's `Registry`, and broadcasts `{:parent_checked, id, reachable}` on
+  `dependents_topic/2` after every check. Children read their parent's
+  value from the registry when a check completes (no call into the parent,
+  so no deadlocks and no waiting on a parent's running check) and
+  subscribe to its topic to react promptly:
+
+    * A failed check while the parent's latest check failed too is
+      recorded as `:unreachable`. Like maintenance, the status, retries and
+      incidents are left untouched and no events are broadcast, so nothing
+      is notified. The parent "is down" as soon as one of its checks fails,
+      while it is still retrying, in maintenance or unreachable itself
+      (so suppression is transitive along a chain of parents).
+    * The race of a child failing before its parent's next check: when a
+      failure would take the child to `:down` (all retries used) while its
+      parent looks up, the child asks the parent to check now and records
+      the failure as `:pending` instead. Once the parent's result arrives
+      the child checks again: unreachable if the parent failed, down
+      otherwise. This happens once per failure streak; if the parent
+      doesn't answer, the next scheduled retry decides.
+    * When the parent's check succeeds again, children whose latest result
+      was unreachable are re-checked right away, before anything is
+      notified. A child that is still failing then goes through its retries
+      and goes down (and alerts) like any other monitor.
+
+  A parent without a running worker (paused, or not loaded yet) doesn't
+  suppress anything. Passive (push) children record missed or failed
+  pushes as unreachable too, but have nothing to re-check: their deadline
+  decides, and they don't ask the parent to confirm.
+
   ## Telemetry
 
     * `[:sentinelix, :check, :start]` – measurements `%{system_time:,
@@ -94,11 +132,14 @@ defmodule Sentinelix.Monitoring.Worker do
 
   require Logger
 
+  alias Phoenix.PubSub
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.{CheckResult, Monitor}
   alias Sentinelix.Monitoring.Supervisor, as: Engine
 
   @type status :: :pending | :up | :down
+
+  @pubsub Sentinelix.PubSub
 
   defstruct [
     :monitor,
@@ -113,7 +154,13 @@ defmodule Sentinelix.Monitoring.Worker do
     passive: false,
     status: :pending,
     retries: 0,
-    warning: false
+    warning: false,
+    # The latest result was recorded as unreachable.
+    unreachable: false,
+    # Waiting for the parent's check before going down (see Dependencies).
+    confirming: false,
+    # The parent has been asked to confirm during this failure streak.
+    confirmed: false
   ]
 
   ## API
@@ -160,7 +207,8 @@ defmodule Sentinelix.Monitoring.Worker do
 
   @doc """
   Returns the runtime state of a monitor's worker: `:status`, `:retries`,
-  `:warning`, `:checking` (whether a check is running) and `:next_check_at`.
+  `:warning`, `:unreachable` (whether the latest result was unreachable),
+  `:checking` (whether a check is running) and `:next_check_at`.
   """
   @spec info(Monitor.t() | pos_integer(), Engine.engine()) :: map() | nil
   def info(monitor, engine \\ Engine) do
@@ -169,6 +217,26 @@ defmodule Sentinelix.Monitoring.Worker do
       pid -> GenServer.call(pid, :info)
     end
   end
+
+  @doc """
+  Whether the latest check of a monitor's worker succeeded, as published
+  in the engine's registry: `true`, `false`, or `nil` if the monitor has no
+  worker or nothing is known yet. Doesn't call the worker.
+  """
+  @spec reachable?(Monitor.t() | pos_integer(), Engine.engine()) :: boolean() | nil
+  def reachable?(monitor, engine \\ Engine) do
+    case Engine.lookup(monitor, engine) do
+      {_pid, %{reachable: reachable}} -> reachable
+      _ -> nil
+    end
+  end
+
+  @doc """
+  The topic a worker broadcasts `{:parent_checked, id, reachable}` on after
+  every check, for its children (see Dependencies).
+  """
+  @spec dependents_topic(Engine.engine(), pos_integer()) :: String.t()
+  def dependents_topic(engine, id), do: "engine:#{inspect(engine)}:dependents:#{id}"
 
   ## Callbacks
 
@@ -186,18 +254,42 @@ defmodule Sentinelix.Monitoring.Worker do
     # Finish recording a check that is being processed before shutting down.
     Process.flag(:trap_exit, true)
     Logger.metadata(monitor_id: state.monitor.id)
+
+    if parent_id = state.monitor.parent_id do
+      :ok = PubSub.subscribe(@pubsub, dependents_topic(state.config.engine, parent_id))
+    end
+
     {:ok, state, {:continue, :restore}}
   end
 
   @impl true
   def handle_continue(:restore, %{monitor: monitor} = state) do
+    latest = Monitoring.get_latest_result(monitor)
+
     status =
-      case Monitoring.get_latest_result(monitor) do
+      case latest do
         %CheckResult{status: status} when status in [:up, :down] -> status
         _ -> :pending
       end
 
-    state = %{state | status: status, incident: Monitoring.get_open_incident(monitor)}
+    state = %{
+      state
+      | status: status,
+        unreachable: match?(%CheckResult{status: :unreachable}, latest),
+        incident: Monitoring.get_open_incident(monitor)
+    }
+
+    # Until the first check: whether the latest stored one succeeded (not
+    # known for a maintenance result).
+    state =
+      put_reachable(
+        state,
+        case latest do
+          %CheckResult{status: :up} -> true
+          %CheckResult{status: status} when status in [:down, :pending, :unreachable] -> false
+          _ -> nil
+        end
+      )
 
     if state.passive,
       do: {:noreply, schedule_deadline(state)},
@@ -214,6 +306,7 @@ defmodule Sentinelix.Monitoring.Worker do
       status: state.status,
       retries: state.retries,
       warning: state.warning,
+      unreachable: state.unreachable,
       checking: state.task != nil,
       next_check_at: state.next_check_at
     }
@@ -239,6 +332,16 @@ defmodule Sentinelix.Monitoring.Worker do
 
   @impl true
   def handle_info(:check, state), do: {:noreply, start_check(%{state | timer: nil})}
+
+  # The parent checked: check again if waiting for it to confirm a failure,
+  # or if the parent is back while this monitor was unreachable.
+  def handle_info({:parent_checked, id, reachable}, %{monitor: %{parent_id: id}} = state) do
+    cond do
+      state.confirming -> {:noreply, start_check(%{state | confirming: false})}
+      reachable and state.unreachable and not state.passive -> {:noreply, start_check(state)}
+      true -> {:noreply, state}
+    end
+  end
 
   def handle_info({ref, result}, %{task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
@@ -340,22 +443,88 @@ defmodule Sentinelix.Monitoring.Worker do
         System.convert_time_unit(duration, :native, :millisecond)
       end)
 
-    recorded =
-      if maintenance?(state) do
-        record(state, :maintenance, details, fn state, _result -> state end)
-      else
-        {status, retries} = next_status(state, result)
-        state = %{state | retries: retries}
-        record(state, status, details, &apply_transition(&1, &2, status, details))
-      end
+    # Published before the result is recorded (and broadcast), so whoever
+    # reacts to the result already sees it.
+    state = put_reachable(state, result == :up)
 
-    case recorded do
+    case evaluate(state, result, details) do
       {:ok, state, status, check_result} ->
+        state = %{
+          state
+          | unreachable: status == :unreachable,
+            confirmed: state.confirmed and result != :up
+        }
+
+        notify_dependents(state, result == :up)
         emit_stop(state, duration, result, status, error, details)
         {:ok, state, check_result}
 
       :stop ->
         :stop
+    end
+  end
+
+  # Decides the status to record and records it, see the moduledoc.
+  defp evaluate(state, result, details) do
+    cond do
+      maintenance?(state) ->
+        record(state, :maintenance, details, &keep_state/2)
+
+      result == :down and parent_down?(state) ->
+        record(state, :unreachable, details, &keep_state/2)
+
+      result == :down and confirm_with_parent?(state) ->
+        state = ask_parent(state)
+        record(state, :pending, details, &apply_transition(&1, &2, :pending, details))
+
+      true ->
+        {status, retries} = next_status(state, result)
+        state = %{state | retries: retries}
+        record(state, status, details, &apply_transition(&1, &2, status, details))
+    end
+  end
+
+  defp keep_state(state, _result), do: state
+
+  ## Dependencies
+
+  # Publishes whether the latest check succeeded for the children (see
+  # Dependencies in the moduledoc).
+  defp put_reachable(%{monitor: monitor, config: config} = state, reachable) do
+    value = %{reachable: reachable, passive: state.passive}
+    _ = Registry.update_value(Engine.registry(config.engine), monitor.id, fn _ -> value end)
+    state
+  end
+
+  defp notify_dependents(%{monitor: monitor, config: config}, reachable) do
+    PubSub.broadcast(
+      @pubsub,
+      dependents_topic(config.engine, monitor.id),
+      {:parent_checked, monitor.id, reachable}
+    )
+  end
+
+  defp parent_down?(%{monitor: %{parent_id: nil}}), do: false
+
+  defp parent_down?(%{monitor: %{parent_id: parent_id}, config: config}),
+    do: reachable?(parent_id, config.engine) == false
+
+  # Whether to ask the parent before this failure takes the monitor down:
+  # once per failure streak, if the parent looks up and can be checked.
+  defp confirm_with_parent?(%{monitor: %{parent_id: nil}}), do: false
+  defp confirm_with_parent?(%{passive: true}), do: false
+  defp confirm_with_parent?(%{confirmed: true}), do: false
+  defp confirm_with_parent?(%{status: :down}), do: false
+
+  defp confirm_with_parent?(%{monitor: %{parent_id: parent_id}, config: config} = state) do
+    next_status(state, :down) == {:down, 0} and
+      match?({_pid, %{reachable: true, passive: false}}, Engine.lookup(parent_id, config.engine))
+  end
+
+  defp ask_parent(%{monitor: %{parent_id: parent_id}, config: config} = state) do
+    case check_now(parent_id, config.engine) do
+      :ok -> %{state | confirming: true, confirmed: true}
+      {:error, :not_running} -> %{state | confirmed: true}
     end
   end
 

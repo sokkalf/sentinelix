@@ -1,6 +1,15 @@
 defmodule Sentinelix.Monitoring.CheckResult do
   @moduledoc """
   The outcome of a single check run (a "heartbeat").
+
+  Statuses:
+
+    * `:up` and `:down` – the check succeeded or failed (and the monitor is,
+      or went, down),
+    * `:pending` – the check failed and is being retried,
+    * `:maintenance` – checked during a maintenance window,
+    * `:unreachable` – the check failed while the monitor's parent was down
+      (see Dependencies in `Sentinelix.Monitoring.Worker`).
   """
 
   use Ecto.Schema
@@ -8,7 +17,7 @@ defmodule Sentinelix.Monitoring.CheckResult do
 
   alias Sentinelix.Monitoring.Monitor
 
-  @statuses [:up, :down, :pending, :maintenance]
+  @statuses [:up, :down, :pending, :maintenance, :unreachable]
   @max_message_length 2_000
 
   schema "check_results" do
@@ -22,7 +31,7 @@ defmodule Sentinelix.Monitoring.CheckResult do
   end
 
   @type t :: %__MODULE__{}
-  @type status :: :up | :down | :pending | :maintenance
+  @type status :: :up | :down | :pending | :maintenance | :unreachable
 
   @doc "All check result statuses."
   @spec statuses() :: [status()]
