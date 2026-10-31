@@ -25,6 +25,36 @@ defmodule Sentinelix.MonitoringTest do
       assert ids(Monitoring.list_monitors(type: :tcp)) == ids([tcp])
       assert ids(Monitoring.list_monitors(type: [:tcp, :ping])) == ids([tcp, disabled])
     end
+
+    test "filters by label" do
+      prod = monitor_fixture(:http, %{labels: %{"env" => "prod", "site" => "oslo"}})
+      dev = monitor_fixture(:http, %{labels: %{"env" => "dev", "legacy" => ""}})
+      _none = monitor_fixture(:http)
+
+      assert ids(Monitoring.list_monitors(label: {"env", "prod"})) == ids([prod])
+      assert ids(Monitoring.list_monitors(label: {"env", ""})) == ids([prod, dev])
+      assert ids(Monitoring.list_monitors(label: {"legacy", ""})) == ids([dev])
+      assert Monitoring.list_monitors(label: {"env", "Prod"}) == []
+
+      assert ids(Monitoring.list_monitors(label: {"env", ""}, label: {"site", "oslo"})) ==
+               ids([prod])
+    end
+  end
+
+  describe "list_label_values/0" do
+    test "returns the keys in use with their sorted values" do
+      assert Monitoring.list_label_values() == %{}
+
+      monitor_fixture(:http, %{labels: %{"env" => "prod", "site" => "oslo"}})
+      monitor_fixture(:http, %{labels: %{"env" => "dev", "legacy" => ""}})
+      monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+
+      assert Monitoring.list_label_values() == %{
+               "env" => ["dev", "prod"],
+               "legacy" => [""],
+               "site" => ["oslo"]
+             }
+    end
   end
 
   describe "get_monitor!/1 and get_monitor/1" do
@@ -46,7 +76,7 @@ defmodule Sentinelix.MonitoringTest do
                Monitoring.create_monitor(%{
                  "name" => "  Example  ",
                  "type" => "http",
-                 "tags" => ["prod", " web ", "", "prod"],
+                 "labels" => %{" Env " => " prod ", "web" => nil},
                  "settings" => %{"url" => "https://example.com"}
                })
 
@@ -57,7 +87,7 @@ defmodule Sentinelix.MonitoringTest do
       assert monitor.retry_interval_seconds == 60
       assert monitor.max_retries == 0
       assert monitor.timeout_ms == 30_000
-      assert monitor.tags == ["prod", "web"]
+      assert monitor.labels == %{"env" => "prod", "web" => ""}
 
       assert %Settings{
                url: "https://example.com",
@@ -154,6 +184,22 @@ defmodule Sentinelix.MonitoringTest do
 
       assert_receive {:monitor_updated, ^updated}
       assert_receive {:monitor_updated, ^updated}
+    end
+
+    test "replaces the labels and validates them" do
+      monitor = monitor_fixture(:http, %{labels: %{"env" => "prod", "site" => "oslo"}})
+
+      assert {:ok, updated} = Monitoring.update_monitor(monitor, %{labels: ["env=dev", "legacy"]})
+      assert updated.labels == %{"env" => "dev", "legacy" => ""}
+      assert Monitoring.get_monitor!(monitor.id).labels == updated.labels
+
+      assert {:error, changeset} =
+               Monitoring.update_monitor(updated, %{labels: ["env=dev", "ENV=prod"]})
+
+      assert %{labels: ["duplicate label key env"]} = errors_on(changeset)
+
+      assert {:error, changeset} = Monitoring.update_monitor(updated, %{labels: ["bad key"]})
+      assert %{labels: [~s(invalid label key "bad key")]} = errors_on(changeset)
     end
 
     test "with invalid data returns an error changeset" do
