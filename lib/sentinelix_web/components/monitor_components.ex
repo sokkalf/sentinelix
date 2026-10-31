@@ -285,6 +285,154 @@ defmodule SentinelixWeb.MonitorComponents do
   def status_text_class(_status), do: "text-base-content/50"
 
   @doc """
+  The icon of a status, so a status reads without its color: a check for
+  up, a cross for down, a "no" sign for unreachable, a clock for pending,
+  a wrench for maintenance and a pause sign for paused.
+  """
+  @spec status_icon_name(atom()) :: String.t()
+  def status_icon_name(:up), do: "hero-check-circle-mini"
+  def status_icon_name(:down), do: "hero-x-circle-mini"
+  def status_icon_name(:unreachable), do: "hero-no-symbol-mini"
+  def status_icon_name(:pending), do: "hero-clock-mini"
+  def status_icon_name(:maintenance), do: "hero-wrench-screwdriver-mini"
+  def status_icon_name(:paused), do: "hero-pause-circle-mini"
+  def status_icon_name(_status), do: "hero-question-mark-circle-mini"
+
+  @doc """
+  The icon of a status (see `status_icon_name/1`). Decorative: put the
+  status label next to it, visibly or for screen readers.
+  """
+  attr :status, :atom, required: true
+  attr :class, :any, default: "size-4"
+
+  def status_icon(assigns) do
+    ~H"""
+    <.icon name={status_icon_name(@status)} class={["shrink-0", @class]} />
+    """
+  end
+
+  @doc """
+  A monitor as a tile colored by its status, linking to the monitor.
+
+  Status shows by color, icon and, for screen readers, its label (the
+  link reads as "name, status"); unreachable and paused tiles also have a
+  dashed border. The details (status, last response time, 24h uptime,
+  warning and maintenance) show as a tooltip on hover and keyboard focus,
+  and are the tile's accessible description.
+
+  Sizes:
+
+    * `"sm"` – a small tile with the name, for many monitors on a screen
+      (the dashboard's grid).
+    * `"lg"` – a large tile that also shows the status, response time and
+      uptime, readable from a distance (wall displays).
+  """
+  attr :id, :string, required: true
+  attr :monitor, :map, required: true, doc: "with `id` and `name`"
+  attr :status, :atom, required: true
+  attr :response_time_ms, :any, default: nil, doc: "the latest response time"
+  attr :uptime, :any, default: nil, doc: "the uptime percentage, `nil` without checks"
+  attr :warning, :boolean, default: false
+  attr :maintenance, :list, default: [], doc: "the active maintenance windows"
+  attr :size, :string, values: ~w(sm lg), default: "sm"
+  attr :navigate, :string, default: nil, doc: "defaults to the monitor's page"
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def monitor_tile(assigns) do
+    assigns =
+      assign(assigns,
+        details_id: assigns.id <> "-details",
+        navigate: assigns.navigate || ~p"/monitors/#{assigns.monitor.id}"
+      )
+
+    ~H"""
+    <.link
+      id={@id}
+      navigate={@navigate}
+      aria-describedby={@details_id}
+      data-status={@status}
+      class={[
+        "group/tile relative flex rounded-field border transition hover:brightness-95",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-base-content focus-visible:ring-offset-1",
+        tile_size_class(@size),
+        status_tile_class(@status),
+        @class
+      ]}
+      {@rest}
+    >
+      <span class="flex min-w-0 items-center gap-1.5">
+        <span class={@status != :down && status_text_class(@status)}>
+          <.status_icon status={@status} class={tile_icon_class(@size)} />
+        </span>
+        <span class="min-w-0 truncate font-medium">{@monitor.name}</span>
+        <span :if={@size == "sm"} class="sr-only">, {status_label(@status)}</span>
+        <.icon
+          :if={@warning}
+          name="hero-exclamation-triangle-micro"
+          class="size-3 shrink-0 text-warning"
+        />
+        <.icon
+          :if={@maintenance != []}
+          name="hero-wrench-screwdriver-micro"
+          class="size-3 shrink-0"
+        />
+      </span>
+      <span :if={@size == "lg"} class="flex items-baseline gap-3 text-sm tabular-nums">
+        <span class="font-semibold">{status_label(@status)}</span>
+        <span>{format_ms(@response_time_ms)}</span>
+        <span>{format_uptime(@uptime)}</span>
+      </span>
+      <span
+        id={@details_id}
+        role="tooltip"
+        class={[
+          "pointer-events-none absolute bottom-full left-1/2 z-20 mb-1 hidden w-56 -translate-x-1/2",
+          "rounded-box border border-base-300 bg-base-100 p-2 text-left text-xs font-normal text-base-content shadow-lg",
+          "group-hover/tile:block group-focus-visible/tile:block"
+        ]}
+      >
+        <span class="block break-words font-medium">{@monitor.name}</span>
+        <span class={["flex items-center gap-1", status_text_class(@status)]}>
+          <.status_icon status={@status} class="size-3" />{status_label(@status)}
+        </span>
+        <span class="block tabular-nums">
+          Response time: {format_ms(@response_time_ms)}
+        </span>
+        <span class="block tabular-nums">Uptime (24h): {format_uptime(@uptime)}</span>
+        <span :if={@warning} class="block text-warning">Warning</span>
+        <span :if={@maintenance != []} class="block">
+          In maintenance: {Enum.map_join(@maintenance, ", ", & &1.title)}
+        </span>
+      </span>
+    </.link>
+    """
+  end
+
+  defp tile_size_class("sm"), do: "h-9 items-center px-2 text-xs"
+  defp tile_size_class("lg"), do: "h-28 flex-col justify-between p-3 text-lg"
+
+  defp tile_icon_class("sm"), do: "size-4"
+  defp tile_icon_class("lg"), do: "size-6"
+
+  @doc """
+  The border and background classes of something colored by a status (a
+  tile, a matrix cell). Down is solid; unreachable and paused are dashed,
+  so they differ from down and up by more than their color.
+  """
+  @spec status_tile_class(atom()) :: String.t()
+  def status_tile_class(:up), do: "border-success/50 bg-success/15"
+  def status_tile_class(:down), do: "border-error bg-error text-error-content"
+  def status_tile_class(:unreachable), do: "border-dashed border-error/70 bg-error/25"
+  def status_tile_class(:pending), do: "border-warning bg-warning/25"
+  def status_tile_class(:maintenance), do: "border-info/60 bg-info/15"
+
+  def status_tile_class(:paused),
+    do: "border-dashed border-base-content/30 bg-base-200 text-base-content/60"
+
+  def status_tile_class(_status), do: "border-base-content/30 bg-base-200"
+
+  @doc """
   A heartbeat bar: one pill per check result (oldest first), right
   aligned, padded with empty pills up to `slots`. Older pills are cut off
   on narrow screens.
