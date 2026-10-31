@@ -74,6 +74,16 @@ defmodule SentinelixWeb.MonitorComponents do
   def format_uptime(value) when value >= 100, do: "100%"
   def format_uptime(value), do: :erlang.float_to_binary(value * 1.0, decimals: 2) <> "%"
 
+  @doc """
+  The badge color class of an uptime percentage: success from 99%,
+  warning from 95%, error below, ghost without data.
+  """
+  @spec uptime_class(number() | nil) :: String.t()
+  def uptime_class(nil), do: "badge-ghost"
+  def uptime_class(uptime) when uptime >= 99, do: "badge-success"
+  def uptime_class(uptime) when uptime >= 95, do: "badge-warning"
+  def uptime_class(_uptime), do: "badge-error"
+
   @doc "Formats a response time in milliseconds."
   @spec format_ms(number() | nil) :: String.t()
   def format_ms(nil), do: "–"

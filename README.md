@@ -21,6 +21,8 @@ public status pages.
   group and filter them, plus automatic `type` and `host` labels.
 * **Selectors** such as `env=prod, site in (oslo,helsinki), status=down`
   filter the dashboard and the monitor list.
+* **Grouping:** group the dashboard by any label (`service`, then `site`)
+  with live group summaries; groups with problems come first, expanded.
 * **Cloning:** "same checks as db1, but for db2" – copy a monitor's
   settings, labels and notification channels into a new one.
 * **Bulk actions** in the monitor list: label, pause, resume, attach
@@ -365,6 +367,34 @@ automatic labels included. Older dashboard links keep working: `?q=web`
 becomes `name~web`, `?status=down` `status=down`, and `?label=env=prod` or
 `?tag=legacy` that label. The **monitor list** takes the same selector
 (`/monitors?selector=...`); bulk actions apply to the monitors it shows.
+
+## Grouping the dashboard
+
+With many monitors, group the dashboard by a label key (*Group by* next to
+the selector), and optionally by a second one to nest groups:
+`service`, then `site`. Automatic labels work too (`type`, `host`).
+Monitors without the key go to a *(none)* group.
+
+Each group header shows the worst status of its monitors, how many are up
+(`12/14 up`), how many are down, unreachable, pending, in maintenance or
+paused, and the group's 24h uptime (over all checks of its monitors, so
+monitors that check more often weigh more). Headers update live.
+
+* **Problems first** (the default sort): groups with a monitor that is down,
+  unreachable or pending come first, the worst first, and are expanded.
+  Groups without problems are collapsed and sorted by name. *By name* sorts
+  all groups by name.
+* Click a header to expand or collapse a group, or use *Expand all* and
+  *Collapse all*. Your choice sticks for the browser session (reloads
+  included) until the group's state changes: a group you collapsed while
+  it was red expands again when it turns red after recovering, and a group
+  you expanded while green collapses once it has had a problem and
+  recovered.
+
+Group-by and sort are part of the dashboard URL along with the selector
+(`/?selector=env%3Dprod&group=service,site&sort=name`), so a grouped
+dashboard can be bookmarked and shared. A collapsed group renders no rows,
+which keeps dashboards with hundreds of monitors light.
 
 ## Cloning monitors
 
