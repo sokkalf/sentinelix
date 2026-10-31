@@ -35,6 +35,8 @@ public status pages.
 * **Dependencies:** while a host's ping monitor is down, the monitors on
   that host are *unreachable* and stay quiet instead of all alerting.
 * **Public status pages** at `/status/<slug>`.
+* **Import and export** of monitors as YAML, to keep a large setup in git:
+  from the monitor list, a mix task or a release command, with a dry run.
 * **Login** through any OpenID Connect provider, with a local password
   login as break-glass fallback.
 * **Operations:** `/healthz` health check, Prometheus `/metrics`, hourly
@@ -681,6 +683,82 @@ suggested ping monitors, and ping monitors get no suggestion. The monitor
 page shows what a monitor depends on and what depends on it, and the
 dashboard counts unreachable monitors separately. Deleting a parent
 detaches its children; clones keep the parent of the original.
+
+## Import and export
+
+Monitors can be exported as YAML and imported again, e.g. to keep the setup
+in git, review changes as diffs, or move it to another instance.
+
+* **Monitor list:** *Export* downloads the monitors matching the current
+  selector (its label and name terms) and *Import* uploads a file, shows
+  what would be created and updated, and imports it after you confirm.
+* **Mix:** `mix sentinelix.export [--selector S] [--output FILE]
+  [--push-tokens]` and `mix sentinelix.import FILE [--dry-run]
+  [--report-missing] [--selector S]` (`FILE` can be `-` for standard
+  input). A server that is already running picks up changes from the mix
+  task when it restarts.
+* **Release:** `bin/export_monitors` and `bin/import_monitors` take the
+  same arguments, e.g. `docker compose exec app bin/import_monitors
+  /data/monitors.yaml --dry-run`. The import runs inside the running server,
+  so changed monitors restart right away.
+
+```yaml
+# Sentinelix monitors
+version: 1
+monitors:
+  - name: Router
+    type: ping
+    enabled: true
+    interval_seconds: 60
+    retry_interval_seconds: 60
+    max_retries: 0
+    timeout_ms: 30000
+    settings:
+      host: "10.0.0.1"
+  - name: Shop API
+    type: http
+    enabled: true
+    interval_seconds: 30
+    retry_interval_seconds: 30
+    max_retries: 2
+    timeout_ms: 10000
+    parent: Router
+    labels:
+      env: prod
+      legacy: ""
+    channels:
+      - Ops email
+    settings:
+      url: https://shop.example.com/health
+      method: GET
+```
+
+* `version` is the format version (1); other versions are rejected.
+* Monitors are matched **by name**: a monitor without a namesake is
+  created, one with a namesake is updated (or reported unchanged). Names
+  must be unique, in the file and among the monitors it matches; a monitor
+  renamed in the file is created anew.
+* Each monitor in the file is complete: what is left out gets its default
+  (no labels, parent or channels, the type's default settings). `parent`
+  and `channels` are names; channels must exist. Only channels attached to
+  a monitor are exported, not those that reach it through notification
+  routing.
+* **Secrets are never exported or imported.** Updated monitors keep their
+  stored secrets (e.g. a PostgreSQL password); created ones have none, so
+  enter them after the import.
+* **Push tokens** are credentials and are only exported with
+  `--push-tokens`. A token in the file is used; without one an updated push
+  monitor keeps its token and a created one gets a new token.
+* Monitors that aren't in the file are never changed or deleted; the dry run
+  and the import list them with `--report-missing` (or the checkbox in the
+  UI), optionally only those matching `--selector`.
+* An import is **all or nothing**: the whole file is checked first and every
+  error is reported with its monitor and field (`monitor 3 "API":
+  settings.url must be a valid http:// or https:// URL`); then everything
+  is written in one transaction. Parents are set after all monitors exist,
+  so their order in the file doesn't matter, and cycles are rejected.
+* The YAML is parsed safely: no custom tags, no atoms, one document, at
+  most 5 MB.
 
 ## Data retention
 
