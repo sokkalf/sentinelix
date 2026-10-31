@@ -39,7 +39,17 @@ defmodule Sentinelix.Monitoring do
   import Ecto.Query, warn: false
 
   alias Phoenix.PubSub
-  alias Sentinelix.Monitoring.{CheckResult, Incident, Labels, Monitor, Settings, Worker}
+
+  alias Sentinelix.Monitoring.{
+    AutoLabels,
+    CheckResult,
+    Incident,
+    Labels,
+    Monitor,
+    Settings,
+    Worker
+  }
+
   alias Sentinelix.Repo
 
   @pubsub Sentinelix.PubSub
@@ -277,16 +287,21 @@ defmodule Sentinelix.Monitoring do
   @doc """
   Removes the labels with the given keys (whatever their value) from each
   of the given monitors. Transaction and events as in `put_labels/2`.
+  Automatic labels can't be removed: keys of automatic labels return an
+  error changeset and change nothing.
   """
   @spec delete_labels([monitor_ref()], [Labels.key()]) ::
           {:ok, [Monitor.t()]} | {:error, Ecto.Changeset.t()}
   def delete_labels(monitors, keys) when is_list(keys) do
     keys = Enum.map(keys, &(&1 |> String.trim() |> String.downcase()))
-    bulk_update(monitors, &labels_changeset(&1, Map.drop(&1.labels, keys)))
+
+    case Enum.filter(keys, &AutoLabels.reserved?/1) do
+      [] -> bulk_update(monitors, &labels_changeset(&1, Map.drop(&1.labels, keys)))
+      reserved -> {:error, labels_changeset(%Monitor{}, reserved)}
+    end
   end
 
-  defp labels_changeset(monitor, labels),
-    do: Ecto.Changeset.cast(monitor, %{labels: labels}, [:labels])
+  defp labels_changeset(monitor, labels), do: Monitor.labels_changeset(monitor, labels)
 
   @doc """
   Enables (resumes) or disables (pauses) each of the given monitors.

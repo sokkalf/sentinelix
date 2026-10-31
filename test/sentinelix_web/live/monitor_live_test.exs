@@ -102,6 +102,13 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert Monitoring.get_monitor!(web.id).labels == %{"env" => "prod"}
       assert Monitoring.get_monitor!(other.id).labels == %{"site" => "oslo"}
 
+      # Automatic labels can't be set or removed.
+      submit_bulk(view, "#bulk-labels-form", %{labels: "host=web1"}, "add")
+      assert render(view) =~ "host is an automatic label"
+      submit_bulk(view, "#bulk-labels-form", %{labels: "type"}, "remove")
+      assert render(view) =~ "type is an automatic label"
+      assert Monitoring.get_monitor!(web.id).labels == %{"env" => "prod"}
+
       view |> element("#bulk-pause") |> render_click()
       assert render(view) =~ "2 monitors paused."
       refute Monitoring.get_monitor!(web.id).enabled

@@ -421,6 +421,22 @@ defmodule Sentinelix.MonitoringTest do
       assert Monitoring.get_monitor!(monitor.id).labels == %{}
     end
 
+    test "can't set or remove automatic labels" do
+      monitor = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+
+      assert {:error, changeset} = Monitoring.put_labels([monitor], ["Host=web1", "site=oslo"])
+      assert %{labels: ["host is an automatic label, use another key"]} = errors_on(changeset)
+
+      assert {:error, changeset} = Monitoring.delete_labels([monitor], ["env", "type", "HOST"])
+
+      assert %{labels: ["host and type are automatic labels, use other keys"]} =
+               errors_on(changeset)
+
+      monitor = Monitoring.get_monitor!(monitor.id)
+      assert monitor.labels == %{"env" => "prod"}
+      assert %{"type" => "http", "host" => "example.com"} = monitor.all_labels
+    end
+
     test "change all monitors or none" do
       full = for i <- 1..63, into: %{}, do: {"k#{i}", ""}
       ok = monitor_fixture()

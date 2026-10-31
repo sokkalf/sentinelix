@@ -131,7 +131,7 @@ defmodule Sentinelix.Monitoring.Monitor do
     )
     |> validate_number(:timeout_ms, greater_than_or_equal_to: @min_timeout_ms)
     |> validate_timeout_within_interval()
-    |> validate_change(:labels, &validate_user_labels/2)
+    |> validate_labels()
     |> cast_settings()
     |> cast_secrets()
     |> put_auto_labels()
@@ -155,6 +155,21 @@ defmodule Sentinelix.Monitoring.Monitor do
       changeset
     end
   end
+
+  @doc """
+  A changeset that only changes the user labels (bulk label changes), to
+  anything `Sentinelix.Monitoring.Labels` casts. Validated like the labels
+  of `changeset/2`: the keys of automatic labels are rejected.
+  """
+  @spec labels_changeset(t(), term()) :: Ecto.Changeset.t()
+  def labels_changeset(monitor, labels) do
+    monitor
+    |> cast(%{labels: labels}, [:labels])
+    |> validate_labels()
+  end
+
+  defp validate_labels(changeset),
+    do: validate_change(changeset, :labels, &validate_user_labels/2)
 
   defp validate_user_labels(:labels, labels) do
     case labels |> Map.keys() |> Enum.filter(&AutoLabels.reserved?/1) |> Enum.sort() do
