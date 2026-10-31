@@ -4,7 +4,9 @@ defmodule Sentinelix.Notifications.Dispatcher do
 
   Subscribes to `"status_changes"` (see
   `Sentinelix.Monitoring.subscribe_status_changes/0`) and notifies the
-  enabled channels attached to the monitor:
+  enabled channels of the monitor, attached to it or routed by selector
+  (`Sentinelix.Notifications.list_notified_channels/1`, resolved when the
+  event is handled from the monitor's current labels):
 
     * `{:status_changed, m, _old, :down, r}` → `:down`, unless `:down` was
       already the last notified status;
@@ -138,7 +140,7 @@ defmodule Sentinelix.Notifications.Dispatcher do
   defp handle_event(_message, _state), do: :ok
 
   defp dispatch(%Event{} = event, state) do
-    for channel <- Notifications.list_channels_for_monitor(event.monitor_id, enabled: true) do
+    for channel <- Notifications.list_notified_channels(event.monitor_id) do
       {:ok, _pid} =
         Task.Supervisor.start_child(state.task_supervisor, fn ->
           Logger.metadata(monitor_id: event.monitor_id)

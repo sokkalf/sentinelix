@@ -1,8 +1,8 @@
 defmodule SentinelixWeb.SelectorComponents do
   @moduledoc """
   The selector input (see `Sentinelix.Monitoring.Selector`) of the dashboard,
-  the monitor list and status page groups: a text field that shows parse errors inline and
-  completes label keys and values.
+  the monitor list, status page groups and notification channels: a text
+  field that shows parse errors inline and completes label keys and values.
 
   Completion needs no JavaScript: `suggestions/2` turns the text typed so
   far into whole selectors that complete its last term, which the input

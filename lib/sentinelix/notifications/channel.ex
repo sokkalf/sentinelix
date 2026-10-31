@@ -8,9 +8,16 @@ defmodule Sentinelix.Notifications.Channel do
       (`Sentinelix.EncryptedMap`).
     * `enabled` – disabled channels are skipped when dispatching.
     * `default` – attached automatically to newly created monitors.
+    * `selector` – a label selector (`Sentinelix.Monitoring.Selector`,
+      label and name terms only) that routes the monitors it matches to the
+      channel, in addition to the attached ones. Stored normalized. **Empty
+      (the default) routes no monitor**, unlike an empty selector on the
+      dashboard, which matches every monitor; see `routes?/2`.
 
   Channels are attached to monitors through the
-  `monitor_notification_channels` join table.
+  `monitor_notification_channels` join table. The monitors a channel
+  notifies are the attached ones plus those its selector matches (see
+  `Sentinelix.Notifications.list_routed_channels/2`).
 
   ## Config params
 
@@ -23,8 +30,12 @@ defmodule Sentinelix.Notifications.Channel do
   import Ecto.Changeset
 
   alias Sentinelix.EncryptedMap
-  alias Sentinelix.Monitoring.Monitor
+  alias Sentinelix.Monitoring.{Monitor, Selector}
   alias Sentinelix.Notifications.Provider
+
+  # The kinds of selector terms routing allows: the event itself is a status
+  # change, so a `status` term would make no sense.
+  @selector_kinds [:labels, :name]
 
   schema "notification_channels" do
     field :name, :string
@@ -32,6 +43,7 @@ defmodule Sentinelix.Notifications.Channel do
     field :config, EncryptedMap, default: %{}, skip_default_validation: true
     field :enabled, :boolean, default: true
     field :default, :boolean, default: false
+    field :selector, :string, default: ""
 
     many_to_many :monitors, Monitor,
       join_through: "monitor_notification_channels",
@@ -45,11 +57,47 @@ defmodule Sentinelix.Notifications.Channel do
   @doc false
   def changeset(channel, attrs) do
     channel
-    |> cast(attrs, [:name, :type, :enabled, :default])
+    |> cast(attrs, [:name, :type, :enabled, :default, :selector])
     |> validate_required([:name, :type, :enabled, :default])
     |> update_change(:name, &String.trim/1)
     |> validate_length(:name, min: 1, max: 255)
+    |> update_change(:selector, &(&1 || ""))
+    |> Selector.validate_selector(:selector, allow: @selector_kinds)
     |> put_config()
+  end
+
+  @doc """
+  The options for `Sentinelix.Monitoring.Selector.parse/2` that a channel's
+  selector is validated and parsed with.
+  """
+  @spec selector_opts() :: keyword()
+  def selector_opts, do: [allow: @selector_kinds]
+
+  @doc """
+  The channel's selector, parsed; `nil` when it has none (`""`), or for a
+  stored selector that no longer parses (it then routes nothing).
+  """
+  @spec parsed_selector(t()) :: Selector.t() | nil
+  def parsed_selector(%__MODULE__{selector: text}) when text in [nil, ""], do: nil
+
+  def parsed_selector(%__MODULE__{selector: text}) do
+    case Selector.parse(text, selector_opts()) do
+      {:ok, selector} -> if Selector.empty?(selector), do: nil, else: selector
+      {:error, _error} -> nil
+    end
+  end
+
+  @doc """
+  Whether the channel's selector routes the monitor to it (in memory, see
+  `Sentinelix.Monitoring.Selector.matches?/3`). Always `false` for a
+  channel without a selector: an empty selector routes nothing.
+  """
+  @spec routes?(t(), map()) :: boolean()
+  def routes?(%__MODULE__{} = channel, monitor) do
+    case parsed_selector(channel) do
+      nil -> false
+      selector -> Selector.matches?(selector, monitor)
+    end
   end
 
   defp put_config(changeset) do

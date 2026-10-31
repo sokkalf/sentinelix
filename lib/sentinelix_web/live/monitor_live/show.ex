@@ -2,15 +2,17 @@ defmodule SentinelixWeb.MonitorLive.Show do
   @moduledoc """
   Monitor detail page: current status, heartbeats, uptime, a response time
   chart with selectable range, incidents, dependencies (the parent and the
-  dependents) and the monitor's runtime state.
+  dependents), the notification channels (attached or routed by selector,
+  with a test send to them) and the monitor's runtime state.
   """
 
   use SentinelixWeb, :live_view
 
   import SentinelixWeb.MonitorComponents
 
-  alias Sentinelix.{Maintenance, Monitoring}
+  alias Sentinelix.{Maintenance, Monitoring, Notifications}
   alias Sentinelix.Monitoring.History
+  alias Sentinelix.Notifications.Delivery
   alias Sentinelix.Stats
 
   @heartbeats 100
@@ -372,6 +374,53 @@ defmodule SentinelixWeb.MonitorLive.Show do
               unreachable and don't alert.
             </p>
           </div>
+
+          <div id="notifications" class="rounded-box border border-base-300 bg-base-100 p-4">
+            <div class="mb-2 flex items-center justify-between gap-2">
+              <span class="text-sm font-medium">Notifications</span>
+              <button
+                id="send-test-notification"
+                type="button"
+                phx-click="send_test"
+                class="btn btn-xs"
+                disabled={@testing or not Enum.any?(@channels, fn {c, _} -> c.enabled end)}
+                title="Send a test notification to the enabled channels below"
+              >
+                <.icon name="hero-paper-airplane" class="size-3" /> Send test
+              </button>
+            </div>
+            <p :if={@channels == []} id="no-channels" class="text-sm text-base-content/60">
+              No channels notify this monitor.
+            </p>
+            <ul :if={@channels != []} id="monitor-channels" class="space-y-1 text-sm">
+              <li
+                :for={{channel, reasons} <- @channels}
+                id={"monitor-channel-#{channel.id}"}
+                class="flex flex-wrap items-center gap-1"
+              >
+                <span class={["truncate", !channel.enabled && "text-base-content/50"]}>
+                  {channel.name}
+                </span>
+                <span
+                  :if={:explicit in reasons}
+                  class="badge badge-ghost badge-xs"
+                  title="Attached to this monitor"
+                >
+                  attached
+                </span>
+                <span
+                  :if={:selector in reasons}
+                  class="badge badge-info badge-soft badge-xs"
+                  title="Its selector matches this monitor"
+                >
+                  via selector <code>{channel.selector}</code>
+                </span>
+                <span :if={!channel.enabled} class="badge badge-warning badge-soft badge-xs">
+                  disabled
+                </span>
+              </li>
+            </ul>
+          </div>
         </div>
       </div>
     </Layouts.app>
@@ -391,12 +440,15 @@ defmodule SentinelixWeb.MonitorLive.Show do
         if connected?(socket) do
           Monitoring.subscribe_monitor(monitor)
           Maintenance.subscribe()
+          Notifications.subscribe_channels()
           schedule_tick()
         end
 
         socket =
           socket
           |> assign(monitor: monitor, page_title: monitor.name, now: DateTime.utc_now())
+          |> assign(testing: false)
+          |> assign_channels()
           |> assign(heartbeats: Monitoring.latest_results(monitor, @heartbeats) |> Enum.reverse())
           |> assign_latest()
           |> assign_worker()
@@ -447,6 +499,17 @@ defmodule SentinelixWeb.MonitorLive.Show do
     end
   end
 
+  def handle_event("send_test", _params, socket) do
+    monitor = socket.assigns.monitor
+
+    {:noreply,
+     socket
+     |> assign(testing: true)
+     |> start_async(:test_notification, fn ->
+       Notifications.send_monitor_test_notification(monitor)
+     end)}
+  end
+
   def handle_event("delete", _params, socket) do
     case Monitoring.delete_monitor(socket.assigns.monitor) do
       {:ok, monitor} ->
@@ -458,6 +521,38 @@ defmodule SentinelixWeb.MonitorLive.Show do
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Could not delete the monitor.")}
     end
+  end
+
+  @impl true
+  def handle_async(:test_notification, {:ok, results}, socket) do
+    {sent, failed} = Enum.split_with(results, &match?({_channel, :ok}, &1))
+
+    socket =
+      cond do
+        results == [] ->
+          put_flash(socket, :error, "No enabled channel notifies this monitor.")
+
+        failed == [] ->
+          put_flash(socket, :info, "Test notification sent to #{channel_names(sent)}.")
+
+        true ->
+          errors =
+            Enum.map_join(failed, "; ", fn {channel, {:error, reason}} ->
+              "#{channel.name}: #{Delivery.format_error(reason)}"
+            end)
+
+          sent_text = if sent == [], do: "", else: " Sent to #{channel_names(sent)}."
+          put_flash(socket, :error, "Test notification failed for #{errors}.#{sent_text}")
+      end
+
+    {:noreply, socket |> assign(testing: false) |> assign_channels()}
+  end
+
+  def handle_async(:test_notification, {:exit, reason}, socket) do
+    {:noreply,
+     socket
+     |> assign(testing: false)
+     |> put_flash(:error, "Test notification failed: #{inspect(reason)}")}
   end
 
   @impl true
@@ -488,8 +583,13 @@ defmodule SentinelixWeb.MonitorLive.Show do
      |> assign(monitor: monitor, page_title: monitor.name)
      |> assign_latest()
      |> assign_worker()
-     |> assign_dependencies()}
+     |> assign_dependencies()
+     |> assign_channels()}
   end
+
+  def handle_info({event, _channel}, socket)
+      when event in [:channel_created, :channel_updated, :channel_deleted],
+      do: {:noreply, assign_channels(socket)}
 
   def handle_info({:monitor_deleted, monitor}, socket) do
     {:noreply,
@@ -513,6 +613,16 @@ defmodule SentinelixWeb.MonitorLive.Show do
   def handle_info(_message, socket), do: {:noreply, socket}
 
   ## Data
+
+  # The channels that notify the monitor and why (attached, via selector),
+  # as the dispatcher resolves them, disabled ones included. Reloaded when
+  # channels or the monitor change.
+  defp assign_channels(socket) do
+    assign(socket, channels: Notifications.list_routed_channels(socket.assigns.monitor))
+  end
+
+  defp channel_names(results),
+    do: Enum.map_join(results, ", ", fn {channel, _} -> channel.name end)
 
   defp get_monitor(id) do
     case Integer.parse(id) do

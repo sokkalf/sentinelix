@@ -8,6 +8,19 @@ defmodule Sentinelix.Notifications do
   of a monitor (see its docs for when exactly). Providers are listed in
   `Sentinelix.Notifications.Provider`.
 
+  ## Routing
+
+  The channels of a monitor are the channels **attached** to it (through
+  the `monitor_notification_channels` join table, see
+  `put_monitor_channels/2`) plus the channels whose **selector** matches it
+  (see `Sentinelix.Notifications.Channel`). `list_routed_channels/2`
+  resolves both, with the reason, from the monitor's labels and name as
+  they are in the database when it is called. The dispatcher and
+  `send_monitor_test_notification/2` send to the enabled ones
+  (`list_notified_channels/1`), so a label change routes the next
+  notification without restarting anything. A channel without a selector
+  routes nothing by selector.
+
   ## PubSub
 
   Channel changes are broadcast on the `"notification_channels"` topic
@@ -18,7 +31,7 @@ defmodule Sentinelix.Notifications do
   import Ecto.Query, warn: false
 
   alias Phoenix.PubSub
-  alias Sentinelix.Monitoring.Monitor
+  alias Sentinelix.Monitoring.{Monitor, Selector}
   alias Sentinelix.Notifications.{Channel, Delivery, Event, State}
   alias Sentinelix.Repo
 
@@ -28,6 +41,15 @@ defmodule Sentinelix.Notifications do
 
   @type monitor_ref :: Monitor.t() | pos_integer()
   @type channel_ref :: Channel.t() | pos_integer()
+
+  @typedoc """
+  Why a channel notifies a monitor: it is attached to the monitor
+  (`:explicit`), or its selector matches the monitor (`:selector`).
+  """
+  @type reason :: :explicit | :selector
+
+  @typedoc "A channel with the reasons (one or both) it notifies a monitor."
+  @type route :: {Channel.t(), [reason(), ...]}
 
   ## PubSub
 
@@ -110,7 +132,9 @@ defmodule Sentinelix.Notifications do
   ## Monitor <-> channel assignments
 
   @doc """
-  Returns the channels attached to a monitor, ordered by name.
+  Returns the channels attached to a monitor, ordered by name. Channels
+  routed to it by selector are not included: see `list_routed_channels/2`
+  for all channels that notify a monitor.
 
   ## Options
 
@@ -123,14 +147,16 @@ defmodule Sentinelix.Notifications do
     Channel
     |> join(:inner, [c], mc in @join_table, on: mc.channel_id == c.id)
     |> where([_c, mc], mc.monitor_id == ^id)
-    |> then(fn query ->
-      case Keyword.fetch(opts, :enabled) do
-        {:ok, enabled} -> where(query, [c], c.enabled == ^enabled)
-        :error -> query
-      end
-    end)
+    |> filter_enabled(opts)
     |> order_by([c], asc: fragment("lower(?)", c.name), asc: c.id)
     |> Repo.all()
+  end
+
+  defp filter_enabled(query, opts) do
+    case Keyword.fetch(opts, :enabled) do
+      {:ok, enabled} -> where(query, [c], c.enabled == ^enabled)
+      :error -> query
+    end
   end
 
   @doc """
@@ -180,14 +206,48 @@ defmodule Sentinelix.Notifications do
   end
 
   @doc """
-  Returns a map of channel id => number of attached monitors (channels
+  Returns a map of channel id => number of monitors the channel notifies,
+  attached or matched by its selector, each monitor counted once (channels
   without monitors are missing).
   """
   @spec channel_monitor_counts() :: %{pos_integer() => pos_integer()}
   def channel_monitor_counts do
-    from(mc in @join_table, group_by: mc.channel_id, select: {mc.channel_id, count()})
-    |> Repo.all()
-    |> Map.new()
+    attached =
+      from(mc in @join_table, group_by: mc.channel_id, select: {mc.channel_id, count()})
+      |> Repo.all()
+      |> Map.new()
+
+    routed =
+      for channel <- Repo.all(from(c in Channel, where: c.selector != "")),
+          selector = Channel.parsed_selector(channel),
+          selector != nil,
+          count = count_routed_monitors(channel, selector),
+          count > 0,
+          into: %{},
+          do: {channel.id, count}
+
+    Map.merge(attached, routed)
+  end
+
+  defp count_routed_monitors(channel, selector) do
+    attached = from(mc in @join_table, where: mc.channel_id == ^channel.id, select: mc.monitor_id)
+    matches = Selector.to_dynamic(selector)
+    condition = dynamic([m], m.id in subquery(attached) or ^matches)
+
+    from(m in Monitor, where: ^condition, select: count()) |> Repo.one()
+  end
+
+  @doc """
+  Returns the ids of the monitors a channel's selector matches (evaluated
+  in the database), `[]` for a channel without a selector. The attached
+  monitors are `channel_monitor_ids/1`.
+  """
+  @spec selector_monitor_ids(Channel.t()) :: [pos_integer()]
+  def selector_monitor_ids(%Channel{} = channel) do
+    case Channel.parsed_selector(channel) do
+      nil -> []
+      selector -> Monitor |> Selector.filter(selector) |> select([m], m.id) |> Repo.all()
+    end
   end
 
   @doc """
@@ -277,6 +337,82 @@ defmodule Sentinelix.Notifications do
     :ok
   end
 
+  ## Routing
+
+  @doc """
+  Returns the channels that notify a monitor, with the reasons, ordered by
+  name: the channels attached to it and the channels whose selector
+  matches it. The monitor's labels and name are read from the database
+  now, so changes apply right away; a monitor that doesn't exist (any
+  more) has no channels.
+
+  This is the resolution notifications use, see `list_notified_channels/1`.
+
+  ## Options
+
+    * `:enabled` – only return enabled (`true`) or disabled (`false`) channels
+  """
+  @spec list_routed_channels(monitor_ref(), keyword()) :: [route()]
+  def list_routed_channels(monitor, opts \\ []) do
+    id = id(monitor)
+
+    case Repo.get(Monitor, id) do
+      nil ->
+        []
+
+      %Monitor{} = monitor ->
+        attached_ids = monitor_channel_ids(id)
+
+        Channel
+        |> where([c], c.id in ^attached_ids or c.selector != "")
+        |> filter_enabled(opts)
+        |> order_by([c], asc: fragment("lower(?)", c.name), asc: c.id)
+        |> Repo.all()
+        |> route_channels(monitor, attached_ids)
+    end
+  end
+
+  @doc """
+  The enabled channels that notify a monitor (see `list_routed_channels/2`):
+  where the dispatcher sends down, recovery and warning notifications and
+  `send_monitor_test_notification/2` its test. Disabled channels never
+  send.
+  """
+  @spec list_notified_channels(monitor_ref()) :: [Channel.t()]
+  def list_notified_channels(monitor) do
+    monitor
+    |> list_routed_channels(enabled: true)
+    |> Enum.map(&elem(&1, 0))
+  end
+
+  @doc """
+  Routes `channels` to a monitor in memory, as `list_routed_channels/2`
+  does with the database: each channel with the reasons it notifies the
+  monitor, attached (its id is one of `attached_ids`) and/or matched by its
+  selector (`Channel.routes?/2`). Channels with neither are left out; the
+  order is kept.
+
+  For monitors with unsaved changes, e.g. the monitor form showing where
+  the labels being edited route notifications. `monitor` doesn't have to be
+  saved (see `Sentinelix.Monitoring.Selector.matches?/3` for the labels it
+  uses).
+  """
+  @spec route_channels([Channel.t()], map(), [pos_integer()]) :: [route()]
+  def route_channels(channels, monitor, attached_ids) do
+    attached = MapSet.new(attached_ids)
+
+    for channel <- channels,
+        reasons = reasons(channel, monitor, attached),
+        reasons != [],
+        do: {channel, reasons}
+  end
+
+  defp reasons(channel, monitor, attached) do
+    explicit = if MapSet.member?(attached, channel.id), do: [:explicit], else: []
+    selector = if Channel.routes?(channel, monitor), do: [:selector], else: []
+    explicit ++ selector
+  end
+
   defp existing_ids(_schema, []), do: []
 
   defp existing_ids(schema, ids) do
@@ -290,6 +426,38 @@ defmodule Sentinelix.Notifications do
   """
   @spec send_test_notification(Channel.t()) :: :ok | {:error, term()}
   def send_test_notification(%Channel{} = channel), do: Delivery.deliver(channel, Event.test())
+
+  @doc """
+  Sends a test notification about a monitor to the channels a real one
+  would go to (`list_notified_channels/1`), one attempt each, in parallel.
+  Returns each channel with its result, ordered by channel name; `[]` when
+  no enabled channel notifies the monitor.
+
+  ## Options
+
+    * `:timeout` – how long a send may take, in milliseconds (default
+      30 000); a send that takes longer is stopped and returns
+      `{:error, :timeout}`
+  """
+  @spec send_monitor_test_notification(Monitor.t(), keyword()) ::
+          [{Channel.t(), :ok | {:error, term()}}]
+  def send_monitor_test_notification(%Monitor{} = monitor, opts \\ []) do
+    event = Event.test(monitor)
+    channels = list_notified_channels(monitor)
+
+    results =
+      Task.async_stream(channels, &Delivery.deliver(&1, event),
+        timeout: Keyword.get(opts, :timeout, 30_000),
+        on_timeout: :kill_task,
+        max_concurrency: max(length(channels), 1)
+      )
+
+    Enum.zip_with(channels, results, fn
+      channel, {:ok, result} -> {channel, result}
+      channel, {:exit, :timeout} -> {channel, {:error, :timeout}}
+      channel, {:exit, reason} -> {channel, {:error, reason}}
+    end)
+  end
 
   ## Notification state (used by the dispatcher)
 

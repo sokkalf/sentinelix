@@ -272,6 +272,53 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#next-check", "Not running")
     end
 
+    test "lists the channels that notify the monitor and why", %{conn: conn} do
+      monitor = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+      attached = channel_fixture(:webhook, %{name: "Attached"})
+      both = channel_fixture(:webhook, %{name: "Both", selector: "env=prod"})
+      off = channel_fixture(:webhook, %{name: "Off", selector: "env", enabled: false})
+      other = channel_fixture(:webhook, %{name: "Other", selector: "env=dev"})
+      :ok = Notifications.put_monitor_channels(monitor, [attached, both])
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+      assert has_element?(view, "#monitor-channel-#{attached.id}", "attached")
+      refute has_element?(view, "#monitor-channel-#{attached.id}", "via selector")
+      assert has_element?(view, "#monitor-channel-#{both.id}", "attached")
+      assert has_element?(view, "#monitor-channel-#{both.id}", "via selector env=prod")
+      assert has_element?(view, "#monitor-channel-#{off.id}", "disabled")
+      refute has_element?(view, "#monitor-channel-#{other.id}")
+
+      # Channel changes show up live.
+      {:ok, _} = Notifications.update_channel(other, %{selector: "env in (dev,prod)"})
+      assert has_element?(view, "#monitor-channel-#{other.id}", "via selector")
+    end
+
+    test "sends a test notification to the routed channels", %{conn: conn} do
+      capture_requests()
+      monitor = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      routed = channel_fixture(:webhook, %{name: "Routed", selector: "env=prod"})
+      off = channel_fixture(:webhook, %{name: "Off", selector: "env=prod", enabled: false})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+      view |> element("#send-test-notification") |> render_click()
+
+      assert render_async(view) =~ "Test notification sent to Routed."
+      assert_received {:notification_request, %{body: %{"title" => title}}}
+      assert title == "[TEST] Test notification for Web"
+      refute_received {:notification_request, _}
+
+      capture_requests(self(), 500)
+      view |> element("#send-test-notification") |> render_click()
+      assert render_async(view) =~ "Test notification failed for Routed: HTTP 500"
+
+      # Only the disabled channel is left: nothing to test.
+      {:ok, _} = Notifications.update_channel(routed, %{selector: ""})
+      refute has_element?(view, "#monitor-channel-#{routed.id}")
+      assert has_element?(view, "#send-test-notification[disabled]")
+      {:ok, _} = Notifications.delete_channel(off)
+      assert has_element?(view, "#no-channels")
+    end
+
     test "shows the parent and the dependents", %{conn: conn} do
       host = monitor_fixture(:ping, %{name: "web1 ping"})
       monitor = monitor_fixture(:tcp, %{name: "web1 ssh", parent_id: host.id})
@@ -944,6 +991,27 @@ defmodule SentinelixWeb.MonitorLiveTest do
         |> follow_redirect(conn)
 
       assert Notifications.monitor_channel_ids(monitor) == []
+    end
+
+    test "marks the channels the labels being edited route to", %{conn: conn} do
+      monitor = monitor_fixture(:http, %{labels: %{"env" => "dev"}})
+      prod = channel_fixture(:webhook, %{name: "Prod", selector: "env=prod"})
+      http = channel_fixture(:webhook, %{name: "HTTP", selector: "type=http"})
+      plain = channel_fixture(:webhook, %{name: "Plain"})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}/edit")
+      refute has_element?(view, "#channel-#{prod.id}-routed")
+      assert has_element?(view, "#channel-#{http.id}-routed", "type=http")
+      refute has_element?(view, "#channel-#{plain.id}-routed")
+
+      # Unsaved labels count, before the stored all_labels would.
+      view
+      |> form("#monitor-form", monitor: %{labels: %{"0" => %{key: "env", value: "prod"}}})
+      |> render_change()
+
+      assert has_element?(view, "#channel-#{prod.id}-routed", "env=prod")
+      # Routing doesn't check the box: that's an attachment.
+      refute has_element?(view, "#channel-#{prod.id}[checked]")
     end
   end
 
