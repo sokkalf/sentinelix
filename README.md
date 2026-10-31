@@ -17,6 +17,8 @@ public status pages.
 * **Live dashboard** with per-monitor status, heartbeat bars, response time
   charts, uptime over 24 hours / 7 / 30 / 90 days and incident history
   (LiveView, updates without reloading).
+* **Labels:** key/value labels on monitors (`env=prod`, `site=oslo`) to
+  group, filter and search them.
 * **Notifications** by email, generic webhook, Slack, Discord, Telegram,
   ntfy and Gotify, on down, recovery and certificate warnings.
 * **Maintenance windows** (one-off or recurring, time zone aware) that
@@ -261,6 +263,29 @@ in development, `bin/create_admin` in a release (see
 `ADMIN_PASSWORD` to create it on boot if it does not exist yet (existing
 users are never modified by these variables).
 
+## Labels
+
+Monitors carry key/value labels such as `env=prod`, `site=helsinki`,
+`service=billing` or `host=db1` instead of folders: group and filter them
+along any dimension. A label's value is optional (`deprecated`).
+
+* **Keys** are lowercase letters, digits, `_`, `.`, `-` and `/`, starting
+  with a letter or digit, up to 63 characters. Uppercase is lowercased.
+* **Values** are letters, digits, `_`, `.`, `-`, `/`, `:` and `@`, up to
+  255 characters (so hostnames, IPv6 addresses and emails fit). Values keep
+  their case and are matched exactly.
+* Each key appears at most once per monitor, at most 64 labels.
+
+Edit them in the monitor form, which suggests the keys and values already in
+use. The dashboard filters by a label (pick it in the label filter or click
+a label badge: `/?label=env=prod`; a bare key like `/?label=env` matches any
+value), and the dashboard and monitor list search also matches labels
+written as `key=value`.
+
+Tags of earlier versions became labels without a value, normalized to the
+key rules (`Web Server` became `web-server`); tags written as `key=value`
+kept their value. Dashboard links with `?tag=` keep working.
+
 ## PostgreSQL monitors
 
 A PostgreSQL monitor logs in to a server, runs a query and optionally checks
@@ -362,6 +387,16 @@ a monitor is deleted:
 | `sentinelix_monitor_response_time_ms` | response time of the latest check |
 | `sentinelix_monitor_last_check_timestamp_seconds` | Unix time of the latest check |
 | `sentinelix_monitor_cert_days_remaining` | days until the certificate expires (certificate checks) |
+| `sentinelix_monitor_labels` | always 1; the monitor's [labels](#labels) as `label_<key>="<value>"` |
+
+Monitor labels are only on `sentinelix_monitor_labels`, not on every gauge:
+user-defined labels would multiply the number of series and change them
+whenever a label is edited. Keys become `label_<key>` with characters other
+than `a-z`, `0-9` and `_` replaced by `_`. Join them in PromQL where needed:
+
+```promql
+sentinelix_monitor_up * on (monitor_id) group_left (label_env) sentinelix_monitor_labels
+```
 
 Besides these, `/metrics` exports check counts and durations
 (`sentinelix_checks_total`, `sentinelix_check_duration_milliseconds`,
@@ -487,7 +522,7 @@ Sentinelix.Supervisor
 ```
 
 * **`Sentinelix.Monitoring`** – the context for monitors (with per-type
-  settings), check results and incidents.
+  settings and labels), check results and incidents.
 * **Engine** – each `Monitoring.Worker` runs its monitor's check on its
   interval (with retries before a monitor is considered down), stores the
   result, opens/resolves incidents and broadcasts events over PubSub
