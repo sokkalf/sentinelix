@@ -120,6 +120,67 @@ defmodule SentinelixWeb.Live.NotificationSettingsTest do
       assert Notifications.channel_monitor_ids(channel) == []
     end
 
+    test "routes monitors by selector, marking the ones it matches", %{conn: conn} do
+      prod = monitor_fixture(:http, %{name: "API", labels: %{"env" => "prod"}})
+      _dev = monitor_fixture(:http, %{name: "Dev", labels: %{"env" => "dev"}})
+      attached = monitor_fixture(:http, %{name: "Other"})
+      channel = channel_fixture(:webhook, %{name: "Hook"})
+
+      {:ok, view, _html} = live(conn, ~p"/settings/notifications/#{channel.id}/edit")
+      refute has_element?(view, "#channel-routed-count")
+
+      # status terms are refused, the event already is a status change
+      html = view |> form("#channel-form", channel: %{selector: "status=down"}) |> render_change()
+      assert html =~ "status can&#39;t be used here at column 1"
+      refute has_element?(view, "#channel-routed-count")
+
+      # completion offers label values, not statuses
+      view |> form("#channel-form", channel: %{selector: "env=p"}) |> render_change()
+      assert has_element?(view, ~s(#channel_selector-suggestions option[value="env=prod"]))
+
+      html =
+        view |> form("#channel-form", channel: %{selector: "status"}) |> render_change()
+
+      refute html =~ ~s(value="status=down")
+
+      view |> form("#channel-form", channel: %{selector: "Env=prod"}) |> render_change()
+      assert view |> element("#channel-routed-count") |> render() =~ "matches 1 monitor"
+      assert has_element?(view, "#monitor-#{prod.id}-routed")
+      refute has_element?(view, "#monitor-#{attached.id}-routed")
+
+      view
+      |> form("#channel-form",
+        channel: %{selector: "Env=prod"},
+        monitor_ids: [to_string(attached.id)]
+      )
+      |> render_submit()
+
+      assert_patch(view, ~p"/settings/notifications")
+      channel = Notifications.get_channel!(channel.id)
+      assert channel.selector == "env=prod"
+      assert Notifications.channel_monitor_ids(channel) == [attached.id]
+
+      # the list counts attached and routed monitors and shows the selector
+      assert view |> element("#channel-#{channel.id}") |> render() =~ "2"
+      assert view |> element("#channel-#{channel.id}-selector") |> render() =~ "env=prod"
+
+      # an empty selector routes nothing
+      {:ok, view, _html} = live(conn, ~p"/settings/notifications/#{channel.id}/edit")
+      assert has_element?(view, "#monitor-#{prod.id}-routed")
+      view |> form("#channel-form", channel: %{selector: ""}) |> render_submit()
+      assert Notifications.get_channel!(channel.id).selector == ""
+      assert Notifications.channel_monitor_counts() == %{channel.id => 1}
+    end
+
+    test "does not save an invalid selector", %{conn: conn} do
+      channel = channel_fixture(:webhook, %{selector: "env=prod"})
+      {:ok, view, _html} = live(conn, ~p"/settings/notifications/#{channel.id}/edit")
+
+      html = view |> form("#channel-form", channel: %{selector: "env="}) |> render_submit()
+      assert html =~ "expected a value"
+      assert Notifications.get_channel!(channel.id).selector == "env=prod"
+    end
+
     test "redirects for unknown channels", %{conn: conn} do
       assert {:error, {:live_redirect, %{to: "/settings/notifications", flash: flash}}} =
                live(conn, ~p"/settings/notifications/999999/edit")

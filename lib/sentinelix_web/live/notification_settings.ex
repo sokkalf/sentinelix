@@ -2,7 +2,9 @@ defmodule SentinelixWeb.Live.NotificationSettings do
   @moduledoc """
   Settings page for notification channels (`/settings/notifications`):
   list, create, edit, delete and test channels, and choose the monitors a
-  channel is attached to.
+  channel notifies: attached ones, and those its selector routes to it (see
+  `Sentinelix.Notifications.Channel`). The form marks the monitors the
+  selector being typed matches.
 
   Secret config fields (tokens, webhook URLs with embedded tokens) are never
   rendered back; leaving them blank on edit keeps the stored value.
@@ -10,7 +12,10 @@ defmodule SentinelixWeb.Live.NotificationSettings do
 
   use SentinelixWeb, :live_view
 
+  import SentinelixWeb.SelectorComponents
+
   alias Sentinelix.{Monitoring, Notifications}
+  alias Sentinelix.Monitoring.Selector
   alias Sentinelix.Notifications.{Channel, Delivery, Provider}
 
   @impl true
@@ -41,7 +46,17 @@ defmodule SentinelixWeb.Live.NotificationSettings do
           <:col :let={channel} label="Details">
             <span class="text-sm opacity-70">{summary(channel)}</span>
           </:col>
-          <:col :let={channel} label="Monitors">{Map.get(@monitor_counts, channel.id, 0)}</:col>
+          <:col :let={channel} label="Monitors">
+            {Map.get(@monitor_counts, channel.id, 0)}
+            <code
+              :if={channel.selector != ""}
+              id={"channel-#{channel.id}-selector"}
+              class="ml-1 text-xs opacity-70"
+              title="Also notifies the monitors this selector matches"
+            >
+              {channel.selector}
+            </code>
+          </:col>
           <:col :let={channel} label="Status">
             <button
               id={"toggle-channel-#{channel.id}"}
@@ -118,10 +133,29 @@ defmodule SentinelixWeb.Live.NotificationSettings do
             label="Default: attach to new monitors automatically"
           />
 
+          <fieldset id="channel-routing" class="fieldset">
+            <legend class="fieldset-legend">Selector (optional)</legend>
+            <.selector_input
+              id="channel_selector"
+              name="channel[selector]"
+              value={@selector_text}
+              error={@selector_error}
+              suggestions={@suggestions}
+              placeholder="env=prod, team=db"
+            />
+            <p class="text-xs opacity-70">
+              Also notify every monitor whose labels or name match, now or later
+              (e.g. <code>env=prod</code>). Leave empty to notify only the monitors checked below.
+            </p>
+          </fieldset>
+
           <fieldset id="channel-monitors" class="fieldset">
             <legend class="fieldset-legend">Monitors</legend>
             <input type="hidden" name="monitor_ids[]" value="" />
             <p :if={@monitors == []} class="text-sm opacity-70">No monitors yet.</p>
+            <p :if={@routed_ids != []} id="channel-routed-count" class="text-xs opacity-70">
+              The selector matches {monitor_count(length(@routed_ids))}.
+            </p>
             <label :for={monitor <- @monitors} class="label">
               <input
                 type="checkbox"
@@ -131,6 +165,14 @@ defmodule SentinelixWeb.Live.NotificationSettings do
                 class="checkbox checkbox-sm"
               />
               {monitor.name}
+              <span
+                :if={monitor.id in @routed_ids}
+                id={"monitor-#{monitor.id}-routed"}
+                class="badge badge-info badge-soft badge-xs"
+                title="Matched by the selector"
+              >
+                via selector
+              </span>
             </label>
           </fieldset>
 
@@ -200,6 +242,7 @@ defmodule SentinelixWeb.Live.NotificationSettings do
     |> assign(page_title: "New notification channel", channel: %Channel{}, monitor_ids: [])
     |> assign(monitors: Monitoring.list_monitors())
     |> assign_form(Notifications.change_channel(%Channel{}), %{})
+    |> assign_selector("")
   end
 
   defp apply_action(socket, :edit, %{"id" => id}) do
@@ -210,6 +253,7 @@ defmodule SentinelixWeb.Live.NotificationSettings do
       |> assign(monitors: Monitoring.list_monitors())
       |> assign(monitor_ids: Notifications.channel_monitor_ids(channel))
       |> assign_form(Notifications.change_channel(channel), %{})
+      |> assign_selector(channel.selector)
     else
       _ ->
         socket
@@ -235,6 +279,36 @@ defmodule SentinelixWeb.Live.NotificationSettings do
     )
   end
 
+  # The selector as typed: its error, the monitors it matches (none while
+  # it is empty or invalid: an empty selector routes nothing) and the
+  # completions, from the labels of all monitors. Status terms can't be
+  # used for routing, so they aren't suggested.
+  defp assign_selector(socket, text) do
+    monitors = socket.assigns.monitors
+
+    {error, routed_ids} =
+      case Selector.parse(text, Channel.selector_opts()) do
+        {:ok, _selector} ->
+          channel = %Channel{selector: text}
+          {nil, for(monitor <- monitors, Channel.routes?(channel, monitor), do: monitor.id)}
+
+        {:error, error} ->
+          {error, []}
+      end
+
+    values = monitors |> label_values() |> completion_values() |> Map.delete("status")
+
+    assign(socket,
+      selector_text: text,
+      selector_error: error,
+      routed_ids: routed_ids,
+      suggestions: suggestions(text, values)
+    )
+  end
+
+  defp selector_text(%{"selector" => text}) when is_binary(text), do: text
+  defp selector_text(_params), do: ""
+
   @impl true
   def handle_event("validate", params, socket) do
     channel_params = Map.get(params, "channel", %{})
@@ -247,13 +321,18 @@ defmodule SentinelixWeb.Live.NotificationSettings do
     {:noreply,
      socket
      |> assign(monitor_ids: monitor_ids(params))
-     |> assign_form(changeset, config_params(channel_params))}
+     |> assign_form(changeset, config_params(channel_params))
+     |> assign_selector(selector_text(channel_params))}
   end
 
   def handle_event("save", %{"action" => "test"} = params, socket) do
     channel_params = Map.get(params, "channel", %{})
     changeset = Notifications.change_channel(socket.assigns.channel, channel_params)
-    socket = assign(socket, monitor_ids: monitor_ids(params))
+
+    socket =
+      socket
+      |> assign(monitor_ids: monitor_ids(params))
+      |> assign_selector(selector_text(channel_params))
 
     if changeset.valid? do
       {:noreply, start_test(socket, Ecto.Changeset.apply_changes(changeset))}
@@ -267,7 +346,11 @@ defmodule SentinelixWeb.Live.NotificationSettings do
 
   def handle_event("save", params, socket) do
     channel_params = Map.get(params, "channel", %{})
-    socket = assign(socket, monitor_ids: monitor_ids(params))
+
+    socket =
+      socket
+      |> assign(monitor_ids: monitor_ids(params))
+      |> assign_selector(selector_text(channel_params))
 
     result =
       case socket.assigns.live_action do
@@ -384,6 +467,9 @@ defmodule SentinelixWeb.Live.NotificationSettings do
   end
 
   defp provider_label(type), do: Provider.for_type(type).label()
+
+  defp monitor_count(1), do: "1 monitor"
+  defp monitor_count(count), do: "#{count} monitors"
 
   defp summary(channel) do
     channel
