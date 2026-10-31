@@ -3,13 +3,22 @@ defmodule SentinelixWeb.StatusPageLive.Show do
   Manages a status page (`/status-pages/:id`): its groups and their
   monitors (add, remove, rename, reorder with up/down buttons), publishing,
   and its settings (`/status-pages/:id/edit`).
+
+  A group is a fixed list or chooses its monitors by selector (see
+  `Sentinelix.StatusPages.Group`). In a selector group, the monitors added
+  by hand are *pinned*: shown first in their order, then the matches by
+  name. While a selector is typed, the form previews exactly the monitors
+  the group would show, since a selector publishes monitors that match it
+  later as well.
   """
 
   use SentinelixWeb, :live_view
 
   import SentinelixWeb.MonitorComponents, only: [type_label: 1]
+  import SentinelixWeb.SelectorComponents
 
   alias Sentinelix.{Monitoring, StatusPages}
+  alias Sentinelix.StatusPages.Group
 
   @impl true
   def render(assigns) do
@@ -72,7 +81,8 @@ defmodule SentinelixWeb.StatusPageLive.Show do
 
       <div :if={@live_action == :show} class="space-y-4">
         <p :if={@page.groups == []} id="no-groups" class="text-sm opacity-70">
-          No groups yet. Add a group, then pick the monitors to show in it.
+          No groups yet. Add a group, then pick the monitors to show in it, or choose them
+          by selector.
         </p>
 
         <div
@@ -80,24 +90,56 @@ defmodule SentinelixWeb.StatusPageLive.Show do
           id={"group-#{group.id}"}
           class="rounded-box border border-base-300 bg-base-100"
         >
-          <div class="flex flex-wrap items-center gap-2 border-b border-base-300 p-3">
-            <form
-              id={"rename-group-#{group.id}"}
-              phx-submit="rename_group"
-              class="flex min-w-0 flex-1 items-center gap-2"
+          <div :if={@editing == group.id} class="border-b border-base-300 p-3">
+            <.group_form
+              id={"group-form-#{group.id}"}
+              form={@edit.form}
+              preview={@edit.preview}
+              suggestions={@edit.suggestions}
+              page={@page}
+              change="validate_group"
+              submit="save_group"
             >
               <input type="hidden" name="group_id" value={group.id} />
-              <input
-                type="text"
-                name="name"
-                value={group.name}
-                class="input input-sm min-w-0 flex-1 font-semibold sm:max-w-xs"
-                aria-label="Group name"
-                required
-              />
-              <button class="btn btn-ghost btn-sm">Rename</button>
-            </form>
+              <:actions>
+                <.button variant="primary" phx-disable-with="Saving...">Save</.button>
+                <button
+                  type="button"
+                  id={"cancel-group-#{group.id}"}
+                  phx-click="cancel_group"
+                  class="btn"
+                >
+                  Cancel
+                </button>
+              </:actions>
+            </.group_form>
+          </div>
+
+          <div
+            :if={@editing != group.id}
+            class="flex flex-wrap items-center gap-2 border-b border-base-300 p-3"
+          >
+            <div class="min-w-0 flex-1">
+              <h2 class="truncate font-semibold">{group.name}</h2>
+              <div
+                :if={group.selector}
+                id={"group-#{group.id}-selector"}
+                class="flex items-center gap-1 text-xs opacity-70"
+              >
+                <.icon name="hero-funnel" class="size-3.5" />
+                <code class="truncate">{group.selector}</code>
+              </div>
+            </div>
             <div class="flex gap-1">
+              <button
+                id={"edit-group-#{group.id}"}
+                phx-click="edit_group"
+                phx-value-id={group.id}
+                class="btn btn-ghost btn-xs"
+                title="Edit group"
+              >
+                <.icon name="hero-pencil-square" class="size-4" />
+              </button>
               <.order_buttons
                 event="move_group"
                 id={group.id}
@@ -119,36 +161,17 @@ defmodule SentinelixWeb.StatusPageLive.Show do
           </div>
 
           <ul class="divide-y divide-base-300">
-            <li :if={group.page_monitors == []} class="px-4 py-3 text-sm opacity-70">
-              No monitors in this group.
+            <li :if={group.monitors == []} class="px-4 py-3 text-sm opacity-70">
+              {if group.selector,
+                do: "No monitors match the selector.",
+                else: "No monitors in this group."}
             </li>
-            <li
-              :for={{pm, pm_index} <- Enum.with_index(group.page_monitors)}
-              id={"page-monitor-#{pm.id}"}
-              class="flex items-center gap-2 px-4 py-2"
-            >
-              <div class="min-w-0 flex-1">
-                <span class="truncate font-medium">{pm.monitor.name}</span>
-                <span class="ml-2 text-xs opacity-60">{type_label(pm.monitor.type)}</span>
-                <span :if={!pm.monitor.enabled} class="badge badge-ghost badge-xs ml-1">paused</span>
-              </div>
-              <.order_buttons
-                event="move_monitor"
-                id={pm.id}
-                first?={pm_index == 0}
-                last?={pm_index == length(group.page_monitors) - 1}
-                dom_prefix="page-monitor"
-              />
-              <button
-                id={"remove-page-monitor-#{pm.id}"}
-                phx-click="remove_monitor"
-                phx-value-id={pm.id}
-                class="btn btn-ghost btn-xs text-error"
-                title="Remove from group"
-              >
-                <.icon name="hero-x-mark" class="size-4" />
-              </button>
-            </li>
+            <.group_monitor
+              :for={monitor <- group.monitors}
+              group={group}
+              monitor={monitor}
+              pinned={pinned(group)}
+            />
           </ul>
 
           <form
@@ -169,26 +192,183 @@ defmodule SentinelixWeb.StatusPageLive.Show do
               )}
             </select>
             <button class="btn btn-sm">
-              <.icon name="hero-plus" class="size-4" /> Add monitor
+              <%= if group.selector do %>
+                <.icon name="hero-bookmark" class="size-4" /> Pin monitor
+              <% else %>
+                <.icon name="hero-plus" class="size-4" /> Add monitor
+              <% end %>
             </button>
           </form>
         </div>
 
-        <.form
-          for={@group_form}
-          id="new-group-form"
-          phx-submit="create_group"
-          class="flex max-w-md items-start gap-2"
-        >
-          <div class="flex-1">
-            <.input field={@group_form[:name]} placeholder="New group, e.g. Websites" />
-          </div>
-          <.button class="btn mt-1">
-            <.icon name="hero-plus" class="size-4" /> Add group
-          </.button>
-        </.form>
+        <div class="max-w-2xl rounded-box border border-dashed border-base-300 p-3">
+          <.group_form
+            id="new-group-form"
+            form={@new.form}
+            preview={@new.preview}
+            suggestions={@new.suggestions}
+            page={@page}
+            change="validate_new_group"
+            submit="create_group"
+          >
+            <:actions>
+              <.button class="btn">
+                <.icon name="hero-plus" class="size-4" /> Add group
+              </.button>
+            </:actions>
+          </.group_form>
+        </div>
       </div>
     </Layouts.app>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :preview, :any, required: true, doc: "the monitors the selector shows, or nil"
+  attr :suggestions, :list, required: true
+  attr :page, :map, required: true
+  attr :change, :string, required: true
+  attr :submit, :string, required: true
+  slot :inner_block
+  slot :actions, required: true
+
+  # The name and kind of a group, with the selector and its preview for
+  # selector groups.
+  defp group_form(assigns) do
+    assigns = assign(assigns, selector?: kind(assigns.form) == :selector)
+
+    ~H"""
+    <.form for={@form} id={@id} phx-change={@change} phx-submit={@submit} class="space-y-2">
+      {render_slot(@inner_block)}
+      <div class="flex flex-wrap items-start gap-2">
+        <div class="min-w-0 flex-1">
+          <.input
+            field={@form[:name]}
+            id={"#{@id}-name"}
+            placeholder="Group name, e.g. Websites"
+            aria-label="Name"
+          />
+        </div>
+        <div class="w-full sm:w-64">
+          <.input
+            field={@form[:kind]}
+            id={"#{@id}-kind"}
+            type="select"
+            aria-label="Monitors"
+            options={[
+              {"Fixed list of monitors", "fixed"},
+              {"Monitors matching a selector", "selector"}
+            ]}
+          />
+        </div>
+      </div>
+      <div :if={@selector?}>
+        <.selector_input
+          id={"#{@id}-selector"}
+          name={@form[:selector].name}
+          value={@form[:selector].value || ""}
+          error={selector_error(@form)}
+          suggestions={@suggestions}
+          placeholder="env=prod, service in (web,api), name~shop"
+        />
+        <p class="mt-1 text-xs opacity-70">
+          Labels and names; not status. Monitors added to the group by hand are pinned: shown
+          first, in their order, then the matches by name.
+        </p>
+      </div>
+      <div
+        :if={@selector? && @preview}
+        id={"#{@id}-preview"}
+        class="rounded-box border border-warning/40 bg-warning/5 p-3 text-sm"
+      >
+        <p class="font-medium">
+          <.icon name="hero-eye" class="size-4" />
+          {preview_text(@preview, @page)}
+        </p>
+        <p class="text-xs opacity-70">
+          Monitors that match the selector later are added to the page automatically.
+        </p>
+        <ul :if={@preview != []} class="mt-2 flex flex-wrap gap-1">
+          <li
+            :for={monitor <- @preview}
+            id={"#{@id}-preview-#{monitor.id}"}
+            class="badge badge-sm badge-ghost"
+          >
+            {monitor.name}
+          </li>
+        </ul>
+      </div>
+      <div class="flex gap-2">{render_slot(@actions)}</div>
+    </.form>
+    """
+  end
+
+  attr :group, Group, required: true
+  attr :monitor, :map, required: true
+  attr :pinned, :map, required: true, doc: "the group's page monitors by monitor id"
+
+  # A monitor of a group: the group's own monitors (pinned, in a selector
+  # group) can be moved and removed, the others pinned.
+  defp group_monitor(assigns) do
+    assigns =
+      assign(assigns,
+        page_monitor: assigns.pinned[assigns.monitor.id],
+        selector?: assigns.group.selector != nil
+      )
+
+    ~H"""
+    <li
+      id={
+        if @page_monitor,
+          do: "page-monitor-#{@page_monitor.id}",
+          else: "matched-#{@group.id}-#{@monitor.id}"
+      }
+      class="flex items-center gap-2 px-4 py-2"
+    >
+      <div class="min-w-0 flex-1">
+        <span class="truncate font-medium">{@monitor.name}</span>
+        <span class="ml-2 text-xs opacity-60">{type_label(@monitor.type)}</span>
+        <span :if={!@monitor.enabled} class="badge badge-ghost badge-xs ml-1">paused</span>
+        <span :if={@selector? && @page_monitor} class="badge badge-xs ml-1">pinned</span>
+        <span
+          :if={@selector? && @page_monitor && !StatusPages.member?(@group, @monitor)}
+          class="badge badge-warning badge-xs ml-1"
+          title="Shown because it is pinned"
+        >
+          not matched
+        </span>
+      </div>
+      <%= if @page_monitor do %>
+        <.order_buttons
+          event="move_monitor"
+          id={@page_monitor.id}
+          first?={@page_monitor.id == hd(@group.page_monitors).id}
+          last?={@page_monitor.id == List.last(@group.page_monitors).id}
+          dom_prefix="page-monitor"
+        />
+        <button
+          id={"remove-page-monitor-#{@page_monitor.id}"}
+          phx-click="remove_monitor"
+          phx-value-id={@page_monitor.id}
+          class="btn btn-ghost btn-xs text-error"
+          title={if @selector?, do: "Unpin", else: "Remove from group"}
+        >
+          <.icon name={if @selector?, do: "hero-bookmark-slash", else: "hero-x-mark"} class="size-4" />
+        </button>
+      <% else %>
+        <button
+          id={"pin-#{@group.id}-#{@monitor.id}"}
+          phx-click="add_monitor"
+          phx-value-group_id={@group.id}
+          phx-value-monitor_id={@monitor.id}
+          class="btn btn-ghost btn-xs"
+          title="Pin (show before the other matches)"
+        >
+          <.icon name="hero-bookmark" class="size-4" />
+        </button>
+      <% end %>
+    </li>
     """
   end
 
@@ -237,8 +417,9 @@ defmodule SentinelixWeb.StatusPageLive.Show do
       page ->
         {:ok,
          socket
-         |> assign(page: page, monitors: Monitoring.list_monitors())
-         |> assign_group_form()}
+         |> assign(page: page, monitors: Monitoring.list_monitors(), editing: nil, edit: nil)
+         |> assign_completion()
+         |> assign_new_group_form()}
     end
   end
 
@@ -296,18 +477,57 @@ defmodule SentinelixWeb.StatusPageLive.Show do
     end
   end
 
+  def handle_event("validate_new_group", %{"group" => params}, socket) do
+    changeset = %Group{} |> StatusPages.change_group(params) |> Map.put(:action, :validate)
+    {:noreply, assign(socket, new: group_form_state(socket, %Group{}, changeset, params))}
+  end
+
   def handle_event("create_group", %{"group" => params}, socket) do
     case StatusPages.create_group(socket.assigns.page, params) do
-      {:ok, _group} -> {:noreply, socket |> reload() |> assign_group_form()}
-      {:error, changeset} -> {:noreply, assign(socket, group_form: to_form(changeset))}
+      {:ok, _group} ->
+        {:noreply, socket |> reload() |> assign_new_group_form()}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, new: group_form_state(socket, %Group{}, changeset, params))}
     end
   end
 
-  def handle_event("rename_group", %{"group_id" => id, "name" => name}, socket) do
+  def handle_event("edit_group", %{"id" => id}, socket) do
+    with_group(socket, id, fn _group ->
+      group = loaded_group(socket, parse_id(id))
+      changeset = StatusPages.change_group(group)
+
+      assign(socket,
+        editing: group.id,
+        edit: group_form_state(socket, group, changeset, %{"selector" => group.selector})
+      )
+    end)
+  end
+
+  def handle_event("cancel_group", _params, socket) do
+    {:noreply, assign(socket, editing: nil, edit: nil)}
+  end
+
+  def handle_event("validate_group", %{"group_id" => id, "group" => params}, socket) do
+    with_group(socket, id, fn _group ->
+      group = loaded_group(socket, parse_id(id))
+      changeset = group |> StatusPages.change_group(params) |> Map.put(:action, :validate)
+      assign(socket, edit: group_form_state(socket, group, changeset, params))
+    end)
+  end
+
+  def handle_event("save_group", %{"group_id" => id, "group" => params}, socket) do
     with_group(socket, id, fn group ->
-      case StatusPages.update_group(group, %{name: name}) do
-        {:ok, _group} -> socket |> put_flash(:info, "Group renamed.") |> reload()
-        {:error, _changeset} -> put_flash(socket, :error, "The group name can't be blank.")
+      case StatusPages.update_group(group, params) do
+        {:ok, _group} ->
+          socket
+          |> put_flash(:info, "Group saved.")
+          |> assign(editing: nil, edit: nil)
+          |> reload()
+
+        {:error, changeset} ->
+          group = loaded_group(socket, group.id)
+          assign(socket, edit: group_form_state(socket, group, changeset, params))
       end
     end)
   end
@@ -326,6 +546,7 @@ defmodule SentinelixWeb.StatusPageLive.Show do
     end)
   end
 
+  # Adds a monitor to a fixed list, or pins it in a selector group.
   def handle_event("add_monitor", %{"group_id" => group_id, "monitor_id" => monitor_id}, socket) do
     with_group(socket, group_id, fn group ->
       with id when is_integer(id) <- parse_id(monitor_id),
@@ -365,16 +586,97 @@ defmodule SentinelixWeb.StatusPageLive.Show do
     end
   end
 
+  # The group as loaded with the page (its pinned monitors preloaded), or
+  # a fresh copy when the page doesn't have it yet.
+  defp loaded_group(socket, id) do
+    Enum.find(socket.assigns.page.groups, &(&1.id == id)) ||
+      Enum.find(StatusPages.get_status_page!(socket.assigns.page.id).groups, &(&1.id == id))
+  end
+
   defp reload(socket) do
-    assign(socket,
+    socket
+    |> assign(
       page: StatusPages.get_status_page!(socket.assigns.page.id),
       monitors: Monitoring.list_monitors()
     )
+    |> assign_completion()
   end
 
-  defp assign_group_form(socket) do
-    assign(socket, group_form: to_form(StatusPages.change_group(%StatusPages.Group{})))
+  ## Group forms
+
+  defp assign_new_group_form(socket) do
+    changeset = StatusPages.change_group(%Group{})
+    assign(socket, new: group_form_state(socket, %Group{}, changeset, %{}))
   end
+
+  # Selector completion: label keys and values in use, and names; no
+  # status, which groups don't allow.
+  defp assign_completion(socket) do
+    values =
+      socket.assigns.monitors
+      |> label_values()
+      |> completion_values()
+      |> Map.delete("status")
+
+    assign(socket, completion: values)
+  end
+
+  # The form of a group, the monitors it would show (for a valid selector)
+  # and the completions of the selector typed so far.
+  defp group_form_state(socket, group, changeset, params) do
+    text = params["selector"] || ""
+
+    %{
+      form: to_form(changeset),
+      preview: preview(socket, group, changeset),
+      suggestions: if(text == "", do: [], else: suggestions(text, socket.assigns.completion))
+    }
+  end
+
+  defp preview(socket, group, changeset) do
+    selector = Ecto.Changeset.get_field(changeset, :selector)
+
+    if Ecto.Changeset.get_field(changeset, :kind) == :selector and is_binary(selector) and
+         not Keyword.has_key?(changeset.errors, :selector) do
+      group = %{group | selector: selector, page_monitors: loaded_page_monitors(group)}
+      StatusPages.group_monitors(group, socket.assigns.monitors)
+    end
+  end
+
+  defp loaded_page_monitors(%Group{page_monitors: page_monitors}) when is_list(page_monitors),
+    do: page_monitors
+
+  defp loaded_page_monitors(%Group{}), do: []
+
+  defp kind(form) do
+    case form[:kind].value do
+      kind when kind in [:selector, "selector"] -> :selector
+      _fixed -> :fixed
+    end
+  end
+
+  defp selector_error(form) do
+    case form[:selector].errors do
+      [error | _rest] -> translate_error(error)
+      [] -> nil
+    end
+  end
+
+  defp preview_text([], _page), do: "Matches no monitors yet."
+
+  defp preview_text(monitors, page) do
+    count = length(monitors)
+    noun = if count == 1, do: "monitor", else: "monitors"
+    "Shows #{count} #{noun}#{preview_suffix(page)}:"
+  end
+
+  defp preview_suffix(%{published: true, show_details: true}),
+    do: " publicly, with their names, statuses and targets"
+
+  defp preview_suffix(%{published: true}), do: " publicly, with their names and statuses"
+  defp preview_suffix(_draft), do: " on the page once it is published"
+
+  defp pinned(group), do: Map.new(group.page_monitors, &{&1.monitor_id, &1})
 
   defp available_monitors(monitors, group) do
     taken = MapSet.new(group.page_monitors, & &1.monitor_id)

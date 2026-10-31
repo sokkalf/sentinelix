@@ -5,7 +5,7 @@ defmodule Sentinelix.StatusPagesTest do
   import Sentinelix.StatusPagesFixtures
 
   alias Sentinelix.{Monitoring, StatusPages}
-  alias Sentinelix.StatusPages.StatusPage
+  alias Sentinelix.StatusPages.{Group, StatusPage}
 
   describe "status pages" do
     test "create_status_page/1 derives the slug from the title" do
@@ -144,6 +144,116 @@ defmodule Sentinelix.StatusPagesTest do
     end
   end
 
+  describe "selector groups" do
+    test "validate and normalize the selector, without status terms" do
+      page = status_page_fixture()
+
+      assert {:ok, group} =
+               StatusPages.create_group(page, %{name: "Prod", selector: "Env=prod,  !legacy"})
+
+      assert group.selector == "env=prod, !legacy"
+      assert Group.kind(group) == :selector
+
+      assert {:error, changeset} =
+               StatusPages.create_group(page, %{name: "Down", selector: "status=down"})
+
+      assert ["status can't be used here at column 1"] = errors_on(changeset).selector
+
+      assert {:error, changeset} =
+               StatusPages.create_group(page, %{name: "Bad", selector: "env=prod,"})
+
+      assert [_parse_error] = errors_on(changeset).selector
+    end
+
+    test "never store an empty selector" do
+      page = status_page_fixture()
+
+      # a selector group needs a selector
+      assert {:error, changeset} =
+               StatusPages.create_group(page, %{name: "All", kind: :selector, selector: " "})
+
+      assert ["can't be blank: an empty selector would match every monitor"] =
+               errors_on(changeset).selector
+
+      # without a kind, a blank selector is a fixed list
+      assert {:ok, %{selector: nil} = group} =
+               StatusPages.create_group(page, %{name: "Fixed", selector: ""})
+
+      assert Group.kind(group) == :fixed
+
+      # switching to a fixed list drops the selector
+      {:ok, group} = StatusPages.update_group(group, %{selector: "env=prod"})
+      assert Group.kind(group) == :selector
+      {:ok, group} = StatusPages.update_group(group, %{kind: "fixed", selector: "env=prod"})
+      assert group.selector == nil
+
+      # renaming keeps it a selector group
+      {:ok, group} = StatusPages.update_group(group, %{kind: "selector", selector: "env=prod"})
+      {:ok, group} = StatusPages.update_group(group, %{name: "Renamed"})
+      assert group.selector == "env=prod"
+
+      # stored selectors that are empty or no longer parse match nothing
+      monitor_fixture()
+      assert Group.parsed_selector(%Group{selector: ""}) == nil
+      assert Group.parsed_selector(%Group{selector: "status=down"}) == nil
+      assert StatusPages.group_monitors(%Group{selector: "", page_monitors: []}) == []
+    end
+
+    test "show pinned monitors first, then the matches by name" do
+      zulu = monitor_fixture(:http, %{name: "zulu", labels: %{"env" => "prod"}})
+      _alpha = monitor_fixture(:http, %{name: "Alpha", labels: %{"env" => "prod"}})
+      beta = monitor_fixture(:http, %{name: "beta", labels: %{"env" => "prod"}})
+      pinned_other = monitor_fixture(:http, %{name: "Pinned dev", labels: %{"env" => "dev"}})
+      _dev = monitor_fixture(:http, %{name: "Dev", labels: %{"env" => "dev"}})
+
+      page = status_page_fixture()
+      group = group_fixture(page, %{name: "Prod", selector: "env=prod"})
+      {:ok, _} = StatusPages.add_monitor(group, zulu)
+      # pinned monitors stay even when the selector doesn't match them
+      {:ok, _} = StatusPages.add_monitor(group, pinned_other)
+
+      assert member_names(page, group) == ["zulu", "Pinned dev", "Alpha", "beta"]
+
+      # new and relabelled monitors join and leave
+      gamma = monitor_fixture(:http, %{name: "Gamma", labels: %{"env" => "prod"}})
+      {:ok, _} = Monitoring.delete_labels([beta], ["env"])
+      assert member_names(page, group) == ["zulu", "Pinned dev", "Alpha", "Gamma"]
+
+      # the in-memory check agrees
+      loaded = Enum.find(StatusPages.get_status_page!(page.id).groups, &(&1.id == group.id))
+      assert StatusPages.member?(loaded, gamma)
+      refute StatusPages.member?(loaded, Monitoring.get_monitor!(beta.id))
+
+      assert ids(StatusPages.group_monitors(loaded, Monitoring.list_monitors())) ==
+               ids(loaded.monitors)
+
+      # unpinning keeps a monitor that matches
+      [pm_zulu, _pm_other] = loaded.page_monitors
+      {:ok, _} = StatusPages.remove_monitor(pm_zulu)
+      assert member_names(page, group) == ["Pinned dev", "Alpha", "Gamma", "zulu"]
+
+      # name terms
+      {:ok, _} = StatusPages.update_group(group, %{selector: "name~a, env"})
+      assert member_names(page, group) == ["Pinned dev", "Alpha", "Gamma"]
+    end
+
+    test "count in list_status_pages/0" do
+      a = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+      _b = monitor_fixture(:http, %{labels: %{"env" => "prod"}})
+      _c = monitor_fixture(:http, %{labels: %{"env" => "dev"}})
+      page = status_page_fixture()
+      group_fixture(page, %{selector: "env=prod"})
+      fixed = group_fixture(page)
+      {:ok, _} = StatusPages.add_monitor(fixed, a)
+      other = status_page_fixture()
+      group_fixture(other, %{selector: "env=prod"})
+      group_fixture(other, %{selector: "env in (prod,dev)"})
+
+      counts = Map.new(StatusPages.list_status_pages(), &{&1.page.id, &1.monitor_count})
+      assert counts == %{page.id => 2, other.id => 3}
+    end
+  end
+
   describe "public data" do
     test "open incidents and recent incidents" do
       m1 = monitor_fixture()
@@ -206,5 +316,17 @@ defmodule Sentinelix.StatusPagesTest do
     |> Enum.find(&(&1.id == group.id))
     |> Map.fetch!(:page_monitors)
     |> Enum.map(& &1.monitor.name)
+  end
+
+  defp ids(monitors), do: Enum.map(monitors, & &1.id)
+
+  # The group's monitors in display order (pinned and matched).
+  defp member_names(page, group) do
+    page.id
+    |> StatusPages.get_status_page!()
+    |> Map.fetch!(:groups)
+    |> Enum.find(&(&1.id == group.id))
+    |> Map.fetch!(:monitors)
+    |> Enum.map(& &1.name)
   end
 end

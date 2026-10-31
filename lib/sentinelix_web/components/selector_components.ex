@@ -1,7 +1,7 @@
 defmodule SentinelixWeb.SelectorComponents do
   @moduledoc """
-  The selector input (see `Sentinelix.Monitoring.Selector`) of the dashboard
-  and the monitor list: a text field that shows parse errors inline and
+  The selector input (see `Sentinelix.Monitoring.Selector`) of the dashboard,
+  the monitor list and status page groups: a text field that shows parse errors inline and
   completes label keys and values.
 
   Completion needs no JavaScript: `suggestions/2` turns the text typed so
@@ -16,13 +16,16 @@ defmodule SentinelixWeb.SelectorComponents do
   @max_suggestions 50
 
   @doc """
-  A selector input named `selector`, for a form with `phx-change`. Shows
-  `error` (a `Sentinelix.Monitoring.Selector.Error`) below the field.
+  A selector input (named `selector` unless given a `name`), for a form
+  with `phx-change`. Shows `error` (a `Sentinelix.Monitoring.Selector.Error`
+  or a message) below the field.
   """
   attr :id, :string, required: true
+  attr :name, :string, default: "selector"
   attr :value, :string, required: true
   attr :error, :any, default: nil
   attr :suggestions, :list, default: []
+  attr :placeholder, :string, default: "env=prod, status=down, name~api"
   attr :class, :any, default: nil
 
   def selector_input(assigns) do
@@ -33,10 +36,10 @@ defmodule SentinelixWeb.SelectorComponents do
         <input
           type="search"
           id={@id}
-          name="selector"
+          name={@name}
           value={@value}
           list={"#{@id}-suggestions"}
-          placeholder="env=prod, status=down, name~api"
+          placeholder={@placeholder}
           aria-label="Selector"
           aria-invalid={@error && "true"}
           aria-describedby={@error && "#{@id}-error"}
@@ -50,11 +53,14 @@ defmodule SentinelixWeb.SelectorComponents do
         <option :for={suggestion <- @suggestions} value={suggestion} />
       </datalist>
       <p :if={@error} id={"#{@id}-error"} class="mt-1 text-xs text-error" role="alert">
-        {Exception.message(@error)}
+        {error_message(@error)}
       </p>
     </div>
     """
   end
+
+  defp error_message(message) when is_binary(message), do: message
+  defp error_message(error), do: Exception.message(error)
 
   @doc "The text of the `selector` URL parameter, `\"\"` without one."
   @spec selector_param(map()) :: String.t()

@@ -79,6 +79,10 @@ config :phoenix_live_view,
 config :phoenix,
   sort_verified_routes_query_params: true
 
+# Public status pages reload for monitor changes without a delay: the
+# reload is the next message the page handles.
+config :sentinelix, SentinelixWeb.StatusPageLive.Public, reload_delay_ms: 0
+
 # Developer-specific overrides go in config/test.local.exs, which is
 # gitignored. Useful e.g. when your Postgres only lets you connect to
 # specific databases:
