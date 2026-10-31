@@ -3,6 +3,12 @@ defmodule Sentinelix.StatusPages do
   Public status pages: pages with ordered groups of monitors, shown without
   authentication at `/status/<slug>` when published.
 
+  A group is a fixed list of monitors or chooses them by selector (see
+  `Sentinelix.StatusPages.Group`). The functions that load a page fill
+  each group's `monitors` with its monitors in display order: its own
+  (pinned) monitors in their positions, then the other monitors its
+  selector matches, by name (see `group_monitors/2`).
+
   ## PubSub events
 
   Every configuration change of a page (the page itself, its groups or its
@@ -14,6 +20,11 @@ defmodule Sentinelix.StatusPages do
 
   The events carry only the page id, so subscribers (including the public
   page) reload what they are allowed to show.
+
+  Changes of monitors (creating, relabelling, renaming or deleting them)
+  change the members of selector groups without an event here: pages with
+  selector groups follow the Monitoring context's `"monitors"` topic (see
+  `Sentinelix.Monitoring.subscribe_monitors/0`) and check `member?/2`.
   """
 
   import Ecto.Query, warn: false
@@ -21,7 +32,7 @@ defmodule Sentinelix.StatusPages do
   alias Phoenix.PubSub
   alias Sentinelix.Maintenance
   alias Sentinelix.Maintenance.Window
-  alias Sentinelix.Monitoring.{Incident, Monitor}
+  alias Sentinelix.Monitoring.{Incident, Monitor, Selector}
   alias Sentinelix.Repo
   alias Sentinelix.StatusPages.{Group, PageMonitor, StatusPage}
 
@@ -58,23 +69,48 @@ defmodule Sentinelix.StatusPages do
 
   @doc """
   Returns all status pages ordered by title, each with the number of
-  distinct monitors on it: `[%{page: %StatusPage{}, monitor_count: n}]`.
+  distinct monitors on it (in fixed lists, pinned or matched by
+  selectors): `[%{page: %StatusPage{}, monitor_count: n}]`.
   """
   @spec list_status_pages() :: [%{page: StatusPage.t(), monitor_count: non_neg_integer()}]
   def list_status_pages do
-    counts =
-      from(pm in PageMonitor,
-        join: g in assoc(pm, :group),
-        group_by: g.status_page_id,
-        select: {g.status_page_id, count(pm.monitor_id, :distinct)}
-      )
+    pages =
+      StatusPage
+      |> order_by([p], asc: fragment("lower(?)", p.title), asc: p.id)
       |> Repo.all()
-      |> Map.new()
+      |> Repo.preload(groups: :page_monitors)
 
-    StatusPage
-    |> order_by([p], asc: fragment("lower(?)", p.title), asc: p.id)
-    |> Repo.all()
-    |> Enum.map(&%{page: &1, monitor_count: Map.get(counts, &1.id, 0)})
+    # One query per distinct selector, however many groups use it.
+    matched =
+      pages
+      |> Enum.flat_map(& &1.groups)
+      |> Enum.map(&Group.parsed_selector/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Map.new(&{&1, matching_monitor_ids(&1)})
+
+    Enum.map(pages, fn page ->
+      count =
+        page.groups
+        |> Enum.flat_map(&group_monitor_ids(&1, matched))
+        |> Enum.uniq()
+        |> length()
+
+      %{page: page, monitor_count: count}
+    end)
+  end
+
+  defp group_monitor_ids(group, matched) do
+    pinned = Enum.map(group.page_monitors, & &1.monitor_id)
+
+    case Group.parsed_selector(group) do
+      nil -> pinned
+      selector -> pinned ++ Map.fetch!(matched, selector)
+    end
+  end
+
+  defp matching_monitor_ids(selector) do
+    Monitor |> Selector.filter(selector) |> select([m], m.id) |> Repo.all()
   end
 
   @doc """
@@ -112,7 +148,64 @@ defmodule Sentinelix.StatusPages do
     |> preload_layout()
   end
 
-  defp preload_layout(page), do: Repo.preload(page, groups: [page_monitors: :monitor])
+  defp preload_layout(page) do
+    page = Repo.preload(page, groups: [page_monitors: :monitor])
+    %{page | groups: Enum.map(page.groups, &%{&1 | monitors: group_monitors(&1)})}
+  end
+
+  @doc """
+  The monitors of a group (with its `page_monitors` and their monitors
+  preloaded) in display order: its own monitors in their positions, then,
+  for a selector group, the other monitors the selector matches, by name.
+
+  `candidates` are the monitors to match the selector against in memory,
+  e.g. to preview a selector that isn't saved yet; without them the
+  database is queried.
+  """
+  @spec group_monitors(Group.t(), [Monitor.t()] | nil) :: [Monitor.t()]
+  def group_monitors(%Group{} = group, candidates \\ nil) do
+    pinned = Enum.map(group.page_monitors, & &1.monitor)
+    pinned_ids = MapSet.new(pinned, & &1.id)
+
+    matched =
+      group
+      |> Group.parsed_selector()
+      |> matching_monitors(candidates)
+      |> Enum.reject(&MapSet.member?(pinned_ids, &1.id))
+
+    pinned ++ matched
+  end
+
+  defp matching_monitors(nil, _candidates), do: []
+
+  defp matching_monitors(selector, nil) do
+    Monitor
+    |> Selector.filter(selector)
+    |> order_by([m], asc: fragment("lower(?)", m.name), asc: m.id)
+    |> Repo.all()
+  end
+
+  defp matching_monitors(selector, candidates) do
+    candidates
+    |> Enum.filter(&Selector.matches?(selector, &1))
+    |> Enum.sort_by(&{String.downcase(&1.name), &1.id})
+  end
+
+  @doc """
+  Whether a monitor is matched by the selector of a group (or a parsed
+  group selector, see `Sentinelix.StatusPages.Group.parsed_selector/1`):
+  always `false` for fixed lists, whose monitors are their
+  `page_monitors`. Evaluated in memory on the monitor's labels and name,
+  with the same result as the query that loads the group.
+  """
+  @spec member?(Group.t() | Selector.t() | nil, Monitor.t()) :: boolean()
+  def member?(%Group{} = group, %Monitor{} = monitor),
+    do: member?(Group.parsed_selector(group), monitor)
+
+  def member?(nil, %Monitor{}), do: false
+
+  def member?(%Selector{} = selector, %Monitor{} = monitor),
+    do: Selector.matches?(selector, monitor)
 
   @doc """
   Creates a status page. A missing slug is derived from the title.
@@ -183,7 +276,10 @@ defmodule Sentinelix.StatusPages do
   end
 
   @doc """
-  Renames a group.
+  Changes a group: its name, and whether it is a fixed list or a selector
+  group (see `Sentinelix.StatusPages.Group.changeset/2`). Its monitors are
+  kept: they become the pinned monitors of a selector group, or the list
+  of a fixed one.
   """
   @spec update_group(Group.t(), map()) :: {:ok, Group.t()} | {:error, Ecto.Changeset.t()}
   def update_group(%Group{} = group, attrs) do
@@ -236,7 +332,9 @@ defmodule Sentinelix.StatusPages do
   end
 
   @doc """
-  Adds a monitor at the end of a group.
+  Adds a monitor at the end of a group's own monitors. In a selector group
+  this pins it: after the other pinned monitors, before those the selector
+  matches.
   """
   @spec add_monitor(Group.t(), Monitor.t() | pos_integer()) ::
           {:ok, PageMonitor.t()} | {:error, Ecto.Changeset.t()}
@@ -250,7 +348,8 @@ defmodule Sentinelix.StatusPages do
   end
 
   @doc """
-  Removes a monitor from its group.
+  Removes a monitor from its group's own monitors. In a selector group this
+  unpins it: it stays in the group while the selector matches it.
   """
   @spec remove_monitor(PageMonitor.t()) :: {:ok, PageMonitor.t()} | {:error, Ecto.Changeset.t()}
   def remove_monitor(%PageMonitor{} = page_monitor) do
