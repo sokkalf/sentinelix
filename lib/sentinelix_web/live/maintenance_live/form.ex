@@ -4,12 +4,31 @@ defmodule SentinelixWeb.MaintenanceLive.Form do
   `/maintenance/:id/edit`).
 
   Dates and times are entered in the window's time zone.
+
+  The window applies to all monitors, to selected monitors, or to the
+  monitors matching a label selector (`Sentinelix.Monitoring.Selector`,
+  without `status` terms) plus, optionally, selected ones. The selector
+  input previews the monitors it matches now as you type; the window
+  follows later label changes by itself.
   """
 
   use SentinelixWeb, :live_view
 
+  import SentinelixWeb.SelectorComponents
+
   alias Sentinelix.{Maintenance, Monitoring}
   alias Sentinelix.Maintenance.Window
+  alias Sentinelix.Monitoring.Selector
+
+  @scopes [
+    {"all", "All monitors", "Including monitors created later."},
+    {"monitors", "Selected monitors", nil},
+    {"selector", "Matching a selector",
+     "Monitors with matching labels, including ones labeled later."}
+  ]
+
+  # Monitors listed in the selector preview; the rest are counted.
+  @preview_limit 20
 
   @weekdays [{1, "Mon"}, {2, "Tue"}, {3, "Wed"}, {4, "Thu"}, {5, "Fri"}, {6, "Sat"}, {7, "Sun"}]
 
@@ -151,9 +170,59 @@ defmodule SentinelixWeb.MaintenanceLive.Form do
             class="rounded-box border border-base-300 bg-base-100 p-4 sm:p-6"
           >
             <h2 class="mb-3 font-semibold">Monitors</h2>
-            <.input field={@form[:all_monitors]} type="checkbox" label="All monitors" />
-            <%!-- Hidden rather than removed, so the selection survives toggling. --%>
-            <div id="monitor-choices" class={@all_monitors && "hidden"}>
+            <fieldset id="window-scope" class="fieldset mb-2">
+              <legend class="sr-only">Applies to</legend>
+              <label
+                :for={{scope, label, hint} <- scopes()}
+                class="label cursor-pointer items-start gap-2 py-1 text-sm whitespace-normal"
+              >
+                <input
+                  type="radio"
+                  id={"scope-#{scope}"}
+                  name="window[scope]"
+                  value={scope}
+                  checked={@scope == scope}
+                  class="radio radio-sm mt-0.5"
+                />
+                <span>
+                  <span class="text-base-content">{label}</span>
+                  <span :if={hint} class="block text-xs text-base-content/60">{hint}</span>
+                </span>
+              </label>
+            </fieldset>
+
+            <div :if={@scope == "selector"} id="selector-fields" class="mb-3">
+              <.selector_input
+                id="window-selector"
+                value={@selector_text}
+                error={@selector_error}
+                suggestions={@suggestions}
+                placeholder="site=oslo, env=prod, name~api"
+              />
+              <div id="selector-preview" class="mt-2 text-sm">
+                <p :if={@selector_error == nil} class="text-xs text-base-content/60">
+                  {preview_summary(@selector_text, @preview)}
+                </p>
+                <ul :if={@preview != []} class="mt-1 space-y-0.5">
+                  <li
+                    :for={monitor <- Enum.take(@preview, preview_limit())}
+                    id={"preview-#{monitor.id}"}
+                    class="truncate"
+                  >
+                    {monitor.name}
+                  </li>
+                </ul>
+                <p :if={length(@preview) > preview_limit()} class="text-xs text-base-content/60">
+                  and {length(@preview) - preview_limit()} more
+                </p>
+              </div>
+            </div>
+
+            <%!-- Hidden rather than removed, so the selection survives switching. --%>
+            <div id="monitor-choices" class={@scope == "all" && "hidden"}>
+              <p :if={@scope == "selector"} class="mb-1 text-xs text-base-content/60">
+                Also include (optional):
+              </p>
               <input type="hidden" name="window[monitor_ids][]" value="" />
               <p :if={@monitors == []} class="text-sm text-base-content/60">No monitors yet.</p>
               <label
@@ -193,7 +262,13 @@ defmodule SentinelixWeb.MaintenanceLive.Form do
 
   @impl true
   def mount(params, _session, socket) do
-    socket = assign(socket, monitors: Monitoring.list_monitors())
+    # Status terms aren't allowed in windows, so they aren't suggested.
+    completion =
+      Monitoring.list_label_values(automatic: true)
+      |> completion_values()
+      |> Map.delete("status")
+
+    socket = assign(socket, monitors: Monitoring.list_monitors(), completion: completion)
     {:ok, apply_action(socket, socket.assigns.live_action, params)}
   end
 
@@ -202,6 +277,8 @@ defmodule SentinelixWeb.MaintenanceLive.Form do
 
     socket
     |> assign(page_title: "New maintenance window", window: window, monitor_ids: [])
+    |> assign(scope: "monitors")
+    |> assign_selector("")
     |> assign_form(Maintenance.change_window(window))
   end
 
@@ -217,26 +294,28 @@ defmodule SentinelixWeb.MaintenanceLive.Form do
 
         socket
         |> assign(page_title: "Edit maintenance window", window: window)
-        |> assign(monitor_ids: Enum.map(window.monitors, & &1.id))
+        |> assign(monitor_ids: Enum.map(window.monitors, & &1.id), scope: scope(window))
+        |> assign_selector(window.selector)
         |> assign_form(Maintenance.change_window(window))
     end
   end
 
   @impl true
-  def handle_event("validate", %{"window" => params}, socket) do
-    params = normalize_params(params)
+  def handle_event("validate", %{"window" => params} = all_params, socket) do
+    socket = assign_inputs(socket, params, all_params)
+    params = normalize_params(params, socket.assigns)
 
     changeset =
       socket.assigns.window
       |> Maintenance.change_window(params)
       |> Map.put(:action, :validate)
 
-    {:noreply, socket |> assign(monitor_ids: params["monitor_ids"]) |> assign_form(changeset)}
+    {:noreply, assign_form(socket, changeset)}
   end
 
-  def handle_event("save", %{"window" => params}, socket) do
-    params = normalize_params(params)
-    socket = assign(socket, monitor_ids: params["monitor_ids"])
+  def handle_event("save", %{"window" => params} = all_params, socket) do
+    socket = assign_inputs(socket, params, all_params)
+    params = normalize_params(params, socket.assigns)
 
     result =
       case socket.assigns.live_action do
@@ -259,16 +338,69 @@ defmodule SentinelixWeb.MaintenanceLive.Form do
   defp assign_form(socket, changeset) do
     assign(socket,
       form: to_form(changeset, as: :window),
-      recurrence: Ecto.Changeset.get_field(changeset, :recurrence),
-      all_monitors: Ecto.Changeset.get_field(changeset, :all_monitors)
+      recurrence: Ecto.Changeset.get_field(changeset, :recurrence)
     )
   end
 
-  # Drops the blank values of the hidden inputs that allow empty selections.
+  # The monitor selection, the scope and the selector text (the selector
+  # input is named `selector`, outside of `window`) as entered, kept while
+  # switching scopes.
+  defp assign_inputs(socket, params, all_params) do
+    socket =
+      assign(socket,
+        monitor_ids: ids(params["monitor_ids"]),
+        scope: scope_param(params, socket.assigns.scope)
+      )
+
+    case all_params do
+      %{"selector" => text} when is_binary(text) -> assign_selector(socket, text)
+      _params -> socket
+    end
+  end
+
+  defp scope_param(%{"scope" => scope}, _current) when scope in ["all", "monitors", "selector"],
+    do: scope
+
+  defp scope_param(_params, current), do: current
+
+  defp assign_selector(socket, text) do
+    {error, preview} =
+      case Selector.parse(text, allow: Window.selector_allow()) do
+        {:ok, selector} -> {nil, Maintenance.selector_monitors(selector)}
+        {:error, error} -> {error, []}
+      end
+
+    assign(socket,
+      selector_text: text,
+      selector_error: error,
+      preview: preview,
+      suggestions: suggestions(text, socket.assigns.completion)
+    )
+  end
+
+  defp scope(%Window{all_monitors: true}), do: "all"
+  defp scope(%Window{selector: selector}) when selector not in [nil, ""], do: "selector"
+  defp scope(_window), do: "monitors"
+
+  defp preview_summary(text, preview) do
+    case {String.trim(text), length(preview)} do
+      {"", _count} -> "Enter a selector, e.g. site=oslo."
+      {_text, 0} -> "No monitors match now."
+      {_text, 1} -> "1 monitor matches now:"
+      {_text, count} -> "#{count} monitors match now:"
+    end
+  end
+
+  # Applies the scope (the selector only counts for "selector") and the
+  # monitor selection without the blank values of the hidden inputs that
+  # allow empty selections.
   @doc false
-  def normalize_params(params) do
+  def normalize_params(params, inputs) do
     params
-    |> Map.put("monitor_ids", ids(params["monitor_ids"]))
+    |> Map.delete("scope")
+    |> Map.put("all_monitors", inputs.scope == "all")
+    |> Map.put("selector", if(inputs.scope == "selector", do: inputs.selector_text, else: ""))
+    |> Map.put("monitor_ids", inputs.monitor_ids)
     |> then(fn params ->
       if Map.has_key?(params, "weekdays"),
         do: Map.put(params, "weekdays", ids(params["weekdays"])),
@@ -303,6 +435,8 @@ defmodule SentinelixWeb.MaintenanceLive.Form do
     end
   end
 
+  defp scopes, do: @scopes
+  defp preview_limit, do: @preview_limit
   defp weekdays, do: @weekdays
   defp timezones, do: @timezones
 end

@@ -71,8 +71,20 @@ defmodule SentinelixWeb.MaintenanceLive.Index do
               </td>
               <td class="hidden max-w-56 text-sm sm:table-cell">
                 <span :if={window.all_monitors} class="badge badge-ghost badge-sm">All monitors</span>
-                <span :if={!window.all_monitors} class="block truncate" title={monitor_names(window)}>
-                  {monitor_names(window)}
+                <code
+                  :if={!window.all_monitors and window.selector != ""}
+                  id={"window-selector-#{window.id}"}
+                  class="block truncate font-mono text-xs"
+                  title={"Monitors matching #{window.selector}"}
+                >
+                  {window.selector}
+                </code>
+                <span
+                  :if={!window.all_monitors and (window.selector == "" or window.monitors != [])}
+                  class="block truncate"
+                  title={monitor_names(window)}
+                >
+                  {if window.selector != "", do: "+ "}{monitor_names(window)}
                 </span>
               </td>
               <td>

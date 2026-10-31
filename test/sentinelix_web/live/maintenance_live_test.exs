@@ -48,6 +48,15 @@ defmodule SentinelixWeb.MaintenanceLiveTest do
       assert has_element?(view, "#window-#{weekly.id}", "All monitors")
     end
 
+    test "lists the selector of selector windows", %{conn: conn} do
+      monitor = monitor_fixture(:http, %{name: "Homepage"})
+      window = window_fixture(%{title: "Oslo", selector: "site=oslo", monitor_ids: [monitor.id]})
+
+      {:ok, view, _html} = live(conn, ~p"/maintenance")
+      assert has_element?(view, "#window-selector-#{window.id}", "site=oslo")
+      assert has_element?(view, "#window-#{window.id}", "+ Homepage")
+    end
+
     test "disables, enables and deletes windows", %{conn: conn} do
       window = window_fixture(%{all_monitors: true, title: "Upgrade"})
       {:ok, view, _html} = live(conn, ~p"/maintenance")
@@ -90,7 +99,7 @@ defmodule SentinelixWeb.MaintenanceLiveTest do
 
       assert has_element?(view, "#window-form", "can't be blank")
       assert has_element?(view, "#window-form", "must be after the start")
-      assert has_element?(view, "#window-form", "select at least one monitor")
+      assert has_element?(view, "#window-form", "select monitors, a selector or all monitors")
 
       {:ok, _view, html} =
         view
@@ -133,7 +142,7 @@ defmodule SentinelixWeb.MaintenanceLiveTest do
             weekdays: ["", "6", "7"],
             start_time: "03:00",
             duration_minutes: "120",
-            all_monitors: "true"
+            scope: "all"
           }
         )
         |> render_submit()
@@ -174,6 +183,89 @@ defmodule SentinelixWeb.MaintenanceLiveTest do
       assert window.title == "Renamed"
       assert window.ends_at == ~U[2026-11-01 22:30:00Z]
       assert Enum.map(window.monitors, & &1.id) == [b.id]
+    end
+
+    test "creates a window for monitors matching a selector, with a live preview",
+         %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Oslo web", labels: %{"site" => "oslo"}})
+      db = monitor_fixture(:http, %{name: "Oslo db", labels: %{"site" => "oslo"}})
+      extra = monitor_fixture(:http, %{name: "Bergen web", labels: %{"site" => "bergen"}})
+
+      {:ok, view, _html} = live(conn, ~p"/maintenance/new")
+      refute has_element?(view, "#selector-fields")
+
+      view |> form("#window-form", window: %{scope: "selector"}) |> render_change()
+      assert has_element?(view, "#selector-fields")
+      assert has_element?(view, "#selector-preview", "Enter a selector")
+      assert has_element?(view, "#monitor-choices", "Also include")
+
+      # Status terms are refused inline; nothing is previewed.
+      view |> form("#window-form", selector: "status=down") |> render_change()
+      assert has_element?(view, "#window-selector-error", "status can't be used here")
+      refute has_element?(view, "#selector-preview li")
+
+      view |> form("#window-form", selector: "site=oslo") |> render_change()
+      refute has_element?(view, "#window-selector-error")
+      assert has_element?(view, "#selector-preview", "2 monitors match now")
+      assert has_element?(view, "#preview-#{web.id}", "Oslo web")
+      assert has_element?(view, "#preview-#{db.id}", "Oslo db")
+      refute has_element?(view, "#preview-#{extra.id}")
+
+      # Label completion, without status.
+      view |> form("#window-form", selector: "s") |> render_change()
+      assert has_element?(view, "#window-selector-suggestions option[value='site=oslo']")
+      refute has_element?(view, "#window-selector-suggestions option[value^='status']")
+
+      {:ok, _view, _html} =
+        view
+        |> form("#window-form",
+          selector: "Site = oslo",
+          window: %{
+            title: "Oslo network",
+            local_starts_at: "2026-11-01T22:00",
+            local_ends_at: "2026-11-01T23:00",
+            monitor_ids: ["#{extra.id}"]
+          }
+        )
+        |> render_submit()
+        |> follow_redirect(conn, ~p"/maintenance")
+
+      assert [window] = Maintenance.list_windows()
+      assert window.selector == "site=oslo"
+      refute window.all_monitors
+      assert Enum.map(window.monitors, & &1.id) == [extra.id]
+    end
+
+    test "edits a selector window and switches it to selected monitors", %{conn: conn} do
+      monitor = monitor_fixture(:http, %{name: "A", labels: %{"site" => "oslo"}})
+      window = window_fixture(%{selector: "site=oslo"})
+
+      {:ok, view, _html} = live(conn, ~p"/maintenance/#{window.id}/edit")
+      assert has_element?(view, "#scope-selector[checked]")
+      assert has_element?(view, "#window-selector[value='site=oslo']")
+      assert has_element?(view, "#preview-#{monitor.id}")
+
+      # Without monitors the selector is required.
+      view
+      |> form("#window-form", window: %{scope: "monitors", monitor_ids: [""]})
+      |> render_submit()
+
+      assert has_element?(view, "#window-form", "select monitors, a selector or all monitors")
+      refute has_element?(view, "#selector-fields")
+
+      # Switching back keeps the selector text.
+      view |> form("#window-form", window: %{scope: "selector"}) |> render_change()
+      assert has_element?(view, "#window-selector[value='site=oslo']")
+
+      {:ok, _view, _html} =
+        view
+        |> form("#window-form", window: %{scope: "monitors", monitor_ids: ["#{monitor.id}"]})
+        |> render_submit()
+        |> follow_redirect(conn, ~p"/maintenance")
+
+      window = Maintenance.get_window!(window.id)
+      assert window.selector == ""
+      assert Enum.map(window.monitors, & &1.id) == [monitor.id]
     end
 
     test "redirects for unknown windows", %{conn: conn} do
