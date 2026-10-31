@@ -56,6 +56,19 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert render(view) =~ "Database deleted"
     end
 
+    test "links to cloning a monitor", %{conn: conn} do
+      monitor = monitor_fixture(:http, %{name: "Web"})
+      {:ok, view, _html} = live(conn, ~p"/monitors")
+
+      {:ok, view, _html} =
+        view
+        |> element("#clone-#{monitor.id}")
+        |> render_click()
+        |> follow_redirect(conn, ~p"/monitors/#{monitor}/clone")
+
+      assert has_element?(view, "#monitor_name[value='Web (copy)']")
+    end
+
     test "updates on status changes", %{conn: conn} do
       monitor = monitor_fixture(:http, %{name: "Web"})
       {:ok, view, _html} = live(conn, ~p"/monitors")
@@ -215,6 +228,19 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
       assert has_element?(view, "#push-curl", "curl")
       refute has_element?(view, "#check-now")
+    end
+
+    test "clones the monitor", %{conn: conn} do
+      monitor = monitor_fixture(:http, %{name: "Web"})
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+
+      {:ok, view, _html} =
+        view
+        |> element("#clone-monitor")
+        |> render_click()
+        |> follow_redirect(conn, ~p"/monitors/#{monitor}/clone")
+
+      assert has_element?(view, "#monitor_name[value='Web (copy)']")
     end
 
     test "redirects for unknown monitors", %{conn: conn} do

@@ -102,6 +102,13 @@ defmodule SentinelixWeb.MonitorLive.Show do
           <.link id="edit-monitor" navigate={~p"/monitors/#{@monitor.id}/edit"} class="btn btn-sm">
             <.icon name="hero-pencil-square" class="size-4" /> Edit
           </.link>
+          <.link
+            id="clone-monitor"
+            navigate={~p"/monitors/#{@monitor.id}/clone"}
+            class="btn btn-sm"
+          >
+            <.icon name="hero-document-duplicate" class="size-4" /> Clone
+          </.link>
           <button
             id="delete-monitor"
             type="button"
