@@ -24,7 +24,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert render(view) =~ "No monitors yet"
     end
 
-    test "lists, searches, pauses and deletes monitors", %{conn: conn} do
+    test "lists, filters, pauses and deletes monitors", %{conn: conn} do
       web = monitor_fixture(:http, %{name: "Web", labels: %{"site" => "oslo"}})
       db = monitor_fixture(:tcp, %{name: "Database"})
       check_result_fixture(web, %{status: :up})
@@ -34,14 +34,37 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert view |> element("#monitor-#{db.id}") |> render() =~ "db.example.com:5432"
       assert has_element?(view, "#monitor-#{web.id} [data-label='site=oslo']")
 
-      view |> form("#search-form", %{q: "data"}) |> render_change()
+      view |> form("#filter-form", %{selector: "name~data"}) |> render_change()
+      assert_patch(view, ~p"/monitors?#{[selector: "name~data"]}")
       refute has_element?(view, "#monitor-#{web.id}")
       assert has_element?(view, "#monitor-#{db.id}")
 
-      view |> form("#search-form", %{q: "site=oslo"}) |> render_change()
+      view |> form("#filter-form", %{selector: "site=oslo"}) |> render_change()
       assert has_element?(view, "#monitor-#{web.id}")
       refute has_element?(view, "#monitor-#{db.id}")
-      view |> form("#search-form", %{q: ""}) |> render_change()
+
+      view |> form("#filter-form", %{selector: "status=pending, type=tcp"}) |> render_change()
+      refute has_element?(view, "#monitor-#{web.id}")
+      assert has_element?(view, "#monitor-#{db.id}")
+
+      view |> form("#filter-form", %{selector: "status=nope"}) |> render_change()
+      assert has_element?(view, "#selector-error", ~s(unknown status "nope"))
+      assert has_element?(view, "#monitor-#{db.id}")
+
+      {:ok, view, _html} = live(conn, ~p"/monitors?#{[selector: "site in ("]}")
+      assert has_element?(view, "#selector-error", "expected a value at column 10")
+      refute has_element?(view, "#monitor-#{web.id}")
+
+      # Badges add a term.
+      {:ok, view, _html} = live(conn, ~p"/monitors")
+      view |> element("#monitor-#{web.id} a[data-label='site=oslo']") |> render_click()
+      assert_patch(view, ~p"/monitors?#{[selector: "site=oslo"]}")
+      refute has_element?(view, "#monitor-#{db.id}")
+      assert has_element?(view, "#selector-suggestions option[value='site=oslo, type=http']")
+
+      view |> element("#clear-filters") |> render_click()
+      assert_patch(view, ~p"/monitors")
+      assert has_element?(view, "#monitor-#{db.id}")
 
       view |> element("#toggle-#{web.id}") |> render_click()
       refute Monitoring.get_monitor!(web.id).enabled
@@ -143,13 +166,13 @@ defmodule SentinelixWeb.MonitorLiveTest do
       refute has_element?(view, "#bulk-actions")
     end
 
-    test "selects all monitors matching the search", %{conn: conn} do
+    test "selects all monitors matching the selector", %{conn: conn} do
       web1 = monitor_fixture(:http, %{name: "Web 1"})
       web2 = monitor_fixture(:http, %{name: "Web 2"})
       db = monitor_fixture(:tcp, %{name: "Database"})
 
       {:ok, view, _html} = live(conn, ~p"/monitors")
-      view |> form("#search-form", %{q: "web"}) |> render_change()
+      view |> form("#filter-form", %{selector: "name~web"}) |> render_change()
       view |> element("#select-all") |> render_click()
       assert has_element?(view, "#selection-count", "2 monitors selected")
       assert has_element?(view, "#select-all[checked]")
@@ -160,16 +183,16 @@ defmodule SentinelixWeb.MonitorLiveTest do
       refute Monitoring.get_monitor!(web2.id).enabled
       assert Monitoring.get_monitor!(db.id).enabled
 
-      # Widening the search keeps the selection; "select all" then offers
+      # Widening the selector keeps the selection; "select all" then offers
       # every matching monitor.
-      view |> form("#search-form", %{q: ""}) |> render_change()
+      view |> form("#filter-form", %{selector: ""}) |> render_change()
       assert has_element?(view, "#selection-count", "2 monitors selected")
       refute has_element?(view, "#select-#{db.id}[checked]")
       view |> element("#select-all-matching", "Select all 3 monitors") |> render_click()
       assert has_element?(view, "#selection-count", "3 monitors selected")
 
       # Narrowing it deselects the monitors that no longer match.
-      view |> form("#search-form", %{q: "web 2"}) |> render_change()
+      view |> form("#filter-form", %{selector: ~s(name~"web 2")}) |> render_change()
       assert has_element?(view, "#selection-count", "1 monitor selected")
 
       view |> element("#bulk-resume") |> render_click()
@@ -180,10 +203,10 @@ defmodule SentinelixWeb.MonitorLiveTest do
       refute has_element?(view, "#bulk-actions")
     end
 
-    test "deselects monitors that stop matching the search", %{conn: conn} do
+    test "deselects monitors that stop matching the selector", %{conn: conn} do
       web = monitor_fixture(:http, %{name: "Web"})
       {:ok, view, _html} = live(conn, ~p"/monitors")
-      view |> form("#search-form", %{q: "web"}) |> render_change()
+      view |> form("#filter-form", %{selector: "name~web"}) |> render_change()
       view |> element("#select-#{web.id}") |> render_click()
 
       {:ok, _} = Monitoring.update_monitor(web, %{name: "Api"})

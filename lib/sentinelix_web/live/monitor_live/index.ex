@@ -3,10 +3,14 @@ defmodule SentinelixWeb.MonitorLive.Index do
   Monitor management: all monitors in a table with their configuration and
   actions (pause/resume, edit, clone, delete).
 
+  The list is filtered by a selector (`Sentinelix.Monitoring.Selector`) in
+  the URL (`/monitors?selector=env=prod`), as on the dashboard; label
+  badges add a term.
+
   ## Bulk actions
 
   Monitors are selected with the row checkboxes, or all monitors matching
-  the list's current filter at once. The selection is a set of ids and
+  the list's current selector at once. The selection is a set of ids and
   never contains monitors that don't match the filter: when the filter
   changes or a monitor stops matching, it is deselected, so a bulk action
   only changes monitors that are shown. Monitors that start matching later
@@ -20,9 +24,10 @@ defmodule SentinelixWeb.MonitorLive.Index do
   use SentinelixWeb, :live_view
 
   import SentinelixWeb.MonitorComponents
+  import SentinelixWeb.SelectorComponents
 
   alias Sentinelix.{Maintenance, Monitoring, Notifications}
-  alias Sentinelix.Monitoring.Labels
+  alias Sentinelix.Monitoring.{Labels, Selector}
 
   @impl true
   def render(assigns) do
@@ -40,29 +45,33 @@ defmodule SentinelixWeb.MonitorLive.Index do
 
       <div class="rounded-box border border-base-300 bg-base-100">
         <form
-          id="search-form"
-          phx-change="search"
-          phx-submit="search"
-          class="border-b border-base-300 p-3"
+          id="filter-form"
+          phx-change="filter"
+          phx-submit="filter"
+          class="flex items-start gap-2 border-b border-base-300 p-3"
         >
-          <label class="input input-sm w-full sm:max-w-xs">
-            <.icon name="hero-magnifying-glass" class="size-4 opacity-50" />
-            <input
-              type="search"
-              name="q"
-              value={@q}
-              placeholder="Search by name, target or label"
-              phx-debounce="200"
-              autocomplete="off"
-            />
-          </label>
+          <.selector_input
+            id="selector"
+            value={@selector_text}
+            error={@selector_error}
+            suggestions={@suggestions}
+            class="sm:max-w-xl"
+          />
+          <.link
+            :if={@selector_text != ""}
+            patch={~p"/monitors"}
+            class="btn btn-ghost btn-sm"
+            id="clear-filters"
+          >
+            Clear
+          </.link>
         </form>
 
         <.bulk_actions
           :if={MapSet.size(@selected) > 0}
           selected={MapSet.size(@selected)}
           matching={MapSet.size(@matching)}
-          filtered={@q != ""}
+          filtered={@selector_text != ""}
           channels={@channels}
           label_options={@label_options}
         />
@@ -79,7 +88,9 @@ defmodule SentinelixWeb.MonitorLive.Index do
                     phx-click={if all_selected?(assigns), do: "clear_selection", else: "select_all"}
                     checked={all_selected?(assigns)}
                     disabled={MapSet.size(@matching) == 0}
-                    aria-label={if @q == "", do: "Select all", else: "Select all matching"}
+                    aria-label={
+                      if @selector_text == "", do: "Select all", else: "Select all matching"
+                    }
                   />
                 </th>
                 <th>Name</th>
@@ -93,7 +104,7 @@ defmodule SentinelixWeb.MonitorLive.Index do
             <tbody id="monitors" phx-update="stream">
               <tr id="monitors-empty" class="hidden only:table-row">
                 <td colspan="7" class="py-10 text-center text-base-content/60">
-                  {if @count == 0, do: "No monitors yet.", else: "No monitors match your search."}
+                  {if @count == 0, do: "No monitors yet.", else: "No monitors match the selector."}
                 </td>
               </tr>
               <tr :for={{dom_id, row} <- @streams.monitors} id={dom_id} class="hover:bg-base-200/50">
@@ -120,7 +131,12 @@ defmodule SentinelixWeb.MonitorLive.Index do
                     class="mt-1 flex flex-wrap gap-1"
                   >
                     <.maintenance_badge id={"maintenance-#{row.id}"} windows={row.maintenance} />
-                    <.label_badges labels={row.monitor.labels} />
+                    <.label_badges
+                      labels={row.monitor.labels}
+                      patch={
+                        &filter_path(Selector.add(@selector || %Selector{}, Selector.label_term(&1)))
+                      }
+                    />
                   </div>
                 </td>
                 <td class="hidden whitespace-nowrap md:table-cell">{type_label(row.monitor.type)}</td>
@@ -320,18 +336,49 @@ defmodule SentinelixWeb.MonitorLive.Index do
 
     socket =
       socket
-      |> assign(page_title: "Monitors", q: "", selected: MapSet.new(), matching: MapSet.new())
+      |> assign(page_title: "Monitors", selected: MapSet.new(), matching: MapSet.new())
+      |> assign(selector: %Selector{}, selector_text: "", selector_error: nil)
       |> assign(channels: Notifications.list_channels())
       |> assign_label_options()
       |> stream_configure(:monitors, dom_id: &"monitor-#{&1.id}")
-      |> load()
 
     {:ok, socket}
   end
 
   @impl true
-  def handle_event("search", %{"q" => q}, socket) do
-    {:noreply, socket |> assign(q: String.trim(q)) |> load()}
+  def handle_params(params, _uri, socket) do
+    text = selector_param(params)
+
+    socket =
+      case Selector.parse(text) do
+        {:ok, selector} ->
+          # Keep the text as typed while it means the same.
+          text =
+            if Selector.parse(socket.assigns.selector_text) == {:ok, selector},
+              do: socket.assigns.selector_text,
+              else: Selector.to_string(selector)
+
+          assign(socket, selector: selector, selector_text: text, selector_error: nil)
+
+        {:error, error} ->
+          assign(socket, selector: nil, selector_text: text, selector_error: error)
+      end
+
+    {:noreply, socket |> assign_suggestions() |> load()}
+  end
+
+  @impl true
+  def handle_event("filter", %{"selector" => text}, socket) do
+    socket = assign(socket, selector_text: text)
+
+    case Selector.parse(text) do
+      {:ok, selector} ->
+        {:noreply, socket |> assign_suggestions() |> push_patch(to: filter_path(selector))}
+
+      # Shown inline; the list keeps showing the last valid selector's monitors.
+      {:error, error} ->
+        {:noreply, socket |> assign(selector_error: error) |> assign_suggestions()}
+    end
   end
 
   def handle_event("select", %{"id" => id}, socket) do
@@ -468,14 +515,19 @@ defmodule SentinelixWeb.MonitorLive.Index do
     latest = Monitoring.latest_result_per_monitor()
     monitors = Monitoring.list_monitors()
     maintenance = Maintenance.active_windows_for(Enum.map(monitors, & &1.id))
-    matching = Enum.filter(monitors, &matches_filter?(&1, socket.assigns))
-    matching_ids = MapSet.new(matching, & &1.id)
+
+    matching =
+      for monitor <- monitors,
+          status = display_status(monitor, latest[monitor.id]),
+          matches_filter?(monitor, status, socket.assigns),
+          do: {monitor, status}
+
+    matching_ids = MapSet.new(matching, fn {monitor, _status} -> monitor.id end)
 
     rows =
-      Enum.map(
-        matching,
-        &row(&1, display_status(&1, latest[&1.id]), Map.get(maintenance, &1.id, []))
-      )
+      Enum.map(matching, fn {monitor, status} ->
+        row(monitor, status, Map.get(maintenance, monitor.id, []))
+      end)
 
     socket
     |> assign(count: length(monitors), matching: matching_ids)
@@ -483,13 +535,16 @@ defmodule SentinelixWeb.MonitorLive.Index do
     |> stream(:monitors, rows, reset: true)
   end
 
-  # Whether a monitor matches the list's current filter (the search). The
-  # rows, "select all" and so the bulk actions follow it, so another filter
-  # (such as a label selector) only needs adding here.
-  defp matches_filter?(monitor, assigns), do: matches_search?(monitor, assigns.q)
+  # Whether a monitor with the given status matches the list's selector. The
+  # rows, "select all" and so the bulk actions follow it. An invalid
+  # selector (only from a hand-edited URL) matches nothing.
+  defp matches_filter?(_monitor, _status, %{selector: nil}), do: false
+
+  defp matches_filter?(monitor, status, %{selector: selector}),
+    do: Selector.matches?(selector, monitor, status: status)
 
   defp upsert(socket, monitor, status) do
-    if matches_filter?(monitor, socket.assigns) do
+    if matches_filter?(monitor, status, socket.assigns) do
       socket
       |> update(:matching, &MapSet.put(&1, monitor.id))
       |> stream_insert(:monitors, row(monitor, status))
@@ -582,13 +637,28 @@ defmodule SentinelixWeb.MonitorLive.Index do
     end
   end
 
-  # Suggestions for the bulk label input: the keys and labels in use.
+  # Suggestions for the bulk label input: the keys and labels in use; and
+  # the values to complete selectors with, including automatic labels.
   defp assign_label_options(socket) do
     options =
       Enum.flat_map(Monitoring.list_label_values(), fn {key, values} ->
         [key | for(value <- values, value != "", do: Labels.format({key, value}))]
       end)
 
-    assign(socket, label_options: options)
+    completion = completion_values(Monitoring.list_label_values(automatic: true))
+    assign(socket, label_options: options, completion: completion)
+  end
+
+  ## Selector
+
+  defp assign_suggestions(socket) do
+    suggestions = suggestions(socket.assigns.selector_text, socket.assigns.completion)
+    assign(socket, suggestions: suggestions)
+  end
+
+  defp filter_path(selector) do
+    if Selector.empty?(selector),
+      do: ~p"/monitors",
+      else: ~p"/monitors?#{[selector: Selector.to_string(selector)]}"
   end
 end

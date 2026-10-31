@@ -7,14 +7,24 @@ defmodule SentinelixWeb.DashboardLive do
   The monitor rows are a stream; the LiveView only keeps a small index
   (monitor + status per id) for the counters and filtering. A check result
   re-renders just the affected row.
+
+  ## Filtering
+
+  The monitors are filtered by a selector (`Sentinelix.Monitoring.Selector`)
+  kept in the URL (`?selector=env=prod,status=down`) and evaluated on the
+  index, with the status shown, so rows come and go as statuses change.
+  The status counters toggle a `status=` term, label badges add a term.
+  Links from before selectors keep working: `?q=` becomes `name~`, and
+  `?status=`, `?label=` and `?tag=` become terms too.
   """
 
   use SentinelixWeb, :live_view
 
   import SentinelixWeb.MonitorComponents
+  import SentinelixWeb.SelectorComponents
 
   alias Sentinelix.{Maintenance, Monitoring}
-  alias Sentinelix.Monitoring.{History, Labels}
+  alias Sentinelix.Monitoring.{History, Labels, Selector}
   alias Sentinelix.Stats
 
   @heartbeats 50
@@ -39,11 +49,13 @@ defmodule SentinelixWeb.DashboardLive do
         <.link
           :for={status <- @statuses}
           id={"counter-#{status}"}
-          patch={filter_path(@filters, status: toggle(@filters.status, status))}
+          patch={filter_path(toggle_status(@selector, status))}
           class={[
             "rounded-box border bg-base-100 p-4 transition hover:border-base-content/30",
-            @filters.status == status && "border-base-content/40 ring-1 ring-base-content/20",
-            @filters.status != status && "border-base-300"
+            if(status_selected?(@selector, status),
+              do: "border-base-content/40 ring-1 ring-base-content/20",
+              else: "border-base-300"
+            )
           ]}
         >
           <div class="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-base-content/60">
@@ -72,47 +84,28 @@ defmodule SentinelixWeb.DashboardLive do
       </div>
 
       <div :if={@total > 0} class="rounded-box border border-base-300 bg-base-100">
-        <.form
-          for={@filter_form}
+        <form
           id="filter-form"
           phx-change="filter"
           phx-submit="filter"
-          class="flex flex-col gap-2 border-b border-base-300 p-3 sm:flex-row sm:items-center"
+          class="flex items-start gap-2 border-b border-base-300 p-3"
         >
-          <label class="input input-sm w-full sm:max-w-xs">
-            <.icon name="hero-magnifying-glass" class="size-4 opacity-50" />
-            <input
-              type="search"
-              name="q"
-              value={@filters.q}
-              placeholder="Search monitors"
-              phx-debounce="200"
-              autocomplete="off"
-            />
-          </label>
-          <select name="status" class="select select-sm w-full sm:w-40" aria-label="Status">
-            {Phoenix.HTML.Form.options_for_select(
-              [{"All statuses", ""} | Enum.map(@statuses, &{status_label(&1), &1})],
-              @filters.status
-            )}
-          </select>
-          <select
-            :if={@labels != []}
-            name="label"
-            class="select select-sm w-full font-mono sm:w-48"
-            aria-label="Label"
-          >
-            {Phoenix.HTML.Form.options_for_select([{"All labels", ""} | @labels], @filters.label)}
-          </select>
+          <.selector_input
+            id="selector"
+            value={@selector_text}
+            error={@selector_error}
+            suggestions={@suggestions}
+            class="sm:max-w-xl"
+          />
           <.link
-            :if={@filters != %{q: "", status: nil, label: nil}}
+            :if={@selector_text != ""}
             patch={~p"/"}
             class="btn btn-ghost btn-sm"
             id="clear-filters"
           >
             Clear
           </.link>
-        </.form>
+        </form>
 
         <div id="monitors" phx-update="stream" class="divide-y divide-base-300">
           <div
@@ -150,7 +143,9 @@ defmodule SentinelixWeb.DashboardLive do
                   </span>
                   <.label_badges
                     labels={row.monitor.labels}
-                    patch={&filter_path(@filters, label: Labels.format(&1))}
+                    patch={
+                      &filter_path(Selector.add(@selector || %Selector{}, Selector.label_term(&1)))
+                    }
                   />
                   <span
                     :if={row.warning}
@@ -208,7 +203,7 @@ defmodule SentinelixWeb.DashboardLive do
     socket =
       socket
       |> assign(page_title: "Dashboard", statuses: @statuses, index: index)
-      |> assign(filters: %{q: "", status: nil, label: nil})
+      |> assign(selector: %Selector{}, selector_text: "", selector_error: nil, suggestions: [])
       |> stream_configure(:monitors, dom_id: &"monitor-#{&1.id}")
       |> assign_summary()
 
@@ -217,30 +212,36 @@ defmodule SentinelixWeb.DashboardLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    filters = %{
-      q: params |> Map.get("q", "") |> String.trim(),
-      status: parse_status(params["status"]),
-      # `tag` is the parameter of the tag filter that labels replaced.
-      label: parse_label(params["label"] || params["tag"])
-    }
-
     socket =
-      socket
-      |> assign(filters: filters, filter_form: to_form(params))
-      |> stream_rows(reset: true)
+      case params_selector(params) do
+        {:ok, selector} ->
+          # Keep the text as typed while it means the same.
+          text =
+            if Selector.parse(socket.assigns.selector_text) == {:ok, selector},
+              do: socket.assigns.selector_text,
+              else: Selector.to_string(selector)
 
-    {:noreply, socket}
+          assign(socket, selector: selector, selector_text: text, selector_error: nil)
+
+        {:error, text, error} ->
+          assign(socket, selector: nil, selector_text: text, selector_error: error)
+      end
+
+    {:noreply, socket |> assign_suggestions() |> stream_rows(reset: true)}
   end
 
   @impl true
-  def handle_event("filter", params, socket) do
-    filters = %{
-      q: String.trim(params["q"] || ""),
-      status: parse_status(params["status"]),
-      label: parse_label(params["label"])
-    }
+  def handle_event("filter", %{"selector" => text}, socket) do
+    socket = assign(socket, selector_text: text)
 
-    {:noreply, push_patch(socket, to: filter_path(filters, []))}
+    case Selector.parse(text) do
+      {:ok, selector} ->
+        {:noreply, socket |> assign_suggestions() |> push_patch(to: filter_path(selector))}
+
+      # Shown inline; the list keeps showing the last valid selector's monitors.
+      {:error, error} ->
+        {:noreply, socket |> assign(selector_error: error) |> assign_suggestions()}
+    end
   end
 
   @impl true
@@ -334,32 +335,31 @@ defmodule SentinelixWeb.DashboardLive do
   defp assign_summary(socket) do
     entries = Map.values(socket.assigns.index)
     counts = Map.merge(Map.new(@statuses, &{&1, 0}), Enum.frequencies_by(entries, & &1.status))
-
-    # The label filter's options: user labels, then automatic ones.
-    labels =
-      case {label_options(entries, :labels), label_options(entries, :auto_labels)} do
-        {[], []} -> []
-        {user, automatic} -> user ++ [{"Automatic", automatic}]
-      end
-
-    assign(socket, counts: counts, labels: labels, total: length(entries))
+    assign(socket, counts: counts, total: length(entries))
   end
 
-  defp label_options(entries, field) do
-    entries
-    |> Enum.flat_map(&Labels.to_list(Map.fetch!(&1.monitor, field)))
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> Enum.map(&Labels.format/1)
+  # Completions of the selector being typed, from the labels of the
+  # monitors in the index (user and automatic).
+  defp assign_suggestions(socket) do
+    values =
+      socket.assigns.index
+      |> Map.values()
+      |> Enum.map(& &1.monitor)
+      |> label_values()
+      |> completion_values()
+
+    assign(socket, suggestions: suggestions(socket.assigns.selector_text, values))
   end
+
+  # An invalid selector (only from a hand-edited URL) shows no monitors.
+  defp visible_entries(%{assigns: %{selector: nil}}), do: []
 
   defp visible_entries(socket) do
-    filters = socket.assigns.filters
-    label = filters.label && elem(Labels.parse(filters.label), 1)
+    selector = socket.assigns.selector
 
     socket.assigns.index
     |> Map.values()
-    |> Enum.filter(&matches?(&1, filters, label))
+    |> Enum.filter(&Selector.matches?(selector, &1.monitor, status: &1.status))
     |> Enum.sort_by(&{String.downcase(&1.monitor.name), &1.monitor.id})
   end
 
@@ -408,38 +408,67 @@ defmodule SentinelixWeb.DashboardLive do
 
   ## Filtering
 
-  defp matches?(entry, filters, label) do
-    (filters.status == nil or entry.status == filters.status) and
-      (label == nil or Labels.has?(entry.monitor.all_labels, label)) and
-      matches_search?(entry.monitor, filters.q)
-  end
+  # The selector of the URL (`?selector=`), plus the filters of older links
+  # translated to terms: `?q=` (search, now `name~`), `?status=`,
+  # `?label=` and `?tag=` (the filter that labels replaced).
+  defp params_selector(params) do
+    text = selector_param(params)
 
-  # The label filter, normalized ("Env = prod" -> "env=prod"), or nil.
-  defp parse_label(value) when is_binary(value) and value != "" do
-    case Labels.parse(value) do
-      {:ok, label} -> Labels.format(label)
-      {:error, _message} -> nil
+    case Selector.parse(text) do
+      {:ok, selector} -> {:ok, Enum.reduce(legacy_terms(params), selector, &Selector.add(&2, &1))}
+      {:error, error} -> {:error, text, error}
     end
   end
 
-  defp parse_label(_value), do: nil
-
-  defp parse_status(status) when is_binary(status) do
-    Enum.find(@statuses, &(Atom.to_string(&1) == status))
+  defp legacy_terms(params) do
+    search_term(params["q"]) ++
+      status_term(params["status"]) ++ label_term(params["label"] || params["tag"])
   end
 
-  defp parse_status(_status), do: nil
+  defp search_term(text) when is_binary(text) do
+    case String.trim(text) do
+      "" -> []
+      text -> [Selector.name_term(text)]
+    end
+  end
 
-  defp toggle(current, status) when current == status, do: nil
-  defp toggle(_current, status), do: status
+  defp search_term(_text), do: []
 
-  defp filter_path(filters, overrides) do
-    query =
-      filters
-      |> Map.merge(Map.new(overrides))
-      |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+  defp status_term(status) do
+    case Enum.find(@statuses, &(Atom.to_string(&1) == status)) do
+      nil -> []
+      status -> [Selector.status_term(status)]
+    end
+  end
 
-    ~p"/?#{query}"
+  defp label_term(label) when is_binary(label) do
+    case Labels.parse(label) do
+      {:ok, label} -> [Selector.label_term(label)]
+      {:error, _message} -> []
+    end
+  end
+
+  defp label_term(_label), do: []
+
+  defp status_selected?(nil, _status), do: false
+
+  defp status_selected?(selector, status),
+    do: Selector.member?(selector, Selector.status_term(status))
+
+  # A status counter selects that status, or unselects it again.
+  defp toggle_status(selector, status) do
+    selector = selector || %Selector{}
+
+    if status_selected?(selector, status),
+      do: Selector.delete(selector, Selector.status_term(status)),
+      else:
+        selector |> Selector.delete_key("status") |> Selector.add(Selector.status_term(status))
+  end
+
+  defp filter_path(selector) do
+    if Selector.empty?(selector),
+      do: ~p"/",
+      else: ~p"/?#{[selector: Selector.to_string(selector)]}"
   end
 
   defp heartbeats, do: @heartbeats
