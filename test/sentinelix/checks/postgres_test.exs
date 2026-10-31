@@ -175,6 +175,10 @@ defmodule Sentinelix.Checks.PostgresTest do
       end
     end
 
+    test "disables Nagle's algorithm" do
+      assert Postgres.connect_options(monitor())[:socket_options] == [nodelay: true]
+    end
+
     test "leaves the calling process killable" do
       assert {:up, _} = Postgres.run(monitor())
       assert Process.info(self(), :trap_exit) == {:trap_exit, false}
