@@ -32,6 +32,16 @@ defmodule Sentinelix.Monitoring.Monitor do
 
   Clones (`Sentinelix.Monitoring.clone_monitor/1`) start without secrets, so
   a blank value can't keep the secret of the source monitor.
+
+  ## Dependencies
+
+  `parent_id` is the monitor this one depends on (typically the ping
+  monitor of its host), cast from the `"parent_id"` param; at most one. While
+  the parent is down, this monitor's failures are recorded as `:unreachable`
+  and don't alert (see `Sentinelix.Monitoring.Worker`). Deleting the parent
+  detaches its children. The changeset rules out a monitor being its own
+  parent; `Sentinelix.Monitoring.create_monitor/1` and `update_monitor/2`
+  also reject indirect cycles.
   """
 
   use Ecto.Schema
@@ -66,6 +76,8 @@ defmodule Sentinelix.Monitoring.Monitor do
     embeds_one :settings, Settings, on_replace: :update
     field :secrets, EncryptedMap, default: %{}, redact: true, skip_default_validation: true
 
+    belongs_to :parent, __MODULE__
+    has_many :children, __MODULE__, foreign_key: :parent_id
     has_many :check_results, CheckResult
     has_many :incidents, Incident
 
@@ -104,7 +116,8 @@ defmodule Sentinelix.Monitoring.Monitor do
       :max_retries,
       :timeout_ms,
       :description,
-      :labels
+      :labels,
+      :parent_id
     ])
     |> validate_required([
       :name,
@@ -132,6 +145,7 @@ defmodule Sentinelix.Monitoring.Monitor do
     |> validate_number(:timeout_ms, greater_than_or_equal_to: @min_timeout_ms)
     |> validate_timeout_within_interval()
     |> validate_labels()
+    |> validate_parent_not_self()
     |> cast_settings()
     |> cast_secrets()
     |> put_auto_labels()
@@ -139,6 +153,11 @@ defmodule Sentinelix.Monitoring.Monitor do
     |> check_constraint(:retry_interval_seconds, name: :retry_interval_seconds_min)
     |> check_constraint(:max_retries, name: :max_retries_non_negative)
     |> check_constraint(:timeout_ms, name: :timeout_ms_positive)
+    |> check_constraint(:parent_id,
+      name: :parent_not_self,
+      message: "can't be the monitor itself"
+    )
+    |> foreign_key_constraint(:parent_id, message: "does not exist")
     |> unique_constraint(:settings,
       name: :monitors_push_token_index,
       message: "push token is already in use"
@@ -154,6 +173,16 @@ defmodule Sentinelix.Monitoring.Monitor do
     else
       changeset
     end
+  end
+
+  defp validate_parent_not_self(changeset) do
+    id = changeset.data.id
+
+    validate_change(changeset, :parent_id, fn :parent_id, parent_id ->
+      if id != nil and parent_id == id,
+        do: [parent_id: "can't be the monitor itself"],
+        else: []
+    end)
   end
 
   @doc """

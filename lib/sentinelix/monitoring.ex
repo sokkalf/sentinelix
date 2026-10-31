@@ -1,7 +1,8 @@
 defmodule Sentinelix.Monitoring do
   @moduledoc """
-  The Monitoring context: monitors, their check results (heartbeats) and
-  incidents.
+  The Monitoring context: monitors, their check results (heartbeats),
+  incidents and dependencies (a monitor's parent, see `suggest_parent/1`
+  and `Sentinelix.Monitoring.Worker`).
 
   ## PubSub events
 
@@ -57,6 +58,10 @@ defmodule Sentinelix.Monitoring do
   @monitors_topic "monitors"
   @status_changes_topic "status_changes"
   @default_results_limit 50
+  # Key of the advisory lock that serialises parent changes.
+  @parent_lock 4_801
+  @parent_types [:ping, :tcp]
+  @max_dependency_depth 1_000
 
   @type monitor_ref :: Monitor.t() | pos_integer()
 
@@ -236,14 +241,46 @@ defmodule Sentinelix.Monitoring do
 
   @doc """
   Updates a monitor.
+
+  A new parent (`parent_id`) that would make the monitor depend on itself,
+  directly or through other monitors, is rejected with an error on
+  `:parent_id`.
   """
   @spec update_monitor(Monitor.t(), map()) :: {:ok, Monitor.t()} | {:error, Ecto.Changeset.t()}
   def update_monitor(%Monitor{} = monitor, attrs) do
-    changeset = Monitor.changeset(monitor, attrs)
-
-    changeset
-    |> Repo.update(write_options(changeset))
+    monitor
+    |> Monitor.changeset(attrs)
+    |> update_with_parent()
     |> broadcast_monitor_change(:monitor_updated)
+  end
+
+  # A new parent is checked for cycles in a transaction holding an advisory
+  # lock, so two concurrent parent changes (a -> b and b -> a) can't form a
+  # cycle together. A new monitor has no children, so it can't be part of
+  # a cycle.
+  defp update_with_parent(%{valid?: true, changes: %{parent_id: parent_id}} = changeset)
+       when is_integer(parent_id) do
+    Repo.transaction(fn ->
+      Repo.query!("SELECT pg_advisory_xact_lock($1)", [@parent_lock])
+
+      changeset
+      |> validate_no_cycle()
+      |> Repo.update(write_options(changeset))
+      |> case do
+        {:ok, monitor} -> monitor
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  defp update_with_parent(changeset), do: Repo.update(changeset, write_options(changeset))
+
+  defp validate_no_cycle(changeset) do
+    parent_id = Ecto.Changeset.get_change(changeset, :parent_id)
+
+    if changeset.data.id in [parent_id | ancestor_ids(parent_id)],
+      do: Ecto.Changeset.add_error(changeset, :parent_id, "would create a dependency cycle"),
+      else: changeset
   end
 
   # Ecto logs queries (at debug level) with the parameters before they are
@@ -396,7 +433,8 @@ defmodule Sentinelix.Monitoring do
 
   @doc """
   Returns a new, unsaved monitor with the configuration of `source`: its
-  type, settings, schedule, description and labels, named "<name> (copy)".
+  type, settings, schedule, description, labels and parent, named "<name>
+  (copy)".
 
   Secrets (e.g. a PostgreSQL password) are not copied and have to be entered
   again; push monitors get a new push token. Notification channels,
@@ -415,6 +453,7 @@ defmodule Sentinelix.Monitoring do
       timeout_ms: source.timeout_ms,
       description: source.description,
       labels: source.labels,
+      parent_id: source.parent_id,
       settings: clone_settings(source.type, source.settings),
       secrets: %{}
     }
@@ -430,6 +469,98 @@ defmodule Sentinelix.Monitoring do
   defp clone_settings(_type, nil), do: nil
   defp clone_settings(:push, settings), do: %{settings | push_token: Settings.generate_token()}
   defp clone_settings(_type, settings), do: settings
+
+  ## Dependencies
+
+  @doc """
+  The ids of the monitors `monitor` depends on: its parent, the parent's
+  parent and so on, nearest first (one recursive query).
+  """
+  @spec ancestor_ids(monitor_ref() | nil) :: [pos_integer()]
+  def ancestor_ids(nil), do: []
+  def ancestor_ids(monitor), do: monitor |> monitor_id() |> dependency_chain(:up) |> tl()
+
+  @doc """
+  The ids of the monitors that depend on `monitor`, directly or through
+  other monitors, nearest first (one recursive query).
+  """
+  @spec descendant_ids(monitor_ref()) :: [pos_integer()]
+  def descendant_ids(monitor), do: monitor |> monitor_id() |> dependency_chain(:down) |> tl()
+
+  # The ids along the parent relation from `id` up (ancestors) or down
+  # (descendants), starting with `id` (if it exists), nearest first. UNION
+  # drops rows already found and the depth limit stops even on a cycle
+  # (which can't be created, but still).
+  defp dependency_chain(id, direction) do
+    start =
+      from(m in Monitor,
+        where: m.id == ^id,
+        select: %{id: m.id, parent_id: m.parent_id, depth: 0}
+      )
+
+    step =
+      case direction do
+        :up -> from(m in Monitor, join: c in "chain", on: m.id == c.parent_id)
+        :down -> from(m in Monitor, join: c in "chain", on: m.parent_id == c.id)
+      end
+      |> where([_m, c], c.depth < @max_dependency_depth)
+      |> select([m, c], %{id: m.id, parent_id: m.parent_id, depth: c.depth + 1})
+
+    case {"chain", Monitor}
+         |> recursive_ctes(true)
+         |> with_cte("chain", as: ^union(start, ^step))
+         |> group_by([c], c.id)
+         |> order_by([c], asc: min(c.depth), asc: c.id)
+         |> select([c], c.id)
+         |> Repo.all() do
+      [] -> [id]
+      ids -> ids
+    end
+  end
+
+  @doc """
+  The monitors that have `monitor` as their parent, ordered by name.
+  """
+  @spec list_children(monitor_ref()) :: [Monitor.t()]
+  def list_children(monitor) do
+    id = monitor_id(monitor)
+
+    Monitor
+    |> where([m], m.parent_id == ^id)
+    |> order_by([m], asc: fragment("lower(?)", m.name), asc: m.id)
+    |> Repo.all()
+  end
+
+  @doc """
+  Suggests a parent for `monitor` (saved or not): the ping or TCP monitor
+  with the same automatic `host` label (see
+  `Sentinelix.Monitoring.AutoLabels`), ping monitors first, then by name.
+
+  Only a more basic type than the monitor's own is suggested (ping before
+  TCP before all other types): ping monitors get no suggestion and TCP
+  monitors only ping monitors. Never suggests the monitor itself or a
+  monitor that depends on it. `nil` without a host or a candidate.
+  """
+  @spec suggest_parent(Monitor.t()) :: Monitor.t() | nil
+  def suggest_parent(%Monitor{auto_labels: %{"host" => host}} = monitor) when is_binary(host) do
+    case Enum.take_while(@parent_types, &(&1 != monitor.type)) do
+      [] -> nil
+      types -> suggest_parent(monitor, host, types)
+    end
+  end
+
+  def suggest_parent(%Monitor{}), do: nil
+
+  defp suggest_parent(monitor, host, types) do
+    excluded = if monitor.id, do: [monitor.id | descendant_ids(monitor)], else: []
+
+    Monitor
+    |> where([m], m.type in ^types and m.id not in ^excluded)
+    |> where([m], fragment("? @> ?", m.all_labels, ^%{"host" => host}))
+    |> order_by([m], asc: m.type != ^:ping, asc: fragment("lower(?)", m.name), asc: m.id)
+    |> limit(1)
+    |> Repo.one()
+  end
 
   ## Engine
 
