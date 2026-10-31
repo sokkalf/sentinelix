@@ -1,0 +1,10 @@
+#!/bin/sh
+# Exports monitors as YAML (without secrets):
+#
+#   bin/export_monitors [--selector SELECTOR] [--push-tokens] [--output FILE]
+#
+# Writes to standard output without --output. Only needs the database, the
+# server doesn't have to run. See Sentinelix.Release.export_monitors/1.
+set -eu
+
+exec "$(dirname -- "$0")/sentinelix" eval Sentinelix.Release.export_monitors "$@"

@@ -5,10 +5,14 @@ defmodule Sentinelix.Release do
       bin/migrate                     # runs Sentinelix.Release.migrate/0
       bin/sentinelix eval "Sentinelix.Release.rollback(Sentinelix.Repo, 20250101000000)"
       ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=... bin/create_admin
+      bin/export_monitors --output monitors.yaml   # runs export_monitors/1
+      bin/import_monitors monitors.yaml --dry-run  # runs import_monitors/2 in the server
 
   In the Docker image, `bin/migrate` runs before the server starts (see
   `rel/overlays/bin/start`).
   """
+  alias Sentinelix.Monitoring.CLI, as: MonitoringCLI
+
   @app :sentinelix
 
   @doc "Runs all pending migrations."
@@ -69,6 +73,56 @@ defmodule Sentinelix.Release do
 
       {:error, changeset} ->
         raise ArgumentError, "could not create admin: #{inspect(format_errors(changeset))}"
+    end
+  end
+
+  @doc """
+  Exports monitors as YAML – the release counterpart of `mix
+  sentinelix.export`, with the same options (`argv` defaults to the
+  arguments of `bin/export_monitors`):
+
+      bin/export_monitors --selector "env=prod" --output /data/prod.yaml
+
+  Runs in a new VM next to the server (it only needs the database). Raises
+  on invalid options, so the command exits with a non-zero status.
+  """
+  @spec export_monitors([String.t()]) :: :ok
+  def export_monitors(argv \\ System.argv()) do
+    load_app()
+
+    {:ok, result, _apps} =
+      Ecto.Migrator.with_repo(Sentinelix.Repo, fn _repo ->
+        MonitoringCLI.export(argv)
+      end)
+
+    case result do
+      {:ok, yaml, nil} -> IO.write(yaml)
+      {:ok, yaml, path} -> File.write!(path, yaml)
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
+  @doc """
+  Imports monitors from YAML – the release counterpart of `mix
+  sentinelix.import`, with the same arguments:
+
+      bin/import_monitors /data/monitors.yaml --dry-run
+      bin/import_monitors /data/monitors.yaml --report-missing
+
+  `bin/import_monitors` runs this **inside the running server** (`bin/sentinelix
+  rpc`), so the engine (re)starts the changed monitors right away. The
+  arguments and the caller's working directory (relative paths are resolved
+  against it) are passed Base64-encoded, so no quoting can go wrong. Prints
+  the report; raises when nothing was imported, so the command exits with a
+  non-zero status.
+  """
+  @spec import_monitors([String.t()], String.t()) :: :ok
+  def import_monitors(encoded_argv, encoded_cwd) do
+    argv = Enum.map(encoded_argv, &Base.decode64!/1)
+
+    case MonitoringCLI.import(argv, Base.decode64!(encoded_cwd)) do
+      {:ok, report} -> IO.puts(report)
+      {:error, report} -> raise ArgumentError, report
     end
   end
 

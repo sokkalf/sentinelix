@@ -69,6 +69,9 @@ defmodule SentinelixWeb.Router do
   scope "/", SentinelixWeb do
     pipe_through [:browser, :require_authenticated_user]
 
+    # YAML download of the monitors (before /monitors/:id).
+    get "/monitors/export", MonitorExportController, :show
+
     # Add new app LiveViews (dashboard, monitors, notifications, maintenance,
     # status page admin, settings, ...) inside this live_session. They get
     # `@current_scope` assigned; pass it on to `<Layouts.app current_scope={@current_scope}>`.
@@ -77,6 +80,7 @@ defmodule SentinelixWeb.Router do
       live "/", DashboardLive
       live "/monitors", MonitorLive.Index
       live "/monitors/new", MonitorLive.Form, :new
+      live "/monitors/import", MonitorLive.Import
       live "/monitors/:id", MonitorLive.Show
       live "/monitors/:id/edit", MonitorLive.Form, :edit
       live "/monitors/:id/clone", MonitorLive.Form, :clone
