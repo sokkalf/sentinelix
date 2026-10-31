@@ -29,6 +29,8 @@ public status pages.
   ntfy and Gotify, on down, recovery and certificate warnings.
 * **Maintenance windows** (one-off or recurring, time zone aware) that
   suppress alerts.
+* **Dependencies:** while a host's ping monitor is down, the monitors on
+  that host are *unreachable* and stay quiet instead of all alerting.
 * **Public status pages** at `/status/<slug>`.
 * **Login** through any OpenID Connect provider, with a local password
   login as break-glass fallback.
@@ -367,7 +369,7 @@ becomes `name~web`, `?status=down` `status=down`, and `?label=env=prod` or
 
 **Clone** on a monitor's page or in the monitor list opens the new-monitor
 form prefilled with the monitor's type, settings, schedule, description,
-labels and notification channels, named "<name> (copy)". Change what
+labels, parent and notification channels, named "<name> (copy)". Change what
 differs (e.g. the host and the `host` label) and create it; the original is
 not changed.
 
@@ -496,8 +498,8 @@ a monitor is deleted:
 
 | Metric | Meaning |
 | --- | --- |
-| `sentinelix_monitor_up` | 1 up, 0 down; absent while pending, in maintenance or disabled |
-| `sentinelix_monitor_status{status="up\|down\|pending\|maintenance"}` | 1 for the current status (enabled monitors) |
+| `sentinelix_monitor_up` | 1 up, 0 down; absent while pending, in maintenance, unreachable or disabled |
+| `sentinelix_monitor_status{status="up\|down\|pending\|maintenance\|unreachable"}` | 1 for the current status (enabled monitors) |
 | `sentinelix_monitor_enabled` | 1 enabled, 0 paused |
 | `sentinelix_monitor_warning` | 1 while a check reports a warning (e.g. certificate close to expiry) |
 | `sentinelix_monitor_response_time_ms` | response time of the latest check |
@@ -559,6 +561,42 @@ applies to selected monitors or to all monitors.
   by the next deadline check.
 * Monitors in an active window get a *Maintenance* badge on the dashboard and
   the monitor pages.
+
+## Dependencies
+
+When a host goes away, every monitor on it fails at once. Give those
+monitors a **parent** ("Depends on" in the monitor form), typically the
+host's ping monitor, and only the parent alerts:
+
+* While the parent is down, the child's failed checks are recorded as
+  **unreachable**: its status doesn't change, no incident is opened and no
+  notification is sent. The parent's incident covers the outage. Checks
+  that succeed are recorded as up as usual.
+* The parent counts as down as soon as one of its checks fails, while it is
+  still retrying. If a child notices first (its retries are used up before
+  the parent's next check), the parent is checked right away and the
+  child checks again once it has answered, so an outage of the host
+  doesn't page for the child just because the child was checked first.
+* When the parent is back, its children are re-checked right away. A child
+  that is still failing then goes through its retries and goes down (and
+  alerts) like any other monitor.
+* Dependencies chain: a child of an unreachable monitor is unreachable
+  too. A paused parent doesn't suppress anything. A monitor has at most one
+  parent, and cycles (also indirect ones) are rejected.
+* Unreachable time **counts as downtime** in uptime statistics and on
+  status pages: the service wasn't available, the parent only explains why
+  and keeps the alert quiet. Status pages show such monitors as
+  *Unreachable* and count them as an outage.
+* Push monitors with a parent record missed or failed pushes as
+  unreachable while the parent is down; they aren't re-checked when it
+  comes back, the next deadline decides.
+
+The form suggests a parent: the ping monitor (or, failing that, the TCP
+monitor) with the same automatic `host` label. TCP monitors are only
+suggested ping monitors, and ping monitors get no suggestion. The monitor
+page shows what a monitor depends on and what depends on it, and the
+dashboard counts unreachable monitors separately. Deleting a parent
+detaches its children; clones keep the parent of the original.
 
 ## Data retention
 
@@ -629,7 +667,7 @@ Sentinelix.Supervisor
 ├── Sentinelix.Notifications.Supervisor  dispatcher + delivery tasks
 ├── Sentinelix.Maintenance.Cache         active maintenance windows
 ├── Sentinelix.Monitoring.Supervisor     the monitoring engine
-│   ├── Registry                         workers by monitor id
+│   ├── Registry                         workers by monitor id (and their reachability)
 │   ├── Task.Supervisor                  check runs
 │   ├── DynamicSupervisor                one Monitoring.Worker per enabled monitor
 │   └── Monitoring.Manager               starts/stops workers on monitor changes
@@ -651,6 +689,10 @@ Sentinelix.Supervisor
   modules (`Sentinelix.Notifications.Providers.*`).
 * **Maintenance** – the engine asks `Sentinelix.Maintenance` after every
   check whether the monitor is in a window.
+* **Dependencies** – every worker publishes whether its latest check
+  succeeded in the engine's registry and broadcasts it to its children,
+  which read their parent's state there when a check of theirs fails (see
+  [Dependencies](#dependencies)).
 * **Stats** – `Sentinelix.Stats` answers uptime/response time queries from
   hourly rollups plus recent raw results.
 * **Web** – LiveViews for the dashboard, monitors, maintenance, status pages
