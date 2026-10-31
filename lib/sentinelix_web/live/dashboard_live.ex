@@ -13,7 +13,7 @@ defmodule SentinelixWeb.DashboardLive do
   ## The view
 
   What is shown is a `Sentinelix.Monitoring.View` kept in the URL
-  (`?selector=env=prod&group=service,site&sort=name`):
+  (`?selector=env=prod&group=service,site&sort=name&layout=grid`):
 
     * The **selector** (`Sentinelix.Monitoring.Selector`) is evaluated on
       the index, with the status shown, so rows come and go as statuses
@@ -23,6 +23,12 @@ defmodule SentinelixWeb.DashboardLive do
       with `Sentinelix.Monitoring.Grouping`. Each group has a header with
       its worst status, counts and 24h uptime.
     * **Sort** orders the groups: problems first (default) or by name.
+    * The **layout**: a list of rows (default), a grid of small tiles
+      (`SentinelixWeb.MonitorComponents.monitor_tile/1`, streamed by the
+      same `Rows` components, so grouping and collapsing work the same) or
+      a matrix of the two group-by keys
+      (`SentinelixWeb.DashboardLive.Matrix`). The matrix asks for the keys
+      while fewer than two are chosen.
 
   ## Expanded groups
 
@@ -43,11 +49,12 @@ defmodule SentinelixWeb.DashboardLive do
 
   alias Sentinelix.{Maintenance, Monitoring, Stats}
   alias Sentinelix.Monitoring.{Grouping, Selector, View}
-  alias SentinelixWeb.DashboardLive.Rows
+  alias SentinelixWeb.DashboardLive.{Matrix, Rows}
 
   @uptime_window {24, :hour}
   @statuses ~w(up down pending unreachable maintenance paused)a
   @max_overrides 500
+  @layouts [list: "List", grid: "Grid", matrix: "Matrix"]
 
   @impl true
   def render(assigns) do
@@ -115,18 +122,27 @@ defmodule SentinelixWeb.DashboardLive do
             suggestions={@suggestions}
             class="min-w-64 flex-1 sm:max-w-xl"
           />
+          <select id="layout" name="layout" aria-label="Layout" class="select select-sm w-auto">
+            <option
+              :for={{layout, label} <- @layouts}
+              value={layout}
+              selected={layout == @view.layout}
+            >
+              {label}
+            </option>
+          </select>
           <.group_by_select
             id="group-by-0"
-            label="Group by"
-            empty="No grouping"
+            label={if @view.layout == :matrix, do: "Rows by", else: "Group by"}
+            empty={if @view.layout == :matrix, do: "Rows by…", else: "No grouping"}
             value={Enum.at(@view.group_by, 0)}
             keys={@group_keys}
           />
           <.group_by_select
             :if={View.grouped?(@view)}
             id="group-by-1"
-            label="then by"
-            empty="No nesting"
+            label={if @view.layout == :matrix, do: "columns by", else: "then by"}
+            empty={if @view.layout == :matrix, do: "Columns by…", else: "No nesting"}
             value={Enum.at(@view.group_by, 1)}
             keys={@group_keys -- Enum.take(@view.group_by, 1)}
           />
@@ -134,7 +150,7 @@ defmodule SentinelixWeb.DashboardLive do
             :if={View.grouped?(@view)}
             id="sort"
             name="sort"
-            aria-label="Sort groups"
+            aria-label={if @view.layout == :matrix, do: "Sort rows", else: "Sort groups"}
             class="select select-sm w-auto"
           >
             <option value="problems" selected={@view.sort == :problems}>Problems first</option>
@@ -151,7 +167,7 @@ defmodule SentinelixWeb.DashboardLive do
         </form>
 
         <div
-          :if={View.grouped?(@view) and @groups != []}
+          :if={View.grouped?(@view) and @view.layout != :matrix and @groups != []}
           class="flex items-center justify-end gap-1 border-b border-base-300 px-3 py-1"
         >
           <button type="button" id="expand-all" phx-click="expand_all" class="btn btn-ghost btn-xs">
@@ -175,7 +191,39 @@ defmodule SentinelixWeb.DashboardLive do
           No monitors match your filters.
         </div>
 
-        <div :if={View.grouped?(@view)} id="groups" class="divide-y divide-base-300">
+        <div
+          :if={@view.layout == :matrix and not View.matrix?(@view)}
+          id="matrix-prompt"
+          class="px-6 py-10 text-center text-sm text-base-content/60"
+        >
+          <.icon name="hero-table-cells" class="mx-auto size-8 text-base-content/30" />
+          <p class="mt-2">
+            The matrix shows one label key as rows and another as columns, e.g.
+            <span class="font-mono">service</span>
+            × <span class="font-mono">site</span>.
+          </p>
+          <p>
+            Choose
+            <label for={if View.grouped?(@view), do: "group-by-1", else: "group-by-0"} class="link">
+              {if View.grouped?(@view), do: "a key for the columns", else: "a key for the rows"}
+            </label>
+            above.
+          </p>
+        </div>
+
+        <Matrix.matrix
+          :if={View.matrix?(@view) and @groups != []}
+          id="matrix"
+          rows={@groups}
+          columns={@columns}
+          view={@view}
+        />
+
+        <div
+          :if={View.grouped?(@view) and @view.layout != :matrix}
+          id="groups"
+          class="divide-y divide-base-300"
+        >
           <.group_section
             :for={group <- @groups}
             :key={group.id}
@@ -187,7 +235,7 @@ defmodule SentinelixWeb.DashboardLive do
 
         <.live_component
           :for={group <- @groups}
-          :if={not View.grouped?(@view)}
+          :if={not View.grouped?(@view) and @view.layout != :matrix}
           module={Rows}
           id="rows"
           dom_id="monitors"
@@ -359,9 +407,9 @@ defmodule SentinelixWeb.DashboardLive do
 
     socket =
       socket
-      |> assign(page_title: "Dashboard", statuses: @statuses, index: index)
+      |> assign(page_title: "Dashboard", statuses: @statuses, index: index, layouts: @layouts)
       |> assign(view: %View{}, selector_text: "", selector_error: nil, suggestions: [])
-      |> assign(overrides: restore_overrides(socket), groups: [])
+      |> assign(overrides: restore_overrides(socket), groups: [], columns: [])
       |> assign_summary()
 
     {:ok, socket}
@@ -391,7 +439,7 @@ defmodule SentinelixWeb.DashboardLive do
   def handle_event("filter", params, socket) do
     socket = assign(socket, selector_text: Map.get(params, "selector", ""))
 
-    case View.from_params(Map.take(params, ~w(selector group sort))) do
+    case View.from_params(Map.take(params, ~w(selector group sort layout))) do
       {:ok, view} ->
         {:noreply, socket |> assign_suggestions() |> push_patch(to: view_path(view))}
 
@@ -399,12 +447,11 @@ defmodule SentinelixWeb.DashboardLive do
       # monitors (regrouped when the grouping changed).
       {:error, view, _text, error} ->
         socket = socket |> assign(selector_error: error) |> assign_suggestions()
-        current = socket.assigns.view
+        current = %{view | selector: socket.assigns.view.selector}
 
-        if {view.group_by, view.sort} == {current.group_by, current.sort},
+        if current == socket.assigns.view,
           do: {:noreply, socket},
-          else:
-            {:noreply, push_patch(socket, to: view_path(%{view | selector: current.selector}))}
+          else: {:noreply, push_patch(socket, to: view_path(current))}
     end
   end
 
@@ -549,8 +596,9 @@ defmodule SentinelixWeb.DashboardLive do
   end
 
   # The groups of the monitors the selector shows (one group of all of
-  # them without grouping); the Rows components stream what changed. An
-  # invalid selector (only from a hand-edited URL) shows no monitors.
+  # them without grouping); the Rows components stream what changed. In a
+  # matrix the groups are its rows, with its columns. An invalid selector
+  # (only from a hand-edited URL) shows no monitors.
   defp assign_groups(socket) do
     %{view: view, index: index} = socket.assigns
 
@@ -559,7 +607,14 @@ defmodule SentinelixWeb.DashboardLive do
         do: index |> Map.values() |> Enum.filter(&visible?(view.selector, &1)),
         else: []
 
-    assign(socket, groups: Grouping.group(entries, view.group_by, sort: view.sort))
+    if View.matrix?(view) do
+      %{rows: rows, columns: columns} =
+        Grouping.matrix(entries, view.group_by, sort: view.sort)
+
+      assign(socket, groups: rows, columns: columns)
+    else
+      assign(socket, groups: Grouping.group(entries, view.group_by, sort: view.sort), columns: [])
+    end
   end
 
   defp visible?(selector, entry),

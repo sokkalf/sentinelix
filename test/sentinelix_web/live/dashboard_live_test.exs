@@ -453,6 +453,173 @@ defmodule SentinelixWeb.DashboardLiveTest do
     end
   end
 
+  describe "layouts" do
+    setup :register_and_log_in_user
+
+    defp cell(id), do: "#matrix a[data-cell='#{id}']"
+
+    test "the layout is chosen in the form and kept in the URL", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert has_element?(view, "#layout option[value=list][selected]")
+
+      view |> form("#filter-form", %{selector: "env", layout: "grid"}) |> render_change()
+      assert_patch(view, ~p"/?#{[selector: "env", layout: "grid"]}")
+      assert has_element?(view, "#layout option[value=grid][selected]")
+      assert has_element?(view, "#monitors a#monitor-#{web.id}[data-status=pending]")
+
+      # Counters keep the layout; switching while the selector is invalid.
+      view |> element("#counter-pending") |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "env, status=pending", layout: "grid"]}")
+
+      view
+      |> form("#filter-form", %{selector: "env=", layout: "list"})
+      |> render_change()
+
+      assert_patch(view, ~p"/?#{[selector: "env, status=pending"]}")
+      assert has_element?(view, "#monitors #heartbeats-#{web.id}")
+    end
+
+    test "grid: a tile per monitor with its status, details and live updates", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      db = monitor_fixture(:tcp, %{name: "Database", enabled: false})
+      check_result_fixture(web, %{status: :up, response_time_ms: 42})
+
+      {:ok, view, _html} = live(conn, ~p"/?layout=grid")
+
+      tile = "#monitors a#monitor-#{web.id}"
+      assert has_element?(view, tile <> "[href='/monitors/#{web.id}'][data-status=up]", "Web")
+      assert has_element?(view, tile <> " .sr-only", "Up")
+      assert has_element?(view, tile <> " .hero-check-circle-mini")
+      assert has_element?(view, tile <> "[aria-describedby='monitor-#{web.id}-details']")
+      assert has_element?(view, "#monitor-#{web.id}-details[role=tooltip]", "42 ms")
+      assert has_element?(view, "#monitor-#{web.id}-details", "Uptime (24h): 100%")
+      assert has_element?(view, "#monitor-#{db.id}[data-status=paused]", "Paused")
+      refute has_element?(view, "[id^=heartbeats-]")
+
+      check_result_fixture(web, %{status: :down, response_time_ms: 503})
+      assert has_element?(view, tile <> "[data-status=down] .hero-x-circle-mini")
+      assert has_element?(view, "#monitor-#{web.id}-details", "503 ms")
+      assert has_element?(view, "#monitor-#{web.id}-details", "Uptime (24h): 50.00%")
+    end
+
+    test "grid: grouped and collapsed as in the list", %{conn: conn} do
+      web = monitor_fixture(:http, %{name: "Web", labels: %{"env" => "prod"}})
+      dev = monitor_fixture(:http, %{name: "Dev", labels: %{"env" => "dev"}})
+      check_result_fixture(web, %{status: :up})
+      check_result_fixture(dev, %{status: :down})
+
+      {:ok, view, _html} = live(conn, ~p"/?group=env&layout=grid")
+      assert has_element?(view, group("env=dev") <> " a#monitor-#{dev.id}[data-status=down]")
+      refute has_element?(view, "#monitor-#{web.id}")
+
+      view |> element(header("env=prod") <> " button") |> render_click()
+      assert has_element?(view, group("env=prod") <> " a#monitor-#{web.id}[data-status=up]")
+    end
+
+    test "matrix: asks for two keys", %{conn: conn} do
+      monitor_fixture(:http, %{name: "Web", labels: %{"service" => "api", "site" => "oslo"}})
+
+      {:ok, view, _html} = live(conn, ~p"/?layout=matrix")
+      assert has_element?(view, "#matrix-prompt label[for=group-by-0]", "rows")
+      assert has_element?(view, "#group-by-0 option[value='']", "Rows by…")
+      refute has_element?(view, "#matrix")
+      refute has_element?(view, "[id^=monitor-]")
+
+      view
+      |> form("#filter-form", %{layout: "matrix", group: ["service"]})
+      |> render_change()
+
+      assert_patch(view, ~p"/?#{[group: "service", layout: "matrix"]}")
+      assert has_element?(view, "#matrix-prompt label[for=group-by-1]", "columns")
+      assert has_element?(view, "#group-by-1 option[value=site]", "columns by site")
+      refute has_element?(view, "#groups")
+      refute has_element?(view, "#expand-all")
+
+      view
+      |> form("#filter-form", %{layout: "matrix", group: ["service", "site"]})
+      |> render_change()
+
+      assert_patch(view, ~p"/?#{[group: "service,site", layout: "matrix"]}")
+      refute has_element?(view, "#matrix-prompt")
+      assert has_element?(view, "#matrix")
+    end
+
+    test "matrix: worst status and count per cell, live, cells link to their monitors",
+         %{conn: conn} do
+      a = monitor_fixture(:http, %{name: "A", labels: %{"service" => "api", "site" => "oslo"}})
+      b = monitor_fixture(:http, %{name: "B", labels: %{"service" => "api", "site" => "oslo"}})
+
+      c =
+        monitor_fixture(:http, %{name: "C", labels: %{"service" => "api", "site" => "helsinki"}})
+
+      d = monitor_fixture(:http, %{name: "D", labels: %{"service" => "web", "site" => "bergen"}})
+      e = monitor_fixture(:http, %{name: "E", labels: %{"site" => "oslo"}})
+      Enum.each([a, b, c, d, e], &check_result_fixture(&1, %{status: :up}))
+      check_result_fixture(b, %{status: :down})
+
+      {:ok, view, _html} = live(conn, ~p"/?group=service,site&layout=matrix")
+
+      columns =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#matrix thead th[data-column]")
+        |> LazyHTML.attribute("data-column")
+
+      assert columns == ["site=bergen", "site=helsinki", "site=oslo"]
+
+      assert has_element?(view, "#matrix tbody tr:first-child[data-row='service=api']")
+      assert has_element?(view, cell("service=api,site=oslo") <> "[data-status=down]", "1/2")
+      assert has_element?(view, cell("service=api,site=oslo") <> " .hero-x-circle-mini")
+      assert has_element?(view, cell("service=api,site=oslo") <> " .sr-only", "api, oslo: Down")
+      assert has_element?(view, cell("service=api,site=oslo") <> " [role=tooltip]", "1 down")
+      assert has_element?(view, cell("service=api,site=helsinki") <> "[data-status=up]", "1")
+      assert has_element?(view, cell("!service,site=oslo"), "1")
+
+      # Empty cells: web has no monitors in oslo or helsinki.
+      assert has_element?(view, "#matrix tr[data-row='service=web'] [data-empty]", "No monitors")
+      refute has_element?(view, cell("service=web,site=oslo"))
+      refute has_element?(view, "[id^=monitor-]")
+
+      check_result_fixture(b, %{status: :up})
+      assert has_element?(view, cell("service=api,site=oslo") <> "[data-status=up]", "2")
+
+      # A cell shows its monitors in the list.
+      view |> element(cell("service=api,site=oslo")) |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "service=api, site=oslo"]}")
+      assert has_element?(view, "#monitors #monitor-#{a.id}")
+      assert has_element?(view, "#monitors #monitor-#{b.id}")
+      refute has_element?(view, "#monitor-#{e.id}")
+
+      # Headers too, and "(none)" adds a !key term to the selector.
+      {:ok, view, _html} = live(conn, ~p"/?group=service,site&layout=matrix")
+      view |> element(cell("!service,site=oslo")) |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "!service, site=oslo"]}")
+      assert has_element?(view, "#monitor-#{e.id}")
+      refute has_element?(view, "#monitor-#{a.id}")
+
+      {:ok, view, _html} = live(conn, ~p"/?group=service,site&layout=matrix")
+      view |> element("#matrix th[data-column='site=helsinki'] a") |> render_click()
+      assert_patch(view, ~p"/?#{[selector: "site=helsinki"]}")
+    end
+
+    test "many monitors fit a grid", %{conn: conn} do
+      for i <- 1..200, do: monitor_fixture(:http, %{name: "Monitor #{i}"})
+
+      {:ok, view, _html} = live(conn, ~p"/?layout=grid")
+
+      tiles =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#monitors > a[data-status]")
+
+      assert Enum.count(tiles) == 200
+    end
+  end
+
   defp row_count(view) do
     view
     |> render()
