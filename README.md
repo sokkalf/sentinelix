@@ -19,6 +19,8 @@ public status pages.
   (LiveView, updates without reloading).
 * **Labels:** key/value labels on monitors (`env=prod`, `site=oslo`) to
   group, filter and search them.
+* **Cloning:** "same checks as db1, but for db2" – copy a monitor's
+  settings, labels and notification channels into a new one.
 * **Notifications** by email, generic webhook, Slack, Discord, Telegram,
   ntfy and Gotify, on down, recovery and certificate warnings.
 * **Maintenance windows** (one-off or recurring, time zone aware) that
@@ -286,6 +288,22 @@ Tags of earlier versions became labels without a value, normalized to the
 key rules (`Web Server` became `web-server`); tags written as `key=value`
 kept their value. Dashboard links with `?tag=` keep working.
 
+## Cloning monitors
+
+**Clone** on a monitor's page or in the monitor list opens the new-monitor
+form prefilled with the monitor's type, settings, schedule, description,
+labels and notification channels, named "<name> (copy)". Change what
+differs (e.g. the host and the `host` label) and create it; the original is
+not changed.
+
+* **Secrets are not copied.** A PostgreSQL monitor's password has to be
+  entered again: the clone can't be saved without it if the original has
+  one.
+* Push monitors get a new push token (the original's keeps working for the
+  original).
+* Maintenance windows and status pages are not copied; add the new monitor
+  to them separately.
+
 ## PostgreSQL monitors
 
 A PostgreSQL monitor logs in to a server, runs a query and optionally checks
@@ -298,7 +316,7 @@ its result and the replication status – a step past "the port is open".
   check opens one fresh connection and closes it afterwards, so a working
   login is part of what is checked. The password is encrypted in the
   database like notification channel secrets and never shown again (leave
-  the field blank to keep it).
+  the field blank to keep it). [Clones](#cloning-monitors) don't copy it.
 * **Query:** a single statement, by default `SELECT 1`. It runs in a
   **read-only transaction** (`default_transaction_read_only`), bounded by a
   `statement_timeout` of the monitor's timeout, so a mistyped `DELETE` fails

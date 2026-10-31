@@ -1,8 +1,13 @@
 defmodule SentinelixWeb.MonitorLive.Form do
   @moduledoc """
-  Create and edit monitors. The type-specific settings (an embed) are
+  Create, edit and clone monitors. The type-specific settings (an embed) are
   rendered with `inputs_for` from `Sentinelix.Monitoring.Settings.fields_for/1`
   and re-rendered when the type changes.
+
+  Cloning (`:clone`) creates a new monitor from a form prefilled by
+  `Sentinelix.Monitoring.clone_monitor/1` and the source's notification
+  channels. Secrets are not copied: the secrets the source has must be
+  entered again before the clone can be saved.
   """
 
   use SentinelixWeb, :live_view
@@ -25,9 +30,14 @@ defmodule SentinelixWeb.MonitorLive.Form do
         <.header>
           {@page_title}
           <:subtitle>
-            {if @live_action == :new,
-              do: "Choose what to monitor and how often to check it.",
-              else: @monitor.name}
+            <%= case @live_action do %>
+              <% :new -> %>
+                Choose what to monitor and how often to check it.
+              <% :clone -> %>
+                A copy of {@source.name}. Maintenance windows and status pages are not copied.
+              <% :edit -> %>
+                {@monitor.name}
+            <% end %>
           </:subtitle>
         </.header>
       </div>
@@ -79,6 +89,8 @@ defmodule SentinelixWeb.MonitorLive.Form do
                       name={name}
                       stored={@stored_secrets[to_string(name)]}
                       value={@params["secrets"][to_string(name)]}
+                      reenter={@type == @monitor.type and to_string(name) in @reenter_secrets}
+                      errors={@secret_errors[to_string(name)] || []}
                     />
                     <.settings_field
                       :if={name not in @secret_fields}
@@ -232,7 +244,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
               class="btn btn-primary flex-1"
             >
               <.icon name="hero-check" class="size-4" />
-              {if @live_action == :new, do: "Create monitor", else: "Save changes"}
+              {if @live_action == :edit, do: "Save changes", else: "Create monitor"}
             </.button>
             <.link navigate={@return_to} class="btn btn-ghost">Cancel</.link>
           </div>
@@ -286,6 +298,8 @@ defmodule SentinelixWeb.MonitorLive.Form do
   attr :name, :atom, required: true
   attr :stored, :boolean, default: false, doc: "whether a value is stored"
   attr :value, :string, default: nil, doc: "the value entered in this form"
+  attr :reenter, :boolean, default: false, doc: "whether it must be entered again (clones)"
+  attr :errors, :list, default: []
 
   # Secrets are write-only: the stored value is never rendered, a blank
   # input keeps it (see Monitor). Only what was typed in this form is
@@ -299,10 +313,25 @@ defmodule SentinelixWeb.MonitorLive.Form do
         name={"monitor[secrets][#{@name}]"}
         value={@value}
         label={Phoenix.Naming.humanize(@name)}
-        placeholder={if @stored, do: "•••••••• (unchanged)", else: "Not set"}
+        placeholder={
+          cond do
+            @stored -> "•••••••• (unchanged)"
+            @reenter -> "Enter it again"
+            true -> "Not set"
+          end
+        }
         autocomplete="new-password"
         phx-debounce="300"
+        errors={@errors}
       />
+      <p
+        :if={@reenter}
+        id={"monitor_secrets_reenter_#{@name}"}
+        class="-mt-1 mb-2 flex items-center gap-1 text-xs text-warning"
+      >
+        <.icon name="hero-key-micro" class="size-3" />
+        Not copied from the source monitor: enter the {String.downcase(Phoenix.Naming.humanize(@name))} again.
+      </p>
       <label :if={@stored} class="-mt-1 mb-2 flex items-center gap-2 text-xs text-base-content/60">
         <input
           type="checkbox"
@@ -703,7 +732,9 @@ defmodule SentinelixWeb.MonitorLive.Form do
     socket =
       assign(socket,
         channels: Notifications.list_channels(),
-        label_values: Monitoring.list_label_values()
+        label_values: Monitoring.list_label_values(),
+        source: nil,
+        reenter_secrets: []
       )
 
     {:ok, apply_action(socket, socket.assigns.live_action, params)}
@@ -733,6 +764,29 @@ defmodule SentinelixWeb.MonitorLive.Form do
           return_to: ~p"/monitors/#{monitor}"
         )
         |> assign(channel_ids: Notifications.monitor_channel_ids(monitor))
+        |> assign_form(Monitoring.change_monitor(monitor), %{})
+    end
+  end
+
+  defp apply_action(socket, :clone, %{"id" => id}) do
+    case parse_id(id) && Monitoring.get_monitor(parse_id(id)) do
+      nil ->
+        socket
+        |> put_flash(:error, "Monitor not found.")
+        |> push_navigate(to: ~p"/monitors")
+
+      source ->
+        monitor = Monitoring.clone_monitor(source)
+
+        socket
+        |> assign(
+          page_title: "Clone monitor",
+          monitor: monitor,
+          source: source,
+          return_to: ~p"/monitors/#{source}",
+          reenter_secrets: for({key, value} <- source.secrets || %{}, value, do: key)
+        )
+        |> assign(channel_ids: Notifications.monitor_channel_ids(source))
         |> assign_form(Monitoring.change_monitor(monitor), %{})
     end
   end
@@ -790,18 +844,19 @@ defmodule SentinelixWeb.MonitorLive.Form do
     end)
   end
 
-  defp save(socket, :new, params) do
-    case Monitoring.create_monitor(params) do
-      {:ok, monitor} ->
-        :ok = Notifications.put_monitor_channels(monitor, socket.assigns.channel_ids)
+  # A clone is created like a new monitor (from the params only, nothing of
+  # the source is kept by the changeset), once the secrets to re-enter are.
+  defp save(socket, action, params) when action in [:new, :clone] do
+    with {:ok, params} <- reentered_secrets(socket, params),
+         {:ok, monitor} <- Monitoring.create_monitor(params) do
+      :ok = Notifications.put_monitor_channels(monitor, socket.assigns.channel_ids)
 
-        {:noreply,
-         socket
-         |> put_flash(:info, "Monitor created.")
-         |> push_navigate(to: ~p"/monitors/#{monitor}")}
-
-      {:error, changeset} ->
-        {:noreply, assign_form(socket, changeset, params)}
+      {:noreply,
+       socket
+       |> put_flash(:info, "Monitor created.")
+       |> push_navigate(to: ~p"/monitors/#{monitor}")}
+    else
+      {:error, changeset} -> {:noreply, assign_form(socket, changeset, params)}
     end
   end
 
@@ -817,6 +872,38 @@ defmodule SentinelixWeb.MonitorLive.Form do
 
       {:error, changeset} ->
         {:noreply, assign_form(socket, changeset, params)}
+    end
+  end
+
+  defp reentered_secrets(socket, params) do
+    changeset = Monitoring.change_monitor(socket.assigns.monitor, params)
+
+    case missing_secrets(socket.assigns, Ecto.Changeset.get_field(changeset, :type), params) do
+      [] -> {:ok, params}
+      _missing -> {:error, %{changeset | action: :insert}}
+    end
+  end
+
+  # The secrets of a clone's source that haven't been entered again. They
+  # only apply while the type is the source's.
+  defp missing_secrets(%{reenter_secrets: keys, monitor: monitor}, type, params) do
+    entered = if is_map(params["secrets"]), do: params["secrets"], else: %{}
+
+    if type == monitor.type,
+      do: Enum.reject(keys, &(is_binary(entered[&1]) and entered[&1] != "")),
+      else: []
+  end
+
+  # Errors once the form has been validated, but not for an input that
+  # hasn't been used yet (LiveView sends `_unused_<name>` for those).
+  defp secret_errors(socket, changeset, type, params) do
+    if changeset.action do
+      socket.assigns
+      |> missing_secrets(type, params)
+      |> Enum.reject(&Map.has_key?(params["secrets"] || %{}, "_unused_" <> &1))
+      |> Map.new(&{&1, ["can't be blank"]})
+    else
+      %{}
     end
   end
 
@@ -859,7 +946,8 @@ defmodule SentinelixWeb.MonitorLive.Form do
       label_rows: label_rows(params, changeset),
       label_errors: Enum.map(form[:labels].errors, &translate_error/1),
       secret_fields: Enum.map(Monitor.secret_fields(type), &String.to_existing_atom/1),
-      stored_secrets: Map.new(stored, fn {key, value} -> {key, value != nil} end)
+      stored_secrets: Map.new(stored, fn {key, value} -> {key, value != nil} end),
+      secret_errors: secret_errors(socket, changeset, type, params)
     )
   end
 

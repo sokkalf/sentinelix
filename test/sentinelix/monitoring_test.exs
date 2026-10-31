@@ -328,6 +328,73 @@ defmodule Sentinelix.MonitoringTest do
     end
   end
 
+  describe "clone_monitor/1" do
+    test "copies the configuration under a new name" do
+      source =
+        monitor_fixture(:tcp, %{
+          name: "db1",
+          enabled: false,
+          interval_seconds: 120,
+          retry_interval_seconds: 30,
+          max_retries: 2,
+          timeout_ms: 5_000,
+          description: "Primary",
+          labels: %{"env" => "prod", "host" => "db1"},
+          settings: %{host: "db1.example.com", port: 5432}
+        })
+
+      clone = Monitoring.clone_monitor(source)
+
+      assert %Monitor{
+               id: nil,
+               name: "db1 (copy)",
+               type: :tcp,
+               enabled: false,
+               interval_seconds: 120,
+               retry_interval_seconds: 30,
+               max_retries: 2,
+               timeout_ms: 5_000,
+               description: "Primary",
+               labels: %{"env" => "prod", "host" => "db1"},
+               settings: %Settings{host: "db1.example.com", port: 5432}
+             } = clone
+
+      assert {:ok, saved} = Repo.insert(Monitoring.change_monitor(clone))
+      assert saved.id != source.id
+    end
+
+    test "keeps long names within the limit" do
+      source = monitor_fixture(:http, %{name: String.duplicate("a", 255)})
+      clone = Monitoring.clone_monitor(source)
+
+      assert String.length(clone.name) == 255
+      assert String.ends_with?(clone.name, "a (copy)")
+    end
+
+    test "doesn't copy secrets, a blank value doesn't keep the source's" do
+      source = monitor_fixture(:postgres, %{secrets: %{password: "source-s3cret"}})
+      clone = Monitoring.clone_monitor(source)
+
+      assert clone.secrets == %{}
+
+      changeset = Monitoring.change_monitor(clone, %{"secrets" => %{"password" => ""}})
+      assert Ecto.Changeset.get_field(changeset, :secrets) == %{}
+
+      {:ok, saved} = Repo.insert(changeset)
+      assert Monitoring.get_monitor!(saved.id).secrets == %{}
+      assert Monitoring.get_monitor!(source.id).secrets == %{"password" => "source-s3cret"}
+    end
+
+    test "push monitors get a new push token" do
+      source = monitor_fixture(:push)
+      clone = Monitoring.clone_monitor(source)
+
+      assert clone.settings.push_token != source.settings.push_token
+      assert clone.settings.push_grace_seconds == source.settings.push_grace_seconds
+      assert {:ok, _saved} = Repo.insert(Monitoring.change_monitor(clone))
+    end
+  end
+
   describe "get_monitor_by_push_token/1" do
     test "finds push monitors by token" do
       monitor = monitor_fixture(:push)

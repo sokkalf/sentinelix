@@ -18,6 +18,9 @@ defmodule Sentinelix.Monitoring.Monitor do
     * `"clear_<key>" => "true"` removes it,
     * secrets that don't apply to the monitor's type are dropped, e.g. when
       the type changes.
+
+  Clones (`Sentinelix.Monitoring.clone_monitor/1`) start without secrets, so
+  a blank value can't keep the secret of the source monitor.
   """
 
   use Ecto.Schema

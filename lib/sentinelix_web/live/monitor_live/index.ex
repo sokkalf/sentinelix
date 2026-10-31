@@ -1,7 +1,7 @@
 defmodule SentinelixWeb.MonitorLive.Index do
   @moduledoc """
   Monitor management: all monitors in a table with their configuration and
-  actions (pause/resume, edit, delete).
+  actions (pause/resume, edit, clone, delete).
   """
 
   use SentinelixWeb, :live_view
@@ -105,6 +105,14 @@ defmodule SentinelixWeb.MonitorLive.Index do
                       title="Edit"
                     >
                       <.icon name="hero-pencil-square" class="size-4" />
+                    </.link>
+                    <.link
+                      navigate={~p"/monitors/#{row.monitor.id}/clone"}
+                      class="btn btn-ghost btn-xs"
+                      title="Clone"
+                      id={"clone-#{row.monitor.id}"}
+                    >
+                      <.icon name="hero-document-duplicate" class="size-4" />
                     </.link>
                     <button
                       type="button"

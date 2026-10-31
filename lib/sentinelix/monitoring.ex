@@ -36,7 +36,7 @@ defmodule Sentinelix.Monitoring do
   import Ecto.Query, warn: false
 
   alias Phoenix.PubSub
-  alias Sentinelix.Monitoring.{CheckResult, Incident, Labels, Monitor, Worker}
+  alias Sentinelix.Monitoring.{CheckResult, Incident, Labels, Monitor, Settings, Worker}
   alias Sentinelix.Repo
 
   @pubsub Sentinelix.PubSub
@@ -248,6 +248,43 @@ defmodule Sentinelix.Monitoring do
   def change_monitor(%Monitor{} = monitor, attrs \\ %{}) do
     Monitor.changeset(monitor, attrs)
   end
+
+  @doc """
+  Returns a new, unsaved monitor with the configuration of `source`: its
+  type, settings, schedule, description and labels, named "<name> (copy)".
+
+  Secrets (e.g. a PostgreSQL password) are not copied and have to be entered
+  again; push monitors get a new push token. Notification channels,
+  maintenance windows and status pages are memberships of the source, not
+  part of the monitor.
+  """
+  @spec clone_monitor(Monitor.t()) :: Monitor.t()
+  def clone_monitor(%Monitor{} = source) do
+    %Monitor{
+      name: copy_name(source.name),
+      type: source.type,
+      enabled: source.enabled,
+      interval_seconds: source.interval_seconds,
+      retry_interval_seconds: source.retry_interval_seconds,
+      max_retries: source.max_retries,
+      timeout_ms: source.timeout_ms,
+      description: source.description,
+      labels: source.labels,
+      settings: clone_settings(source.type, source.settings),
+      secrets: %{}
+    }
+  end
+
+  @copy_suffix " (copy)"
+  @max_name_length 255
+
+  defp copy_name(name) do
+    String.slice(name || "", 0, @max_name_length - String.length(@copy_suffix)) <> @copy_suffix
+  end
+
+  defp clone_settings(_type, nil), do: nil
+  defp clone_settings(:push, settings), do: %{settings | push_token: Settings.generate_token()}
+  defp clone_settings(_type, settings), do: settings
 
   ## Engine
 
