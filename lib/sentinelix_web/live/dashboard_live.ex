@@ -5,7 +5,8 @@ defmodule SentinelixWeb.DashboardLive do
   latest response time. Updates in real time.
 
   The LiveView keeps a small index (monitor, status and 24h check counts
-  per id) for the counters, filtering and grouping. The rows are streams
+  per id, `SentinelixWeb.MonitorIndex`) for the counters, filtering and
+  grouping. The rows are streams
   in `SentinelixWeb.DashboardLive.Rows` components, one per group, which
   only re-render the rows that changed: a check result re-renders one row
   and the headers of its groups.
@@ -61,12 +62,12 @@ defmodule SentinelixWeb.DashboardLive do
   import SentinelixWeb.SelectorComponents
   import SentinelixWeb.SavedViewComponents
 
-  alias Sentinelix.{Maintenance, Monitoring, SavedViews, Stats}
+  alias Sentinelix.SavedViews
   alias Sentinelix.Monitoring.{Grouping, Selector, View}
   alias Sentinelix.SavedViews.SavedView
   alias SentinelixWeb.DashboardLive.{Matrix, Rows}
+  alias SentinelixWeb.MonitorIndex
 
-  @uptime_window {24, :hour}
   @statuses ~w(up down pending unreachable maintenance paused)a
   @max_overrides 500
   @layouts [list: "List", grid: "Grid", matrix: "Matrix"]
@@ -511,31 +512,8 @@ defmodule SentinelixWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    monitors = Monitoring.list_monitors()
-
-    if connected?(socket) do
-      Monitoring.subscribe_monitors()
-      Enum.each(monitors, &Monitoring.subscribe_monitor/1)
-      Maintenance.subscribe()
-    end
-
-    ids = Enum.map(monitors, & &1.id)
-    latest = Monitoring.latest_result_per_monitor()
-    maintenance = Maintenance.active_windows_for(ids)
-    checks = Stats.summaries(ids, @uptime_window)
-
-    index =
-      Map.new(monitors, fn monitor ->
-        entry =
-          index_entry(
-            monitor,
-            Map.get(latest, monitor.id),
-            Map.get(maintenance, monitor.id, []),
-            checks |> Map.get(monitor.id) |> check_counts()
-          )
-
-        {monitor.id, entry}
-      end)
+    index = MonitorIndex.load()
+    if connected?(socket), do: MonitorIndex.subscribe(index)
 
     socket =
       socket
@@ -764,65 +742,15 @@ defmodule SentinelixWeb.DashboardLive do
   end
 
   @impl true
-  def handle_info({:monitor_created, monitor}, socket) do
-    Monitoring.subscribe_monitor(monitor)
+  def handle_info(message, socket) do
+    case MonitorIndex.handle_message(socket.assigns.index, message) do
+      {:ok, index} ->
+        {:noreply, socket |> assign(index: index) |> assign_summary() |> assign_groups()}
 
-    maintenance = Maintenance.active_windows_for([monitor.id])
-    entry = index_entry(monitor, nil, Map.get(maintenance, monitor.id, []), nil)
-    {:noreply, put_index(socket, monitor.id, entry)}
+      :ignore ->
+        {:noreply, socket}
+    end
   end
-
-  def handle_info({:monitor_updated, monitor}, socket) do
-    {:noreply,
-     update_entry(socket, monitor.id, fn entry ->
-       %{entry | monitor: monitor, status: display_status(monitor, entry.latest)}
-     end)}
-  end
-
-  def handle_info({:monitor_deleted, monitor}, socket) do
-    Monitoring.unsubscribe_monitor(monitor)
-
-    socket =
-      socket
-      |> assign(index: Map.delete(socket.assigns.index, monitor.id))
-      |> assign_summary()
-      |> assign_groups()
-
-    {:noreply, socket}
-  end
-
-  def handle_info({:check_result, result}, socket) do
-    {:noreply,
-     update_entry(socket, result.monitor_id, fn entry ->
-       checks = Stats.summaries([result.monitor_id], @uptime_window)[result.monitor_id]
-
-       %{
-         entry
-         | latest: result,
-           status: display_status(entry.monitor, result),
-           checks: check_counts(checks)
-       }
-     end)}
-  end
-
-  def handle_info({event, monitor, _result}, socket)
-      when event in [:warning_raised, :warning_cleared] do
-    {:noreply, update_entry(socket, monitor.id, &%{&1 | warning: event == :warning_raised})}
-  end
-
-  def handle_info({:maintenance_changed}, socket) do
-    maintenance = Maintenance.active_windows_for(Map.keys(socket.assigns.index))
-
-    index =
-      Map.new(socket.assigns.index, fn {id, entry} ->
-        {id, %{entry | maintenance: Map.get(maintenance, id, [])}}
-      end)
-
-    {:noreply, socket |> assign(index: index) |> assign_groups()}
-  end
-
-  # Status changes are covered by the check result that caused them.
-  def handle_info(_message, socket), do: {:noreply, socket}
 
   ## Paths
 
@@ -868,43 +796,6 @@ defmodule SentinelixWeb.DashboardLive do
     do: view_path(%{view | selector: Selector.add(view.selector || %Selector{}, term)}, opts)
 
   ## Index
-
-  defp index_entry(monitor, latest, maintenance, checks) do
-    %{
-      monitor: monitor,
-      latest: latest,
-      status: display_status(monitor, latest),
-      warning: warning?(monitor),
-      maintenance: maintenance,
-      checks: checks
-    }
-  end
-
-  defp check_counts(nil), do: nil
-  defp check_counts(summary), do: Map.take(summary, [:up, :down, :unreachable])
-
-  defp warning?(%{enabled: false}), do: false
-
-  defp warning?(monitor) do
-    case Monitoring.worker_info(monitor) do
-      %{warning: warning} -> warning
-      nil -> false
-    end
-  end
-
-  defp update_entry(socket, id, fun) do
-    case Map.fetch(socket.assigns.index, id) do
-      {:ok, entry} -> put_index(socket, id, fun.(entry))
-      :error -> socket
-    end
-  end
-
-  defp put_index(socket, id, entry) do
-    socket
-    |> assign(index: Map.put(socket.assigns.index, id, entry))
-    |> assign_summary()
-    |> assign_groups()
-  end
 
   defp assign_summary(socket) do
     entries = Map.values(socket.assigns.index)
