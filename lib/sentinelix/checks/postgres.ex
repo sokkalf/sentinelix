@@ -172,6 +172,10 @@ defmodule Sentinelix.Checks.Postgres do
       database: settings.database,
       username: settings.username,
       ssl: ssl_options(settings),
+      # Without it, Nagle's algorithm and the server's delayed ACK add
+      # ~40 ms to every TLS login (the handshake's last message and the
+      # startup message are sent back to back).
+      socket_options: [nodelay: true],
       timeout: timeout,
       connect_timeout: timeout,
       parameters: [
