@@ -18,7 +18,8 @@ defmodule Sentinelix.Monitoring do
   Bulk changes (`put_labels/2`, `delete_labels/2`, `set_monitors_enabled/2`,
   `delete_monitors/1`) send one of these events per changed monitor.
   Deleting a monitor sends `:monitor_updated` for each of its children,
-  which lose their parent.
+  which lose their parent. Changes made inside `transaction/1` send their
+  events after its commit, one per monitor.
 
   Topic `"monitor:<id>"` (see `subscribe_monitor/1`) – everything about a
   single monitor:
@@ -64,6 +65,8 @@ defmodule Sentinelix.Monitoring do
   @parent_lock 4_801
   @parent_types [:ping, :tcp]
   @max_dependency_depth 1_000
+  # Process dictionary key of the events held back by transaction/1.
+  @deferred_events {__MODULE__, :deferred_events}
 
   @type monitor_ref :: Monitor.t() | pos_integer()
 
@@ -109,16 +112,79 @@ defmodule Sentinelix.Monitoring do
   defp broadcast(topic, message), do: PubSub.broadcast(@pubsub, topic, message)
 
   defp broadcast_monitor_change({:ok, %Monitor{} = monitor} = result, event) do
-    broadcast(@monitors_topic, {event, monitor})
-
-    if event != :monitor_created do
-      broadcast(monitor_topic(monitor), {event, monitor})
+    case Process.get(@deferred_events) do
+      events when is_list(events) -> Process.put(@deferred_events, [{event, monitor} | events])
+      nil -> send_monitor_change(event, monitor)
     end
 
     result
   end
 
   defp broadcast_monitor_change(error, _event), do: error
+
+  defp send_monitor_change(event, monitor) do
+    broadcast(@monitors_topic, {event, monitor})
+
+    if event != :monitor_created do
+      broadcast(monitor_topic(monitor), {event, monitor})
+    end
+  end
+
+  @doc """
+  Runs `fun` in a database transaction (see `Ecto.Repo.transaction/2`) and
+  holds back the monitor events (`:monitor_created`, `:monitor_updated`,
+  `:monitor_deleted`) that the context functions called in it broadcast.
+
+  They are sent after the commit, one per monitor (the first kind of event,
+  `:monitor_created` for a new monitor, with the monitor as last written),
+  so the engine only (re)starts the workers of committed monitors. On a
+  rollback they are dropped. A nested call joins the outer one.
+  """
+  @spec transaction((-> result)) :: {:ok, result} | {:error, term()} when result: term()
+  def transaction(fun) when is_function(fun, 0) do
+    if Process.get(@deferred_events) do
+      Repo.transaction(fun)
+    else
+      Process.put(@deferred_events, [])
+
+      try do
+        result = Repo.transaction(fun)
+        events = Process.get(@deferred_events)
+        Process.delete(@deferred_events)
+
+        with {:ok, _value} <- result, do: send_deferred(events)
+        result
+      after
+        Process.delete(@deferred_events)
+      end
+    end
+  end
+
+  # In the order the monitors were first changed; one event per monitor.
+  defp send_deferred(events) do
+    {order, latest} =
+      events
+      |> Enum.reverse()
+      |> Enum.reduce({[], %{}}, fn {event, monitor}, {order, latest} ->
+        case Map.fetch(latest, monitor.id) do
+          {:ok, {first, _monitor}} ->
+            {order, Map.put(latest, monitor.id, {merge_event(first, event), monitor})}
+
+          :error ->
+            {[monitor.id | order], Map.put(latest, monitor.id, {event, monitor})}
+        end
+      end)
+
+    order
+    |> Enum.reverse()
+    |> Enum.each(fn id ->
+      {event, monitor} = Map.fetch!(latest, id)
+      send_monitor_change(event, monitor)
+    end)
+  end
+
+  defp merge_event(_first, :monitor_deleted), do: :monitor_deleted
+  defp merge_event(first, _event), do: first
 
   ## Monitors
 

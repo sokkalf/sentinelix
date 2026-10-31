@@ -522,6 +522,51 @@ defmodule Sentinelix.MonitoringTest do
     end
   end
 
+  describe "transaction/1" do
+    test "sends the monitor events after the commit, one per monitor" do
+      Monitoring.subscribe_monitors()
+      existing = monitor_fixture(:http)
+      existing_id = existing.id
+      assert_received {:monitor_created, %Monitor{id: ^existing_id}}
+
+      assert {:ok, created} =
+               Monitoring.transaction(fn ->
+                 {:ok, created} = Monitoring.create_monitor(valid_monitor_attrs(:ping))
+                 created_id = created.id
+                 refute_received {:monitor_created, %Monitor{id: ^created_id}}
+
+                 {:ok, _} = Monitoring.update_monitor(created, %{interval_seconds: 120})
+                 {:ok, _} = Monitoring.set_monitors_enabled([existing], false)
+                 {:ok, _} = Monitoring.update_monitor(existing, %{max_retries: 3})
+                 refute_received {:monitor_updated, %Monitor{id: ^existing_id}}
+                 created
+               end)
+
+      created_id = created.id
+      assert_received {:monitor_created, %Monitor{id: ^created_id, interval_seconds: 120}}
+      assert_received {:monitor_updated, %Monitor{id: ^existing_id, max_retries: 3}}
+      refute_received {:monitor_updated, %Monitor{id: ^existing_id}}
+      refute_received {:monitor_updated, %Monitor{id: ^created_id}}
+    end
+
+    test "drops the events on a rollback" do
+      Monitoring.subscribe_monitors()
+
+      assert {:error, :nope} =
+               Monitoring.transaction(fn ->
+                 {:ok, _} = Monitoring.create_monitor(valid_monitor_attrs(:ping, %{name: "Gone"}))
+                 Repo.rollback(:nope)
+               end)
+
+      refute_received {:monitor_created, %Monitor{name: "Gone"}}
+      assert Monitoring.list_monitors() == []
+
+      # Later changes are sent right away again.
+      %{id: id} = monitor_fixture(:ping)
+      assert_received {:monitor_created, %Monitor{id: ^id}}
+    end
+  end
+
   describe "change_monitor/2" do
     test "returns a changeset" do
       assert %Ecto.Changeset{} = Monitoring.change_monitor(monitor_fixture())
