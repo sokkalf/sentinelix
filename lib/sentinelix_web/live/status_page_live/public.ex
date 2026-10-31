@@ -13,6 +13,14 @@ defmodule SentinelixWeb.StatusPageLive.Public do
   Updates arrive live: check results and incidents on the monitors' topics
   update single rows (the rows are keyed comprehensions, so only changed
   rows are sent), page configuration changes reload the page.
+
+  Pages with selector groups also follow the `"monitors"` topic: when a
+  monitor is created, relabelled, renamed or deleted so that a selector
+  group gains, loses or reorders monitors, the page reloads. Reloads for
+  monitor changes wait `:reload_delay_ms` (application environment of this
+  module, default 500 ms) and are coalesced, so a bulk relabelling of
+  many monitors reloads the page once. The selectors stay on the server:
+  the page renders neither them nor labels.
   """
 
   use SentinelixWeb, :live_view
@@ -22,9 +30,11 @@ defmodule SentinelixWeb.StatusPageLive.Public do
 
   alias Sentinelix.{Maintenance, Monitoring, Stats, StatusPages}
   alias Sentinelix.Monitoring.History
+  alias Sentinelix.StatusPages.Group
 
   @days 90
   @incident_days 7
+  @reload_delay_ms Application.compile_env(:sentinelix, [__MODULE__, :reload_delay_ms], 500)
 
   @impl true
   def render(assigns) do
@@ -180,7 +190,10 @@ defmodule SentinelixWeb.StatusPageLive.Public do
       Maintenance.subscribe()
     end
 
-    {:ok, socket |> assign(subscribed: MapSet.new()) |> load(page)}
+    {:ok,
+     socket
+     |> assign(subscribed: MapSet.new(), monitors_subscribed?: false, reload_pending?: false)
+     |> load(page)}
   end
 
   @impl true
@@ -202,9 +215,18 @@ defmodule SentinelixWeb.StatusPageLive.Public do
     {:noreply, load_incidents(socket)}
   end
 
+  def handle_info({:monitor_created, monitor}, socket) do
+    {:noreply, maybe_schedule_reload(socket, monitor)}
+  end
+
+  # Arrives on the monitor's topic for the page's monitors and, on pages
+  # with selector groups, on the "monitors" topic for every monitor (so
+  # twice for the page's monitors; both updates are idempotent).
   def handle_info({:monitor_updated, monitor}, socket) do
     {:noreply,
-     update_entry(socket, monitor.id, fn entry ->
+     socket
+     |> maybe_schedule_reload(monitor)
+     |> update_entry(monitor.id, fn entry ->
        %{
          entry
          | name: monitor.name,
@@ -218,8 +240,18 @@ defmodule SentinelixWeb.StatusPageLive.Public do
     {:noreply, socket |> assign_maintenance() |> assign_view()}
   end
 
+  def handle_info({:monitor_deleted, monitor}, socket) do
+    if Map.has_key?(socket.assigns.entries, monitor.id),
+      do: {:noreply, schedule_reload(socket)},
+      else: {:noreply, socket}
+  end
+
+  def handle_info(:reload, socket) do
+    {:noreply, socket |> assign(reload_pending?: false) |> reload()}
+  end
+
   def handle_info({event, _}, socket)
-      when event in [:monitor_deleted, :status_page_updated, :status_page_deleted] do
+      when event in [:status_page_updated, :status_page_deleted] do
     {:noreply, reload(socket)}
   end
 
@@ -241,8 +273,7 @@ defmodule SentinelixWeb.StatusPageLive.Public do
   defp load(socket, page) do
     monitors =
       page.groups
-      |> Enum.flat_map(& &1.page_monitors)
-      |> Enum.map(& &1.monitor)
+      |> Enum.flat_map(& &1.monitors)
       |> Enum.uniq_by(& &1.id)
 
     ids = Enum.map(monitors, & &1.id)
@@ -254,6 +285,7 @@ defmodule SentinelixWeb.StatusPageLive.Public do
       socket
       |> assign(page: public_page(page), page_title: page.title)
       |> resubscribe(ids)
+      |> assign_selector_groups(page.groups)
 
     entries =
       Map.new(monitors, fn monitor ->
@@ -278,7 +310,7 @@ defmodule SentinelixWeb.StatusPageLive.Public do
         %{
           id: group.id,
           name: group.name,
-          monitor_ids: Enum.map(group.page_monitors, & &1.monitor_id)
+          monitor_ids: Enum.map(group.monitors, & &1.id)
         }
       end)
 
@@ -308,6 +340,68 @@ defmodule SentinelixWeb.StatusPageLive.Public do
     else
       socket
     end
+  end
+
+  # What's needed to tell whether a monitor change changes the selector
+  # groups: their selectors, pinned monitors (which stay where they are
+  # whatever their labels) and the monitors they matched.
+  defp assign_selector_groups(socket, groups) do
+    selector_groups =
+      for group <- groups, selector = Group.parsed_selector(group) do
+        pinned = MapSet.new(group.page_monitors, & &1.monitor_id)
+
+        %{
+          selector: selector,
+          pinned: pinned,
+          matched:
+            group.monitors |> Enum.map(& &1.id) |> MapSet.new() |> MapSet.difference(pinned)
+        }
+      end
+
+    socket
+    |> assign(selector_groups: selector_groups)
+    |> subscribe_monitors(selector_groups != [])
+  end
+
+  # Stays subscribed when the page loses its selector groups: the events
+  # are then ignored (see layout_changed?/2).
+  defp subscribe_monitors(%{assigns: %{monitors_subscribed?: false}} = socket, true) do
+    if connected?(socket) do
+      Monitoring.subscribe_monitors()
+      assign(socket, monitors_subscribed?: true)
+    else
+      socket
+    end
+  end
+
+  defp subscribe_monitors(socket, _selector_groups?), do: socket
+
+  defp maybe_schedule_reload(socket, monitor) do
+    if layout_changed?(socket, monitor), do: schedule_reload(socket), else: socket
+  end
+
+  # Whether the monitor (as it is now) joins or leaves a selector group, or
+  # is renamed while matched (the matches are ordered by name).
+  defp layout_changed?(socket, monitor) do
+    shown = Map.get(socket.assigns.entries, monitor.id)
+
+    Enum.any?(socket.assigns.selector_groups, fn group ->
+      matched? = MapSet.member?(group.matched, monitor.id)
+
+      not MapSet.member?(group.pinned, monitor.id) and
+        (StatusPages.member?(group.selector, monitor) != matched? or
+           (matched? and shown.name != monitor.name))
+    end)
+  end
+
+  defp schedule_reload(%{assigns: %{reload_pending?: true}} = socket), do: socket
+
+  defp schedule_reload(socket) do
+    if @reload_delay_ms == 0,
+      do: send(self(), :reload),
+      else: Process.send_after(self(), :reload, @reload_delay_ms)
+
+    assign(socket, reload_pending?: true)
   end
 
   defp load_incidents(socket) do
