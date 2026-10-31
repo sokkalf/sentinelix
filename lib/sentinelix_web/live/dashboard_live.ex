@@ -335,14 +335,22 @@ defmodule SentinelixWeb.DashboardLive do
     entries = Map.values(socket.assigns.index)
     counts = Map.merge(Map.new(@statuses, &{&1, 0}), Enum.frequencies_by(entries, & &1.status))
 
+    # The label filter's options: user labels, then automatic ones.
     labels =
-      entries
-      |> Enum.flat_map(&Labels.to_list(&1.monitor.labels))
-      |> Enum.uniq()
-      |> Enum.sort()
-      |> Enum.map(&Labels.format/1)
+      case {label_options(entries, :labels), label_options(entries, :auto_labels)} do
+        {[], []} -> []
+        {user, automatic} -> user ++ [{"Automatic", automatic}]
+      end
 
     assign(socket, counts: counts, labels: labels, total: length(entries))
+  end
+
+  defp label_options(entries, field) do
+    entries
+    |> Enum.flat_map(&Labels.to_list(Map.fetch!(&1.monitor, field)))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.map(&Labels.format/1)
   end
 
   defp visible_entries(socket) do
@@ -402,7 +410,7 @@ defmodule SentinelixWeb.DashboardLive do
 
   defp matches?(entry, filters, label) do
     (filters.status == nil or entry.status == filters.status) and
-      (label == nil or Labels.has?(entry.monitor.labels, label)) and
+      (label == nil or Labels.has?(entry.monitor.all_labels, label)) and
       matches_search?(entry.monitor, filters.q)
   end
 

@@ -122,6 +122,18 @@ defmodule SentinelixWeb.DashboardLiveTest do
       assert_patch(view, ~p"/?#{[label: "env=internal"]}")
       refute has_element?(view, "#monitor-#{web.id}")
 
+      # Automatic labels filter like user labels.
+      {:ok, view, _html} = live(conn, ~p"/?label=type=tcp")
+      refute has_element?(view, "#monitor-#{web.id}")
+      assert has_element?(view, "#monitor-#{db.id}")
+
+      assert has_element?(
+               view,
+               "select[name=label] optgroup[label=Automatic] option[value='type=tcp']"
+             )
+
+      assert has_element?(view, "select[name=label] option[value='host=db.example.com']")
+
       # Clicking a label badge filters by it.
       {:ok, view, _html} = live(conn, ~p"/")
       view |> element("#monitor-#{web.id} a[data-label=legacy]") |> render_click()
