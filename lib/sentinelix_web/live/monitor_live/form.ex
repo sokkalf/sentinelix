@@ -21,6 +21,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
   alias Sentinelix.Checks.Postgres.Expectation
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.{Labels, Monitor, Settings}
+  alias Sentinelix.Monitoring.Settings.Assertion
   alias Sentinelix.Notifications
 
   @impl true
@@ -315,6 +316,10 @@ defmodule SentinelixWeb.MonitorLive.Form do
   # Settings fields per type, in groups of {title, fields}. Secret fields
   # (see Monitor.secret_fields/1) are rendered by secret_field/1.
   @settings_groups %{
+    http: [
+      {nil, Settings.fields_for(:http) -- [:assertions]},
+      {"Response assertions", [:assertions]}
+    ],
     postgres: [
       {"Connection", [:host, :port, :database, :username, :password, :ssl_mode, :ssl_ca_cert]},
       {"Query", [:query, :expected_value, :comparison, :expected_rows, :rows_comparison]},
@@ -336,7 +341,9 @@ defmodule SentinelixWeb.MonitorLive.Form do
   end
 
   defp group_id(nil), do: nil
-  defp group_id(title), do: "settings-group-#{String.downcase(title)}"
+
+  defp group_id(title),
+    do: "settings-group-#{title |> String.downcase() |> String.replace(" ", "-")}"
 
   # Fields that only matter for some values of other fields.
   defp visible?(:ssl_ca_cert, settings), do: settings[:ssl_mode].value == "verify-full"
@@ -484,8 +491,112 @@ defmodule SentinelixWeb.MonitorLive.Form do
     """
   end
 
-  # Not editable in the form yet.
-  defp settings_field(%{name: :assertions} = assigns), do: ~H""
+  # Repeatable rows, added, removed and reordered through the sort and
+  # drop params of the embed (see Settings.changeset/3).
+  defp settings_field(%{name: :assertions} = assigns) do
+    ~H"""
+    <div id="assertions" class="sm:col-span-2">
+      <p class="mb-2 text-xs text-base-content/60">
+        Checked in order once the status code is accepted; all must pass. JSON paths are
+        dot-separated, like data.items.0.status.
+      </p>
+      <.inputs_for :let={row} field={@field}>
+        <div
+          id={"assertion-#{row.index}"}
+          class="mb-2 flex flex-wrap items-start gap-x-2 rounded-box bg-base-200/50 px-2 pt-2"
+        >
+          <input type="hidden" name={sort_name(@field)} value={row.index} />
+          <div class="w-28">
+            <.input
+              field={row[:source]}
+              type="select"
+              options={[{"Body", "body"}, {"JSON", "json"}, {"Header", "header"}]}
+              aria-label="Source"
+            />
+          </div>
+          <div :if={Assertion.path?(row[:source].value)} class="min-w-32 flex-1">
+            <.input
+              field={row[:path]}
+              type="text"
+              placeholder={if row[:source].value == "json", do: "data.status", else: "content-type"}
+              aria-label={if row[:source].value == "json", do: "JSON path", else: "Header name"}
+              phx-debounce="300"
+            />
+          </div>
+          <div class="w-44">
+            <.input
+              field={row[:comparison]}
+              type="select"
+              options={
+                Enum.map(Assertion.comparisons(row[:source].value), &{comparison_label(&1), &1})
+              }
+              aria-label="Comparison"
+            />
+          </div>
+          <div :if={Assertion.value?(row[:comparison].value)} class="min-w-32 flex-1">
+            <.input
+              field={row[:value]}
+              type="text"
+              placeholder={value_placeholder(row[:comparison].value)}
+              aria-label="Value"
+              phx-debounce="300"
+            />
+          </div>
+          <div title="Case sensitive">
+            <.input field={row[:case_sensitive]} type="checkbox" label="Aa" />
+          </div>
+          <div class="ml-auto flex">
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm btn-square"
+              phx-click="move_assertion"
+              phx-value-index={row.index}
+              phx-value-by="-1"
+              disabled={row.index == 0}
+              aria-label="Move up"
+              id={"assertion-#{row.index}-up"}
+            >
+              <.icon name="hero-chevron-up-micro" class="size-4" />
+            </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm btn-square"
+              phx-click="move_assertion"
+              phx-value-index={row.index}
+              phx-value-by="1"
+              aria-label="Move down"
+              id={"assertion-#{row.index}-down"}
+            >
+              <.icon name="hero-chevron-down-micro" class="size-4" />
+            </button>
+            <button
+              type="button"
+              name={drop_name(@field)}
+              value={row.index}
+              phx-click={JS.dispatch("change")}
+              class="btn btn-ghost btn-sm btn-square"
+              aria-label="Remove assertion"
+              id={"assertion-#{row.index}-remove"}
+            >
+              <.icon name="hero-x-mark-micro" class="size-4" />
+            </button>
+          </div>
+        </div>
+      </.inputs_for>
+      <input type="hidden" name={drop_name(@field)} />
+      <button
+        type="button"
+        name={sort_name(@field)}
+        value="new"
+        phx-click={JS.dispatch("change")}
+        class="btn btn-ghost btn-sm"
+        id="add-assertion"
+      >
+        <.icon name="hero-plus-micro" class="size-4" /> Add assertion
+      </button>
+    </div>
+    """
+  end
 
   defp settings_field(%{name: :push_grace_seconds} = assigns) do
     ~H"""
@@ -737,8 +848,20 @@ defmodule SentinelixWeb.MonitorLive.Form do
   defp comparison_label("equals"), do: "equals"
   defp comparison_label("not_equals"), do: "does not equal"
   defp comparison_label("contains"), do: "contains"
+  defp comparison_label("not_contains"), do: "does not contain"
   defp comparison_label("regex"), do: "matches regular expression"
+  defp comparison_label("not_regex"), do: "does not match regular expression"
+  defp comparison_label("exists"), do: "exists"
+  defp comparison_label("not_exists"), do: "does not exist"
   defp comparison_label(operator), do: operator
+
+  defp value_placeholder(comparison) when comparison in ~w(< <= > >=), do: "100"
+  defp value_placeholder(comparison) when comparison in ~w(regex not_regex), do: "^ok$"
+  defp value_placeholder(_comparison), do: "OK"
+
+  # `monitor[settings][assertions]` => `monitor[settings][assertions_sort][]`
+  defp sort_name(field), do: String.replace_suffix(field.name, "]", "_sort][]")
+  defp drop_name(field), do: String.replace_suffix(field.name, "]", "_drop][]")
 
   defp threshold_label(:lag_warn_seconds), do: "Warn at lag (seconds, optional)"
   defp threshold_label(:lag_critical_seconds), do: "Down at lag (seconds, optional)"
@@ -880,10 +1003,59 @@ defmodule SentinelixWeb.MonitorLive.Form do
     end
   end
 
+  def handle_event("move_assertion", %{"index" => index, "by" => by}, socket) do
+    with {index, ""} <- Integer.parse(index),
+         {by, ""} <- Integer.parse(by) do
+      params = move_assertion(socket.assigns.params, socket.assigns.form, index, by)
+      changeset = Monitoring.change_monitor(socket.assigns.monitor, params)
+      changeset = %{changeset | action: socket.assigns.form.source.action}
+      {:noreply, assign_form(socket, changeset, params)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
   def handle_event("save", %{"monitor" => params} = all_params, socket) do
     socket
     |> assign(channel_ids: channel_ids(all_params))
     |> save(socket.assigns.live_action, normalize_params(params))
+  end
+
+  # Moves an assertion row: the rows as shown (from the form, so rows that
+  # were just added or removed count), in the new order.
+  defp move_assertion(params, form, index, by) do
+    rows = current_assertion_rows(form)
+    target = index + by
+
+    if index in 0..(length(rows) - 1)//1 and target in 0..(length(rows) - 1)//1 do
+      {row, rest} = List.pop_at(rows, index)
+
+      assertions =
+        rest
+        |> List.insert_at(target, row)
+        |> Enum.with_index()
+        |> Map.new(fn {row, index} -> {Integer.to_string(index), row} end)
+
+      settings =
+        (params["settings"] || %{})
+        |> Map.drop(["assertions_sort", "assertions_drop"])
+        |> Map.put("assertions", assertions)
+
+      Map.put(params, "settings", settings)
+    else
+      params
+    end
+  end
+
+  defp current_assertion_rows(form) do
+    form.source
+    |> Ecto.Changeset.get_field(:settings)
+    |> Map.get(:assertions, [])
+    |> Enum.map(fn assertion ->
+      assertion
+      |> Map.take([:source, :path, :comparison, :value, :case_sensitive])
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+    end)
   end
 
   # Selected notification channel ids (the hidden "" input allows none).
