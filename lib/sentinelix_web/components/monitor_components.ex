@@ -69,6 +69,16 @@ defmodule SentinelixWeb.MonitorComponents do
 
   def push_url(_token), do: nil
 
+  @doc """
+  The public URL events are posted to with a monitor's event token (see
+  `Sentinelix.Monitoring.Events`).
+  """
+  @spec event_url(String.t() | nil) :: String.t() | nil
+  def event_url(token) when is_binary(token) and token != "",
+    do: url(~p"/api/v1/events/#{token}")
+
+  def event_url(_token), do: nil
+
   @doc "Formats an uptime percentage."
   @spec format_uptime(number() | nil) :: String.t()
   def format_uptime(nil), do: "–"

@@ -197,7 +197,7 @@ defmodule SentinelixWeb.DashboardLive do
         </div>
       </.form>
 
-      <div id="status-counters" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div id="status-counters" class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         <.link
           :for={status <- @statuses}
           id={"counter-#{status}"}
