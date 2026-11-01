@@ -20,7 +20,8 @@ defmodule Sentinelix.Checks.Postgres.Expectation do
   | array                      | `{1,2,3}`                                |
   | json(b)                    | JSON                                     |
 
-  Comparisons (`comparisons/0`):
+  Comparisons (`comparisons/0`, a subset of
+  `Sentinelix.Checks.Comparison`, which does the comparing):
 
     * `equals`, `not_equals` – exact text comparison.
     * `contains` – the text contains `expected_value`.
@@ -37,19 +38,16 @@ defmodule Sentinelix.Checks.Postgres.Expectation do
   "at least one row").
   """
 
+  alias Sentinelix.Checks.Comparison
+
   @comparisons ~w(equals not_equals contains regex < <= > >=)
   @rows_comparisons ~w(equals not_equals < <= > >=)
-  @numeric ~w(< <= > >=)
-  @max_shown 100
 
   @doc "Comparisons for the value."
   def comparisons, do: @comparisons
 
   @doc "Comparisons for the row count."
   def rows_comparisons, do: @rows_comparisons
-
-  @doc "Whether a comparison is numeric."
-  def numeric?(comparison), do: comparison in @numeric
 
   @doc """
   Checks the value assertion (if `expected_value` is set) of a query
@@ -62,16 +60,19 @@ defmodule Sentinelix.Checks.Postgres.Expectation do
 
   def check_value(%Postgrex.Result{rows: [[value | _] | _]}, expected, comparison) do
     actual = to_text(value)
-    shown = ~s(got "#{truncate(actual)}")
+    shown = ~s(got "#{Comparison.truncate(actual)}")
 
-    case compare(actual, comparison, expected) do
-      :ok -> {:ok, shown}
-      {:error, reason} -> {:error, "#{shown}, #{describe(comparison, expected)}#{reason}"}
+    case Comparison.compare(actual, comparison, expected) do
+      :ok ->
+        {:ok, shown}
+
+      {:error, reason} ->
+        {:error, "#{shown}, #{Comparison.describe(comparison, expected)}#{reason}"}
     end
   end
 
   def check_value(%Postgrex.Result{}, expected, comparison),
-    do: {:error, "got no rows, #{describe(comparison, expected)}"}
+    do: {:error, "got no rows, #{Comparison.describe(comparison, expected)}"}
 
   @doc """
   Checks the row count assertion (if `expected_rows` is set) of a query
@@ -84,79 +85,13 @@ defmodule Sentinelix.Checks.Postgres.Expectation do
   def check_rows(%Postgrex.Result{num_rows: rows}, expected, comparison) do
     rows = rows || 0
 
-    case compare(Integer.to_string(rows), comparison, Integer.to_string(expected)) do
-      :ok -> :ok
-      {:error, _} -> {:error, "got #{pluralize_rows(rows)}, #{describe(comparison, expected)}"}
+    case Comparison.compare(Integer.to_string(rows), comparison, Integer.to_string(expected)) do
+      :ok ->
+        :ok
+
+      {:error, _} ->
+        {:error, "got #{pluralize_rows(rows)}, #{Comparison.describe(comparison, expected)}"}
     end
-  end
-
-  @doc """
-  Compares a value (as text) with the expected value.
-  """
-  @spec compare(String.t(), String.t(), String.t()) :: :ok | {:error, String.t()}
-  def compare(actual, comparison, expected) when comparison in @numeric do
-    with {:ok, actual} <- parse_number(actual),
-         {:ok, expected} <- parse_number(expected) do
-      if compare_numbers(Decimal.compare(actual, expected), comparison),
-        do: :ok,
-        else: {:error, ""}
-    else
-      :error -> {:error, " (not a number)"}
-    end
-  end
-
-  def compare(actual, comparison, expected) do
-    matches? =
-      case comparison do
-        "equals" -> actual == expected
-        "not_equals" -> actual != expected
-        "contains" -> String.contains?(actual, expected)
-        "regex" -> regex_match?(expected, actual)
-      end
-
-    case matches? do
-      true -> :ok
-      false -> {:error, ""}
-      :invalid -> {:error, " (invalid regular expression)"}
-    end
-  end
-
-  defp regex_match?(pattern, text) do
-    case Regex.compile(pattern) do
-      {:ok, regex} -> Regex.match?(regex, text)
-      {:error, _} -> :invalid
-    end
-  end
-
-  defp compare_numbers(order, "<"), do: order == :lt
-  defp compare_numbers(order, "<="), do: order in [:lt, :eq]
-  defp compare_numbers(order, ">"), do: order == :gt
-  defp compare_numbers(order, ">="), do: order in [:gt, :eq]
-
-  @doc """
-  Parses a finite decimal number (surrounding whitespace is ignored).
-  """
-  @spec parse_number(String.t()) :: {:ok, Decimal.t()} | :error
-  def parse_number(text) do
-    case Decimal.parse(String.trim(text)) do
-      {decimal, ""} ->
-        if Decimal.inf?(decimal) or Decimal.nan?(decimal), do: :error, else: {:ok, decimal}
-
-      _ ->
-        :error
-    end
-  end
-
-  defp describe("equals", expected), do: ~s(expected "#{expected}")
-  defp describe("not_equals", expected), do: ~s(expected anything but "#{expected}")
-  defp describe("contains", expected), do: ~s(expected it to contain "#{expected}")
-  defp describe("regex", expected), do: "expected it to match /#{expected}/"
-  defp describe(operator, expected), do: "expected #{operator} #{expected}"
-
-  defp truncate(text) do
-    if String.length(text) > @max_shown,
-      do: String.slice(text, 0, @max_shown) <> "…",
-      else: text
   end
 
   defp pluralize_rows(1), do: "1 row"

@@ -24,6 +24,7 @@ defmodule Sentinelix.Monitoring.Settings do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Sentinelix.Checks.Comparison
   alias Sentinelix.Checks.Postgres.{Expectation, Replication}
 
   @http_methods ~w(GET HEAD POST PUT PATCH DELETE OPTIONS)
@@ -339,10 +340,10 @@ defmodule Sentinelix.Monitoring.Settings do
       is_nil(value) ->
         changeset
 
-      Expectation.numeric?(comparison) and Expectation.parse_number(value) == :error ->
+      Comparison.numeric?(comparison) and Comparison.parse_number(value) == :error ->
         add_error(changeset, :expected_value, "must be a number for #{comparison}")
 
-      comparison == "regex" and match?({:error, _}, Regex.compile(value)) ->
+      comparison == "regex" and not Comparison.valid_regex?(value) ->
         add_error(changeset, :expected_value, "must be a valid regular expression")
 
       true ->
