@@ -67,9 +67,10 @@ defmodule Sentinelix.Stats.Scheduler do
       {:ok, _count} = Rollup.run()
       deleted = Rollup.prune()
 
-      if deleted.results + deleted.rollups > 0 do
+      if deleted.results + deleted.rollups + deleted.events > 0 do
         Logger.info(
-          "Pruned #{deleted.results} check results and #{deleted.rollups} hourly rollups"
+          "Pruned #{deleted.results} check results, #{deleted.rollups} hourly rollups " <>
+            "and #{deleted.events} monitor events"
         )
       end
     end)
