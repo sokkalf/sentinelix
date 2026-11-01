@@ -33,7 +33,7 @@ defmodule Sentinelix.Monitoring do
   of all monitors, broadcast by `Sentinelix.Monitoring.Worker`:
 
     * `{:status_changed, %Monitor{}, old_status, new_status, %CheckResult{}}`
-      – the monitor's status (`:pending`, `:up` or `:down`) changed.
+      – the monitor's status (`:pending`, `:up`, `:warning` or `:down`) changed.
     * `{:warning_raised, %Monitor{}, %CheckResult{}}` – the monitor is up
       but a check reported a warning (e.g. a TLS certificate close to
       expiry; the result's message says why).

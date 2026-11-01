@@ -27,7 +27,8 @@ defmodule Sentinelix.Monitoring.Worker do
   The status starts as the status of the latest stored check result (so a
   restart doesn't produce spurious transitions), or `:pending` without one.
 
-    * check `:up` → `:up` (retry counter reset).
+    * check `:up` → `:up` (retry counter reset), or `:warning` while a
+      warning raised by an event is active (see below).
     * check `:down` while not `:down` and fewer than `max_retries` retries
       used → `:pending` (retried after `retry_interval_seconds`).
     * check `:down` otherwise → `:down`.
@@ -37,8 +38,8 @@ defmodule Sentinelix.Monitoring.Worker do
   Every check is persisted with `Sentinelix.Monitoring.record_result/2`
   using the resulting status. When the status changes, the worker
 
-    * opens an incident on entering `:down` and resolves the open incident
-      on entering `:up`,
+    * opens an incident on entering `:down` (or `:warning`) and resolves
+      the open incident on entering `:up`,
     * broadcasts `{:status_changed, monitor, old_status, new_status, result}`
       on the `"status_changes"` topic and the monitor's topic.
 
@@ -51,6 +52,28 @@ defmodule Sentinelix.Monitoring.Worker do
   `{:warning_raised, monitor, result}` and `{:warning_cleared, monitor,
   result}` on the same topics. The warning state is not persisted, so a
   restarted worker raises an active warning again.
+
+  ## Warnings raised by events
+
+  Events can raise warnings (see `Sentinelix.Monitoring.Events`), which are
+  stored. While the monitor has an active one, a check `:up` → `:warning`
+  instead of `:up`; the status is otherwise handled like `:up` (a failed
+  check goes `:pending` or `:down`, down wins over the warning).
+
+  `warnings_changed/2` (called by `Sentinelix.Monitoring.Events` after a
+  warning was raised or cleared) reloads the warnings and applies them
+  right away, without a check: `:up` → `:warning` or back. The transition
+  is recorded as a check result without a response time, so it shows like
+  any other status. Nothing happens while the latest result is
+  `:maintenance` or `:unreachable` or the monitor isn't up (or warning):
+  the next check applies the warnings. The worker also expires warnings
+  with a ttl when they are due, and whenever it loads them (e.g. when it
+  starts), see `Sentinelix.Monitoring.Events.expire_warnings/2`.
+
+  Incidents follow the status: entering `:warning` opens an incident with
+  `to_status: :warning`, entering `:up` resolves it. Going from `:warning`
+  to `:down` (or back) resolves the open incident and opens one for the
+  new status, so a monitor still has at most one open incident.
 
   ## Passive checks (push monitors)
 
@@ -134,10 +157,13 @@ defmodule Sentinelix.Monitoring.Worker do
 
   alias Phoenix.PubSub
   alias Sentinelix.Monitoring
-  alias Sentinelix.Monitoring.{CheckResult, Monitor}
+  alias Sentinelix.Monitoring.{CheckResult, Events, Incident, Monitor}
   alias Sentinelix.Monitoring.Supervisor, as: Engine
 
-  @type status :: :pending | :up | :down
+  @type status :: :pending | :up | :down | :warning
+
+  # The longest wait for the next warning expiry before looking again.
+  @max_expiry_delay_ms 86_400_000
 
   @pubsub Sentinelix.PubSub
 
@@ -151,16 +177,20 @@ defmodule Sentinelix.Monitoring.Worker do
     :task_timer,
     :started_at,
     :next_check_at,
+    :expiry_timer,
     passive: false,
     status: :pending,
     retries: 0,
     warning: false,
+    # The monitor has an active warning raised by an event.
+    warned: false,
     # The latest result was recorded as unreachable.
     unreachable: false,
     # Waiting for the parent's check before going down (see Dependencies).
     confirming: false,
     # The parent has been asked to confirm during this failure streak.
-    confirmed: false
+    confirmed: false,
+    warnings_titles: []
   ]
 
   ## API
@@ -206,8 +236,29 @@ defmodule Sentinelix.Monitoring.Worker do
   end
 
   @doc """
+  Tells a monitor's worker that its warnings (raised by events) changed:
+  it reloads them and applies them to its status right away (see
+  "Warnings raised by events"). Returns the monitor's resulting status, as
+  the push endpoint reports it (`:maintenance` or `:unreachable` while the
+  latest result is), or `{:error, :not_running}`.
+  """
+  @spec warnings_changed(Monitor.t() | pos_integer(), Engine.engine()) ::
+          {:ok, atom()} | {:error, :not_running}
+  def warnings_changed(monitor, engine \\ Engine) do
+    case Engine.whereis(monitor, engine) do
+      nil -> {:error, :not_running}
+      pid -> GenServer.call(pid, :warnings_changed)
+    end
+  catch
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> {:error, :not_running}
+    :exit, {{:shutdown, _}, _} -> {:error, :not_running}
+  end
+
+  @doc """
   Returns the runtime state of a monitor's worker: `:status`, `:retries`,
-  `:warning`, `:unreachable` (whether the latest result was unreachable),
+  `:warning` (a check's warning), `:warned` (whether a warning raised by
+  an event is active), `:unreachable` (whether the latest result was
+  unreachable),
   `:checking` (whether a check is running) and `:next_check_at`.
   """
   @spec info(Monitor.t() | pos_integer(), Engine.engine()) :: map() | nil
@@ -268,7 +319,7 @@ defmodule Sentinelix.Monitoring.Worker do
 
     status =
       case latest do
-        %CheckResult{status: status} when status in [:up, :down] -> status
+        %CheckResult{status: status} when status in [:up, :down, :warning] -> status
         _ -> :pending
       end
 
@@ -285,15 +336,21 @@ defmodule Sentinelix.Monitoring.Worker do
       put_reachable(
         state,
         case latest do
-          %CheckResult{status: :up} -> true
+          %CheckResult{status: status} when status in [:up, :warning] -> true
           %CheckResult{status: status} when status in [:down, :pending, :unreachable] -> false
           _ -> nil
         end
       )
 
-    if state.passive,
-      do: {:noreply, schedule_deadline(state)},
-      else: {:noreply, start_check(state)}
+    # Active checks apply the warnings with the check that starts now.
+    if state.passive do
+      case sync_warnings(state) do
+        {:ok, state} -> {:noreply, schedule_deadline(state)}
+        :stop -> {:stop, :normal, state}
+      end
+    else
+      {:noreply, state |> load_warnings() |> start_check()}
+    end
   end
 
   @impl true
@@ -306,12 +363,20 @@ defmodule Sentinelix.Monitoring.Worker do
       status: state.status,
       retries: state.retries,
       warning: state.warning,
+      warned: state.warned,
       unreachable: state.unreachable,
       checking: state.task != nil,
       next_check_at: state.next_check_at
     }
 
     {:reply, info, state}
+  end
+
+  def handle_call(:warnings_changed, _from, state) do
+    case sync_warnings(state) do
+      {:ok, state} -> {:reply, {:ok, reported_status(state)}, state}
+      :stop -> {:stop, :normal, {:error, :not_running}, state}
+    end
   end
 
   def handle_call({:push, _result}, _from, %{passive: false} = state),
@@ -332,6 +397,13 @@ defmodule Sentinelix.Monitoring.Worker do
 
   @impl true
   def handle_info(:check, state), do: {:noreply, start_check(%{state | timer: nil})}
+
+  def handle_info(:expire_warnings, state) do
+    case sync_warnings(%{state | expiry_timer: nil}) do
+      {:ok, state} -> {:noreply, state}
+      :stop -> {:stop, :normal, state}
+    end
+  end
 
   # The parent checked: check again if waiting for it to confirm a failure,
   # or if the parent is back while this monitor was unreachable.
@@ -482,8 +554,85 @@ defmodule Sentinelix.Monitoring.Worker do
 
       true ->
         {status, retries} = next_status(state, result)
+        status = if status == :up and state.warned, do: :warning, else: status
         state = %{state | retries: retries}
         record(state, status, details, &apply_transition(&1, &2, status, details))
+    end
+  end
+
+  ## Warnings raised by events
+
+  # Expires the warnings that are due, reloads the active ones and
+  # (re)schedules the next expiry. One `now` for both, so a warning is
+  # either expired (and logged) or still active.
+  defp load_warnings(state) do
+    now = DateTime.utc_now()
+    _ = Events.expire_warnings(state.monitor, now: now, notify: false)
+    warnings = Events.active_warnings(state.monitor, now: now)
+    cancel_timer(state.expiry_timer)
+
+    expiry_timer =
+      case warnings |> Enum.map(& &1.expires_at) |> Enum.reject(&is_nil/1) do
+        [] ->
+          nil
+
+        expiries ->
+          # Rounded up to the millisecond: not before it is due.
+          delay_us = DateTime.diff(Enum.min(expiries, DateTime), now, :microsecond)
+          delay = min(div(max(delay_us, 0) + 999, 1000), @max_expiry_delay_ms)
+          Process.send_after(self(), :expire_warnings, delay)
+      end
+
+    %{
+      state
+      | warned: warnings != [],
+        expiry_timer: expiry_timer,
+        warnings_titles: titles(warnings)
+    }
+  end
+
+  defp titles(warnings), do: Enum.map(warnings, & &1.title)
+
+  # Reloads the warnings and applies them to the status right away (see
+  # "Warnings raised by events" in the moduledoc).
+  defp sync_warnings(state) do
+    state = load_warnings(state)
+
+    if target = warning_target(state) do
+      # Keeps a check's warning (see update_warning/3).
+      details = %{message: warning_message(state), warning: state.warning}
+
+      case record(state, target, details, &apply_transition(&1, &2, target, details)) do
+        {:ok, state, _status, _result} -> {:ok, state}
+        :stop -> :stop
+      end
+    else
+      {:ok, state}
+    end
+  end
+
+  # The status the warnings take the monitor to now, nil to leave it.
+  defp warning_target(state) do
+    cond do
+      maintenance?(state) or state.unreachable -> nil
+      state.status == :up and state.warned -> :warning
+      state.status == :warning and not state.warned -> :up
+      true -> nil
+    end
+  end
+
+  defp warning_message(%{warned: false}), do: "Warnings cleared"
+  defp warning_message(%{warnings_titles: [title]}), do: "Warning: " <> title
+
+  defp warning_message(%{warnings_titles: titles}),
+    do: "#{length(titles)} warnings: " <> Enum.join(titles, "; ")
+
+  # The status as the event endpoint reports it.
+  defp reported_status(state) do
+    cond do
+      maintenance?(state) -> :maintenance
+      state.unreachable -> :unreachable
+      true -> state.status
     end
   end
 
@@ -581,11 +730,25 @@ defmodule Sentinelix.Monitoring.Worker do
       )
     end
 
-    update_warning(state, new == :up and details[:warning] == true, result)
+    update_warning(state, new in [:up, :warning] and details[:warning] == true, result)
   end
 
-  defp update_incident(%{incident: nil} = state, :down, result) do
-    attrs = %{from_status: state.status, to_status: :down, message: result.message}
+  # One open incident at a time, for :down or :warning (see the moduledoc).
+  defp update_incident(state, new, result) when new in [:down, :warning] do
+    case state.incident do
+      %Incident{to_status: ^new} -> state
+      nil -> open_incident(state, new, result)
+      incident -> state |> resolve_incident(incident, result) |> open_incident(new, result)
+    end
+  end
+
+  defp update_incident(%{incident: %{} = incident} = state, :up, result),
+    do: resolve_incident(state, incident, result)
+
+  defp update_incident(state, _status, _result), do: state
+
+  defp open_incident(state, status, result) do
+    attrs = %{from_status: state.status, to_status: status, message: result.message}
 
     case Monitoring.open_incident(state.monitor, attrs) do
       {:ok, incident} ->
@@ -597,7 +760,7 @@ defmodule Sentinelix.Monitoring.Worker do
     end
   end
 
-  defp update_incident(%{incident: %{} = incident} = state, :up, result) do
+  defp resolve_incident(state, incident, result) do
     case Monitoring.resolve_incident(incident, resolved_at: result.checked_at) do
       {:ok, _incident} ->
         %{state | incident: nil}
@@ -611,8 +774,6 @@ defmodule Sentinelix.Monitoring.Worker do
     end
   end
 
-  defp update_incident(state, _status, _result), do: state
-
   defp update_warning(%{warning: same} = state, same, _result), do: state
 
   defp update_warning(%{warning: false} = state, true, result) do
@@ -622,7 +783,7 @@ defmodule Sentinelix.Monitoring.Worker do
 
   defp update_warning(%{warning: true} = state, false, result) do
     # Going down supersedes the warning; only an up result clears it.
-    if result.status == :up do
+    if result.status in [:up, :warning] do
       Monitoring.broadcast_status_event(state.monitor, {:warning_cleared, state.monitor, result})
     end
 

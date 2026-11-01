@@ -38,7 +38,7 @@ defmodule Sentinelix.Monitoring.Events do
   alias Ecto.Changeset
   alias Phoenix.PubSub
   alias Sentinelix.Monitoring
-  alias Sentinelix.Monitoring.{Monitor, MonitorEvent, Warning}
+  alias Sentinelix.Monitoring.{Monitor, MonitorEvent, Warning, Worker}
   alias Sentinelix.Repo
 
   @pubsub Sentinelix.PubSub
@@ -83,6 +83,8 @@ defmodule Sentinelix.Monitoring.Events do
   ## Options
 
     * `:now` – when the event occurred (default now)
+    * `:engine` – the monitoring engine of the worker (default
+      `Sentinelix.Monitoring.Supervisor`)
   """
   @spec record_event(Monitor.t(), map(), keyword()) ::
           {:ok, MonitorEvent.t(), atom()} | {:error, Changeset.t()}
@@ -97,7 +99,7 @@ defmodule Sentinelix.Monitoring.Events do
         {:ok, event, current_status(monitor)}
       else
         broadcast(monitor, {:warnings_changed, monitor.id})
-        {:ok, event, warnings_changed(monitor)}
+        {:ok, event, warnings_changed(monitor, opts)}
       end
     end
   end
@@ -308,6 +310,7 @@ defmodule Sentinelix.Monitoring.Events do
     * `:by` – who cleared them, stored as `cleared_by` in the events'
       metadata
     * `:now` – default now
+    * `:engine` – as for `record_event/3`
   """
   @spec clear_warnings(Monitor.t(), :all | [String.t()], keyword()) :: {:ok, [Warning.t()]}
   def clear_warnings(%Monitor{} = monitor, keys \\ :all, opts \\ []) do
@@ -332,6 +335,7 @@ defmodule Sentinelix.Monitoring.Events do
     * `:now` – default now
     * `:notify` – whether to tell the monitor's worker (default `true`; the
       worker itself passes `false`)
+    * `:engine` – as for `record_event/3`
   """
   @spec expire_warnings(monitor_ref(), keyword()) :: {:ok, [Warning.t()]}
   def expire_warnings(monitor, opts \\ []) do
@@ -372,7 +376,7 @@ defmodule Sentinelix.Monitoring.Events do
     if removed != [] do
       Enum.each(events, &broadcast(id, {:event_recorded, &1}))
       broadcast(id, {:warnings_changed, id})
-      if Keyword.get(opts, :notify, true), do: warnings_changed(id)
+      if Keyword.get(opts, :notify, true), do: warnings_changed(id, opts)
     end
 
     {:ok, removed}
@@ -382,7 +386,14 @@ defmodule Sentinelix.Monitoring.Events do
 
   # Tells the monitor's worker that its warnings changed and returns the
   # resulting status.
-  defp warnings_changed(monitor), do: current_status(monitor)
+  defp warnings_changed(monitor, opts) do
+    engine = Keyword.get(opts, :engine, Sentinelix.Monitoring.Supervisor)
+
+    case Worker.warnings_changed(monitor, engine) do
+      {:ok, status} -> status
+      {:error, :not_running} -> current_status(monitor)
+    end
+  end
 
   @doc """
   The status of a monitor as its latest check result has it (`:pending`
