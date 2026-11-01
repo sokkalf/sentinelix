@@ -29,6 +29,8 @@ defmodule Sentinelix.Stats do
       the monitor's parent was down) count as downtime: the service wasn't
       available, the parent only explains why and keeps the alert quiet.
       `nil` when there are no up, down or unreachable results.
+    * `:warning` results (up, with a warning raised by an event) count as
+      `:up`, here and in the rollups.
     * Response time statistics cover `:up` results only (the response time
       of a failed check is mostly its timeout). `p95_ms` is computed from
       the raw results only, so for windows longer than the raw retention it
@@ -41,6 +43,13 @@ defmodule Sentinelix.Stats do
   alias Sentinelix.Monitoring.{CheckResult, Monitor}
   alias Sentinelix.Repo
   alias Sentinelix.Stats.{HourlyStat, Rollup}
+
+  # Statuses counted as up (see Semantics).
+  @up_statuses [:up, :warning]
+
+  @doc "The check result statuses that count as up: `:up` and `:warning`."
+  @spec up_statuses() :: [atom()]
+  def up_statuses, do: @up_statuses
 
   @type window ::
           {pos_integer(), :hour | :day} | {DateTime.t(), DateTime.t()}
@@ -264,15 +273,15 @@ defmodule Sentinelix.Stats do
         group_by: r.monitor_id,
         select: %{
           monitor_id: r.monitor_id,
-          up: filter(count(), r.status == ^:up),
+          up: filter(count(), r.status in ^@up_statuses),
           down: filter(count(), r.status == ^:down),
           pending: filter(count(), r.status == ^:pending),
           maintenance: filter(count(), r.status == ^:maintenance),
           unreachable: filter(count(), r.status == ^:unreachable),
-          response_count: filter(count(r.response_time_ms), r.status == ^:up),
-          response_sum: filter(sum(r.response_time_ms), r.status == ^:up),
-          min_ms: filter(min(r.response_time_ms), r.status == ^:up),
-          max_ms: filter(max(r.response_time_ms), r.status == ^:up)
+          response_count: filter(count(r.response_time_ms), r.status in ^@up_statuses),
+          response_sum: filter(sum(r.response_time_ms), r.status in ^@up_statuses),
+          min_ms: filter(min(r.response_time_ms), r.status in ^@up_statuses),
+          max_ms: filter(max(r.response_time_ms), r.status in ^@up_statuses)
         }
 
     case bucket do
@@ -335,7 +344,8 @@ defmodule Sentinelix.Stats do
     Repo.one(
       from r in CheckResult,
         where:
-          r.monitor_id == ^id and r.status == ^:up and not is_nil(r.response_time_ms) and
+          r.monitor_id == ^id and r.status in ^@up_statuses and
+            not is_nil(r.response_time_ms) and
             r.checked_at >= ^from and r.checked_at < ^to,
         select:
           type(

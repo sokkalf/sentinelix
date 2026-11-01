@@ -17,11 +17,13 @@ defmodule Sentinelix.Metrics do
   All carry the labels `monitor_id`, `monitor` (the name) and `type`.
 
     * `sentinelix_monitor_enabled` – 1 if the monitor is enabled, else 0.
-    * `sentinelix_monitor_up` – 1 if up, 0 if down; absent while the
-      monitor is pending (new or retrying), in maintenance, unreachable (its
-      parent is down) or disabled.
-    * `sentinelix_monitor_status{status="up|down|pending|maintenance|unreachable"}` –
+    * `sentinelix_monitor_up` – 1 if up (or warning), 0 if down; absent
+      while the monitor is pending (new or retrying), in maintenance,
+      unreachable (its parent is down) or disabled.
+    * `sentinelix_monitor_status{status="up|down|pending|maintenance|unreachable|warning"}` –
       1 for the current status, 0 for the others (enabled monitors only).
+      `warning` is the status of a monitor with a warning raised by an
+      event (see `Sentinelix.Monitoring.Events`).
     * `sentinelix_monitor_warning` – 1 while a check reports a warning (e.g.
       a certificate close to expiry; enabled monitors only).
     * `sentinelix_monitor_response_time_ms` – response time of the latest
@@ -59,7 +61,7 @@ defmodule Sentinelix.Metrics do
   alias Sentinelix.Monitoring.Worker
 
   @peep Sentinelix.Peep
-  @statuses [:up, :down, :pending, :maintenance, :unreachable]
+  @statuses [:up, :down, :pending, :maintenance, :unreachable, :warning]
 
   @gauges [
     {"sentinelix_monitor_enabled", "Whether the monitor is enabled (1) or paused (0)."},
@@ -160,9 +162,10 @@ defmodule Sentinelix.Metrics do
   defp status_samples(%{enabled: false}), do: []
 
   defp status_samples(%{labels: labels, status: current} = row) do
+    # A warning (raised by an event) is up, with something to look at.
     up =
-      if current in [:up, :down],
-        do: [{"sentinelix_monitor_up", labels, bool(current == :up)}],
+      if current in [:up, :warning, :down],
+        do: [{"sentinelix_monitor_up", labels, bool(current != :down)}],
         else: []
 
     statuses =

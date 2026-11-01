@@ -68,7 +68,7 @@ defmodule SentinelixWeb.DashboardLive do
   alias SentinelixWeb.DashboardLive.{Matrix, Rows}
   alias SentinelixWeb.MonitorIndex
 
-  @statuses ~w(up down pending unreachable maintenance paused)a
+  @statuses ~w(up warning down pending unreachable maintenance paused)a
   @max_overrides 500
   @layouts [list: "List", grid: "Grid", matrix: "Matrix"]
 

@@ -8,7 +8,8 @@ defmodule SentinelixWeb.MonitorComponents do
 
   alias Sentinelix.Monitoring.{CheckResult, Labels, Monitor}
 
-  @type display_status :: :up | :down | :pending | :maintenance | :unreachable | :paused
+  @type display_status ::
+          :up | :down | :pending | :maintenance | :unreachable | :warning | :paused
 
   @type_labels %{
     http: "HTTP(S)",
@@ -265,6 +266,7 @@ defmodule SentinelixWeb.MonitorComponents do
   def status_label(:pending), do: "Pending"
   def status_label(:maintenance), do: "Maintenance"
   def status_label(:unreachable), do: "Unreachable"
+  def status_label(:warning), do: "Warning"
   def status_label(:paused), do: "Paused"
 
   defp badge_class(:up), do: "badge-success"
@@ -272,6 +274,7 @@ defmodule SentinelixWeb.MonitorComponents do
   defp badge_class(:pending), do: "badge-warning"
   defp badge_class(:maintenance), do: "badge-info"
   defp badge_class(:unreachable), do: "badge-error badge-soft"
+  defp badge_class(:warning), do: "border-amber-500 bg-amber-500 text-white"
   defp badge_class(:paused), do: "badge-ghost"
 
   @doc """
@@ -282,12 +285,14 @@ defmodule SentinelixWeb.MonitorComponents do
   def status_text_class(:pending), do: "text-warning"
   def status_text_class(:maintenance), do: "text-info"
   def status_text_class(:unreachable), do: "text-error/70"
+  def status_text_class(:warning), do: "text-amber-500"
   def status_text_class(_status), do: "text-base-content/50"
 
   @doc """
   The icon of a status, so a status reads without its color: a check for
   up, a cross for down, a "no" sign for unreachable, a clock for pending,
-  a wrench for maintenance and a pause sign for paused.
+  a wrench for maintenance, a warning sign for warning and a pause sign
+  for paused.
   """
   @spec status_icon_name(atom()) :: String.t()
   def status_icon_name(:up), do: "hero-check-circle-mini"
@@ -295,6 +300,7 @@ defmodule SentinelixWeb.MonitorComponents do
   def status_icon_name(:unreachable), do: "hero-no-symbol-mini"
   def status_icon_name(:pending), do: "hero-clock-mini"
   def status_icon_name(:maintenance), do: "hero-wrench-screwdriver-mini"
+  def status_icon_name(:warning), do: "hero-exclamation-triangle-mini"
   def status_icon_name(:paused), do: "hero-pause-circle-mini"
   def status_icon_name(_status), do: "hero-question-mark-circle-mini"
 
@@ -479,6 +485,7 @@ defmodule SentinelixWeb.MonitorComponents do
   def status_tile_class(:unreachable), do: "border-dashed border-error/70 bg-error/25"
   def status_tile_class(:pending), do: "border-warning bg-warning/25"
   def status_tile_class(:maintenance), do: "border-info/60 bg-info/15"
+  def status_tile_class(:warning), do: "border-amber-500 bg-amber-500/25"
 
   def status_tile_class(:paused),
     do: "border-dashed border-base-content/30 bg-base-200 text-base-content/60"
@@ -536,6 +543,7 @@ defmodule SentinelixWeb.MonitorComponents do
   defp pill_class(:pending), do: "bg-warning"
   defp pill_class(:maintenance), do: "bg-info"
   defp pill_class(:unreachable), do: "bg-error/40"
+  defp pill_class(:warning), do: "bg-amber-500"
 
   defp pill_title(result) do
     [

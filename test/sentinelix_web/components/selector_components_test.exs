@@ -29,6 +29,7 @@ defmodule SentinelixWeb.SelectorComponentsTest do
                "status=pending",
                "status=maintenance",
                "status=unreachable",
+               "status=warning",
                "status=paused"
              ]
 
@@ -37,7 +38,7 @@ defmodule SentinelixWeb.SelectorComponentsTest do
       assert suggestions("env=prod,  s") ==
                ["env=prod,  site", "env=prod,  site=oslo"] ++
                  Enum.map(
-                   ~w(up down pending maintenance unreachable paused),
+                   ~w(up down pending maintenance unreachable warning paused),
                    &"env=prod,  status=#{&1}"
                  )
     end

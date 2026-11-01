@@ -35,8 +35,8 @@ defmodule Sentinelix.Monitoring.Grouping do
 
   `severity/0` orders the statuses from worst to best. A group's worst
   status is the most severe status of its monitors, and a group has
-  `problems` when one of them is down, unreachable or pending
-  (`problem_statuses/0`).
+  `problems` when one of them is down, unreachable, pending or has a
+  warning (`problem_statuses/0`).
   Statuses unknown to this module rank as the most severe, so a new status
   shows rather than hides; add it to `severity/0`.
   """
@@ -44,8 +44,8 @@ defmodule Sentinelix.Monitoring.Grouping do
   alias Sentinelix.Monitoring.Labels
   alias Sentinelix.Stats
 
-  @severity [:down, :unreachable, :pending, :maintenance, :up, :paused]
-  @problem_statuses [:down, :unreachable, :pending]
+  @severity [:down, :unreachable, :pending, :warning, :maintenance, :up, :paused]
+  @problem_statuses [:down, :unreachable, :pending, :warning]
   @sorts [:problems, :name]
 
   defmodule Group do
@@ -58,7 +58,8 @@ defmodule Sentinelix.Monitoring.Grouping do
       * `counts` – monitors per status (every status of
         `Sentinelix.Monitoring.Grouping.severity/0`, 0 when none), `total`.
       * `worst` – the most severe status present, `nil` when empty.
-      * `problems` – whether a monitor is down, unreachable or pending.
+      * `problems` – whether a monitor is down, unreachable, pending or has
+        a warning.
       * `uptime` – the uptime percentage over all checks of its monitors
         (see `Sentinelix.Stats.uptime_percent/1`), `nil` without checks.
       * `groups` – the nested groups (one level per further key), `[]` at
@@ -108,7 +109,7 @@ defmodule Sentinelix.Monitoring.Grouping do
   @spec severity() :: [atom()]
   def severity, do: @severity
 
-  @doc "The statuses that make a group a problem: down, unreachable and pending."
+  @doc "The statuses that make a group a problem: down, unreachable, pending and warning."
   @spec problem_statuses() :: [atom()]
   def problem_statuses, do: @problem_statuses
 
