@@ -176,4 +176,207 @@ defmodule Sentinelix.Checks.HTTPTest do
       assert opts.(monitor(%{}), "https://x")[:transport_opts] == [log_level: :error]
     end
   end
+
+  describe "assertions" do
+    @json ~s({"status": "ok", "queue": {"depth": 250}, "checks": [{"name": "db", "healthy": true}], "x": null})
+
+    defp json_response(conn, body \\ @json) do
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.put_resp_header("x-version", "1.2.3")
+      |> Plug.Conn.send_resp(200, body)
+    end
+
+    defp check(assertions, settings \\ %{}) do
+      HTTP.run(monitor(Map.put(settings, :assertions, assertions)))
+    end
+
+    defp a(source, path, comparison, value \\ nil, opts \\ []) do
+      Enum.into(opts, %{source: source, path: path, comparison: comparison, value: value})
+    end
+
+    test "all passing is up" do
+      stub(&json_response/1)
+
+      assert {:up, %{status_code: 200, message: "200 OK, 3 assertions passed"} = details} =
+               check([
+                 a("json", "status", "equals", "ok"),
+                 a("json", "queue.depth", "<", "1000"),
+                 a("header", "content-type", "contains", "application/json")
+               ])
+
+      refute Map.has_key?(details, :meta)
+
+      assert {:up, %{message: "200 OK, 1 assertion passed"}} =
+               check([a("body", nil, "contains", "queue")])
+    end
+
+    test "body comparisons" do
+      stub(&Plug.Conn.send_resp(&1, 200, "  healthy\n"))
+
+      for {comparison, value, expected} <- [
+            {"equals", "  healthy\n", :up},
+            {"equals", "healthy", {:down, ~s(Body is "  healthy\n", expected "healthy")}},
+            {"not_equals", "sick", :up},
+            {"contains", "healthy", :up},
+            {"contains", "OK", {:down, ~s(Body does not contain "OK")}},
+            {"not_contains", "error", :up},
+            {"not_contains", "heal", {:down, ~s(Body contains "heal")}},
+            {"regex", ~S"^\s*healthy\s*$", :up},
+            {"regex", "^healthy", {:down, "Body does not match /^healthy/"}},
+            {"not_regex", "sick", :up},
+            {"not_regex", "heal", {:down, "Body matches /heal/"}},
+            {">", "1", {:down, ~s(Body is "  healthy\n", expected > 1 (not a number\))}}
+          ] do
+        assert_result(check([a("body", nil, comparison, value)]), expected, comparison)
+      end
+    end
+
+    test "json comparisons" do
+      stub(&json_response/1)
+
+      for {path, comparison, value, expected} <- [
+            {"status", "equals", "ok", :up},
+            {"$.status", "not_equals", "ok",
+             {:down, ~s(JSON $.status is "ok", expected anything but "ok")}},
+            {"checks.0.name", "contains", "d", :up},
+            {"checks.0.name", "not_contains", "x", :up},
+            {"checks.0.healthy", "equals", "true", :up},
+            {"checks", "regex", ~s("name":"db"), :up},
+            {"status", "not_regex", "^fail", :up},
+            {"queue.depth", "<", "100", {:down, ~s(JSON queue.depth is "250", expected < 100)}},
+            {"queue.depth", "<=", "250", :up},
+            {"queue.depth", ">", "249.5", :up},
+            {"queue.depth", ">=", "251", {:down, ~s(JSON queue.depth is "250", expected >= 251)}},
+            {"x", "equals", "null", :up},
+            {"x", "exists", nil, :up},
+            {"missing", "not_exists", nil, :up},
+            {"checks.5", "exists", nil, {:down, "JSON checks.5 not found"}},
+            {"missing", "equals", "x", {:down, "JSON missing not found"}},
+            {"status", "not_exists", nil,
+             {:down, ~s(JSON status is "ok", expected it not to exist)}}
+          ] do
+        assert_result(
+          check([a("json", path, comparison, value)]),
+          expected,
+          "#{path} #{comparison}"
+        )
+      end
+    end
+
+    test "header comparisons" do
+      stub(fn conn ->
+        conn
+        |> Plug.Conn.prepend_resp_headers([
+          {"vary", "accept"},
+          {"vary", "cookie"},
+          {"x-count", "42"}
+        ])
+        |> json_response()
+      end)
+
+      for {name, comparison, value, expected} <- [
+            {"Content-Type", "contains", "application/json", :up},
+            {"x-version", "equals", "1.2.3", :up},
+            {"x-version", "not_equals", "1.2.3",
+             {:down, ~s(Header x-version is "1.2.3", expected anything but "1.2.3")}},
+            {"x-version", "regex", ~S"^1\.", :up},
+            {"x-version", "not_regex", ~S"^2\.", :up},
+            {"x-version", "not_contains", "beta", :up},
+            {"vary", "equals", "accept, cookie", :up},
+            {"x-version", "exists", nil, :up},
+            {"x-missing", "not_exists", nil, :up},
+            {"x-count", ">", "10", :up},
+            {"x-count", "<", "10", {:down, ~s(Header x-count is "42", expected < 10)}},
+            {"x-missing", "exists", nil, {:down, "Header x-missing missing"}},
+            {"x-missing", "contains", "x", {:down, "Header x-missing missing"}},
+            {"x-version", "not_exists", nil,
+             {:down, ~s(Header x-version is "1.2.3", expected it not to exist)}}
+          ] do
+        assert_result(
+          check([a("header", name, comparison, value)]),
+          expected,
+          "#{name} #{comparison}"
+        )
+      end
+    end
+
+    defp assert_result(result, :up, label), do: assert({:up, _} = result, label)
+
+    defp assert_result(result, {:down, message}, label) do
+      assert {:down, %{message: ^message, meta: %{failed_assertion: 0}}} = result, label
+    end
+
+    test "case-insensitive comparisons" do
+      stub(&json_response/1)
+
+      assert {:down, _} = check([a("json", "status", "equals", "OK")])
+      assert {:up, _} = check([a("json", "status", "equals", "OK", case_sensitive: false)])
+      assert {:up, _} = check([a("body", nil, "regex", "STATUS", case_sensitive: false)])
+      assert {:down, _} = check([a("body", nil, "regex", "STATUS")])
+
+      assert {:up, _} =
+               check([a("header", "content-type", "contains", "JSON", case_sensitive: false)])
+    end
+
+    test "the first failing assertion decides" do
+      stub(&json_response/1)
+
+      assert {:down, %{message: "Header x-missing missing", meta: %{failed_assertion: 1}}} =
+               check([
+                 a("json", "status", "equals", "ok"),
+                 a("header", "x-missing", "exists"),
+                 a("json", "status", "equals", "fail")
+               ])
+    end
+
+    test "a body that isn't JSON fails JSON assertions" do
+      stub(&Plug.Conn.send_resp(&1, 200, "<html>"))
+
+      assert {:down, %{message: "Response body is not valid JSON", meta: %{failed_assertion: 1}}} =
+               check([a("body", nil, "contains", "html"), a("json", "status", "exists")])
+    end
+
+    test "an unaccepted status fails before the assertions" do
+      stub(&Plug.Conn.send_resp(&1, 503, "fine"))
+
+      assert {:down, %{status_code: 503, message: message} = details} =
+               check([a("body", nil, "contains", "fine")])
+
+      assert message =~ "Unexpected status 503"
+      refute Map.has_key?(details, :meta)
+    end
+
+    test "the body is only read when an assertion needs it" do
+      stub(&json_response/1)
+
+      assert {:ok, %Req.Response{body: ""}, _} = HTTP.request(monitor(%{}))
+
+      header_only = monitor(%{assertions: [a("header", "x-version", "exists")]})
+      assert {:ok, %Req.Response{body: ""}, _} = HTTP.request(header_only)
+
+      with_body = monitor(%{assertions: [a("json", "status", "exists")]})
+      assert {:ok, %Req.Response{body: @json}, _} = HTTP.request(with_body)
+    end
+
+    test "non-UTF-8 bodies are matched byte-wise" do
+      stub(&Plug.Conn.send_resp(&1, 200, <<"OK ", 0xFF, 0xFE>>))
+
+      assert {:up, _} = check([a("body", nil, "regex", "^OK ..$")])
+      assert {:up, _} = check([a("body", nil, "contains", "ok", case_sensitive: false)])
+
+      assert {:down, %{message: ~s(Body is "<binary, 5 bytes>", expected "OK")}} =
+               check([a("body", nil, "equals", "OK")])
+    end
+
+    test "assertions are checked on the final response after redirects" do
+      stub(fn
+        %{request_path: "/old"} = conn -> redirect(conn, 301, "/new")
+        conn -> json_response(conn)
+      end)
+
+      assert {:up, _} =
+               check([a("json", "status", "equals", "ok")], %{url: "https://example.com/old"})
+    end
+  end
 end
