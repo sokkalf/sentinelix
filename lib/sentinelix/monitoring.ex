@@ -33,7 +33,7 @@ defmodule Sentinelix.Monitoring do
   of all monitors, broadcast by `Sentinelix.Monitoring.Worker`:
 
     * `{:status_changed, %Monitor{}, old_status, new_status, %CheckResult{}}`
-      – the monitor's status (`:pending`, `:up` or `:down`) changed.
+      – the monitor's status (`:pending`, `:up`, `:warning` or `:down`) changed.
     * `{:warning_raised, %Monitor{}, %CheckResult{}}` – the monitor is up
       but a check reported a warning (e.g. a TLS certificate close to
       expiry; the result's message says why).
@@ -287,6 +287,38 @@ defmodule Sentinelix.Monitoring do
   end
 
   @doc """
+  Gets a monitor (of any type) by its event token, or `nil`. Backed by a
+  unique index.
+  """
+  @spec get_monitor_by_event_token(String.t()) :: Monitor.t() | nil
+  def get_monitor_by_event_token(token) when is_binary(token) and token != "",
+    do: Repo.get_by(Monitor, event_token: token)
+
+  def get_monitor_by_event_token(_token), do: nil
+
+  @doc """
+  Gives a monitor a new event token (see `Sentinelix.Monitoring.Events`),
+  replacing the one it has. Broadcasts `{:monitor_updated, monitor}`.
+  """
+  @spec generate_event_token(Monitor.t()) :: {:ok, Monitor.t()} | {:error, Ecto.Changeset.t()}
+  def generate_event_token(%Monitor{} = monitor),
+    do: put_event_token(monitor, Settings.generate_token())
+
+  @doc """
+  Removes a monitor's event token: events can't be posted to it until a
+  new one is generated. Broadcasts `{:monitor_updated, monitor}`.
+  """
+  @spec revoke_event_token(Monitor.t()) :: {:ok, Monitor.t()} | {:error, Ecto.Changeset.t()}
+  def revoke_event_token(%Monitor{} = monitor), do: put_event_token(monitor, nil)
+
+  defp put_event_token(monitor, token) do
+    monitor
+    |> Monitor.event_token_changeset(token)
+    |> Repo.update()
+    |> broadcast_monitor_change(:monitor_updated)
+  end
+
+  @doc """
   Creates a monitor.
 
   The notification channels marked as default are attached to it (see
@@ -372,7 +404,8 @@ defmodule Sentinelix.Monitoring do
   end
 
   @doc """
-  Deletes a monitor together with its check results and incidents.
+  Deletes a monitor together with its check results, incidents, events
+  and warnings.
 
   Its children lose their parent; each is broadcast as `{:monitor_updated,
   child}`.

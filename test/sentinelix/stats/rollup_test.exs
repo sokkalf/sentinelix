@@ -121,14 +121,14 @@ defmodule Sentinelix.Stats.RollupTest do
 
     test "does nothing before the first rollup" do
       assert Rollup.prune(now: @now, retention_days: 2, rollup_retention_days: 2) ==
-               %{results: 0, rollups: 0}
+               %{results: 0, rollups: 0, events: 0}
     end
 
     test "deletes raw results and rollups past their retention" do
       {:ok, 5} = Rollup.run(now: @now)
 
       assert Rollup.prune(now: @now, retention_days: 7, rollup_retention_days: 365) ==
-               %{results: 3, rollups: 1}
+               %{results: 3, rollups: 1, events: 0}
 
       assert Repo.aggregate(CheckResult, :count) == 2
       assert length(rollups()) == 4
@@ -138,14 +138,14 @@ defmodule Sentinelix.Stats.RollupTest do
       {:ok, 5} = Rollup.run(now: @now)
 
       # config.exs: 90 days raw, 365 days rollups.
-      assert Rollup.prune(now: @now) == %{results: 2, rollups: 1}
+      assert Rollup.prune(now: @now) == %{results: 2, rollups: 1, events: 0}
     end
 
     test "keeps data forever with a retention of 0 or nil" do
       {:ok, 5} = Rollup.run(now: @now)
 
       assert Rollup.prune(now: @now, retention_days: 0, rollup_retention_days: nil) ==
-               %{results: 0, rollups: 0}
+               %{results: 0, rollups: 0, events: 0}
     end
 
     test "never deletes results that are not rolled up" do

@@ -27,11 +27,13 @@ config :sentinelix, Sentinelix.Stats,
 
 # Rate limits per client IP as {limit, period_ms} (nil disables); see
 # Sentinelix.RateLimit and config/runtime.exs (LOGIN_RATE_LIMIT,
-# PUSH_RATE_LIMIT, WALL_RATE_LIMIT, TRUSTED_PROXIES). `wall` counts wall
-# display page loads and (re)connects.
+# PUSH_RATE_LIMIT, EVENTS_RATE_LIMIT, WALL_RATE_LIMIT, TRUSTED_PROXIES).
+# `events` counts posted monitor events, `wall` wall display page loads
+# and (re)connects.
 config :sentinelix, Sentinelix.RateLimit,
   login: {10, 60_000},
   push: {300, 60_000},
+  events: {120, 60_000},
   wall: {60, 60_000}
 
 config :sentinelix, :trusted_proxies, []

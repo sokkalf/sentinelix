@@ -1,8 +1,8 @@
 defmodule Sentinelix.RateLimit do
   @moduledoc """
   Fixed-window rate limiting (Hammer, ETS backend) for the endpoints that
-  are reachable without a session: the local login form, the push
-  endpoint and wall displays.
+  are reachable without a session: the local login form, the push and
+  event endpoints and wall displays.
 
   Limits are configured per bucket as `{limit, period_ms}`; `nil` (or a
   limit of 0) disables the bucket:
@@ -10,17 +10,18 @@ defmodule Sentinelix.RateLimit do
       config :sentinelix, Sentinelix.RateLimit,
         login: {10, 60_000},
         push: {300, 60_000},
+        events: {120, 60_000},
         wall: {60, 60_000}
 
-  In production `LOGIN_RATE_LIMIT`, `PUSH_RATE_LIMIT` and
-  `WALL_RATE_LIMIT` set the limit per minute (see config/runtime.exs).
+  In production `LOGIN_RATE_LIMIT`, `PUSH_RATE_LIMIT`, `EVENTS_RATE_LIMIT`
+  and `WALL_RATE_LIMIT` set the limit per minute (see config/runtime.exs).
   The key is usually the client IP, see `SentinelixWeb.Plugs.ClientIP` for
   running behind a reverse proxy.
   """
 
   use Hammer, backend: :ets
 
-  @type bucket :: :login | :push | :wall
+  @type bucket :: :login | :push | :events | :wall
 
   @doc """
   Counts a request of `key` in `bucket`.

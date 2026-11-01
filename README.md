@@ -37,12 +37,15 @@ public status pages.
 * **Bulk actions** in the monitor list: label, pause, resume, attach
   notification channels to or delete many monitors at once.
 * **Notifications** by email, generic webhook, Slack, Discord, Telegram,
-  ntfy and Gotify, on down, recovery and certificate warnings, routed per
+  ntfy and Gotify, on down, recovery and warnings, routed per
   monitor or by selector (`env=prod` → ntfy).
 * **Maintenance windows** (one-off or recurring, time zone aware) that
   suppress alerts.
 * **Dependencies:** while a host's ping monitor is down, the monitors on
   that host are *unreachable* and stay quiet instead of all alerting.
+* **Events:** external systems (Patroni callbacks, a disk space script)
+  post events to any monitor; they show in its timeline, and a `warning`
+  event puts the monitor in an amber *warning* state until it is cleared.
 * **Public status pages** at `/status/<slug>`.
 * **Import and export** of monitors as YAML, to keep a large setup in git:
   from the monitor list, a mix task or a release command, with a dry run.
@@ -134,6 +137,7 @@ wrong.
 | --- | --- |
 | `TRUSTED_PROXIES` | Comma separated IP addresses / CIDR ranges of reverse proxies whose `X-Forwarded-For` header is trusted, e.g. `127.0.0.1,::1,172.16.0.0/12` |
 | `PUSH_RATE_LIMIT` | Push endpoint requests per minute and client IP (default 300, 0 disables) |
+| `EVENTS_RATE_LIMIT` | [Events](#events-and-warnings) posted per minute and client IP (default 120, 0 disables) |
 | `WALL_RATE_LIMIT` | [Wall display](#wall-displays) page loads and (re)connects per minute and client IP (default 60, 0 disables) |
 
 ## Deployment
@@ -229,6 +233,7 @@ proxy:
 * `/status/<slug>` – published status pages (and the `/live` websocket and
   `/assets` they use)
 * `/api/push/<token>` – push monitors (must be reachable by whatever pushes)
+* `/api/v1/events/<token>` – [monitor events](#events-and-warnings)
 * `/wall/<token>` – [wall displays](#wall-displays) (and `/live`, `/assets`)
 * `/healthz` – health check, `/metrics` – Prometheus (bearer token)
 * `/login`, `/auth/oidc`, `/auth/oidc/callback` – sign-in
@@ -237,10 +242,11 @@ Everything else requires a session.
 
 ### Rate limiting
 
-Password logins (`POST /login`), the push endpoint (`/api/push/<token>`)
-and wall displays (`/wall/<token>`, page loads and LiveView (re)connects)
-are rate limited per client IP in fixed one-minute windows
-(`LOGIN_RATE_LIMIT`, default 10; `PUSH_RATE_LIMIT`, default 300;
+Password logins (`POST /login`), the push endpoint (`/api/push/<token>`),
+the event endpoint (`/api/v1/events/<token>`) and wall displays
+(`/wall/<token>`, page loads and LiveView (re)connects) are rate limited
+per client IP in fixed one-minute windows (`LOGIN_RATE_LIMIT`, default 10;
+`PUSH_RATE_LIMIT`, default 300; `EVENTS_RATE_LIMIT`, default 120;
 `WALL_RATE_LIMIT`, default 60). Requests over the limit get
 `429 Too Many Requests` with a `Retry-After` header (a wall display reloads
 itself when it may again). The counters live in memory (ETS) and are per
@@ -363,7 +369,7 @@ Two keys are pseudo-labels instead of labels (so labels of your own named
 `status` or `name` can't be selected):
 
 * `status`: the current status, `up`, `down`, `pending`, `maintenance`,
-  `unreachable` or `paused` (with `=`, `!=`, `in` and `notin`): `status=down`,
+  `unreachable`, `warning` or `paused` (with `=`, `!=`, `in` and `notin`): `status=down`,
   `status in (down,pending)`.
 * `name`: the monitor's name, with any operator that takes a value:
   `name~api` (name contains "api", ignoring case), `name="Web 1"`.
@@ -399,12 +405,12 @@ the selector), and optionally by a second one to nest groups:
 Monitors without the key go to a *(none)* group.
 
 Each group header shows the worst status of its monitors, how many are up
-(`12/14 up`), how many are down, unreachable, pending, in maintenance or
-paused, and the group's 24h uptime (over all checks of its monitors, so
+(`12/14 up`), how many are down, unreachable, pending, warning, in
+maintenance or paused, and the group's 24h uptime (over all checks of its monitors, so
 monitors that check more often weigh more). Headers update live.
 
 * **Problems first** (the default sort): groups with a monitor that is down,
-  unreachable or pending come first, the worst first, and are expanded.
+  unreachable, pending or warning come first, the worst first, and are expanded.
   Groups without problems are collapsed and sorted by name. *By name* sorts
   all groups by name.
 * Click a header to expand or collapse a group, or use *Expand all* and
@@ -443,7 +449,8 @@ monitors; it is part of the URL too (`&layout=grid`):
 
 Statuses don't rely on color alone: tiles and cells also have an icon per
 status (a check for up, a cross for down, a "no" sign for unreachable, a
-clock for pending, a wrench for maintenance, a pause sign for paused),
+clock for pending, a wrench for maintenance, a warning sign for warning, a
+pause sign for paused),
 unreachable and paused have a dashed border, and screen readers get the
 status as text.
 
@@ -681,8 +688,8 @@ a monitor is deleted:
 
 | Metric | Meaning |
 | --- | --- |
-| `sentinelix_monitor_up` | 1 up, 0 down; absent while pending, in maintenance, unreachable or disabled |
-| `sentinelix_monitor_status{status="up\|down\|pending\|maintenance\|unreachable"}` | 1 for the current status (enabled monitors) |
+| `sentinelix_monitor_up` | 1 up (or warning), 0 down; absent while pending, in maintenance, unreachable or disabled |
+| `sentinelix_monitor_status{status="up\|down\|pending\|maintenance\|unreachable\|warning"}` | 1 for the current status (enabled monitors) |
 | `sentinelix_monitor_enabled` | 1 enabled, 0 paused |
 | `sentinelix_monitor_warning` | 1 while a check reports a warning (e.g. certificate close to expiry) |
 | `sentinelix_monitor_response_time_ms` | response time of the latest check |
@@ -709,7 +716,7 @@ metrics and BEAM VM metrics (`vm_*`).
 Notification channels are managed at `/settings/notifications` (email,
 generic webhook, Slack, Discord, Telegram, ntfy, Gotify). A channel is sent
 to when one of its monitors goes down, recovers, or raises/clears a warning
-(e.g. a TLS certificate close to expiry). Failed sends are retried (3
+(a TLS certificate close to expiry, or a [warning event](#events-and-warnings)). Failed sends are retried (3
 attempts, exponential backoff). Disabled channels are never sent to.
 
 A channel's monitors are the ones **attached** to it plus the ones its
@@ -816,6 +823,73 @@ page shows what a monitor depends on and what depends on it, and the
 dashboard counts unreachable monitors separately. Deleting a parent
 detaches its children; clones keep the parent of the original.
 
+## Events and warnings
+
+External systems can post **events** to any monitor, whatever its type.
+Generate an **event token** in the *Events* card on the monitor's page
+(regenerate or revoke it there too); it is separate from a push monitor's
+push token and only allows adding events to that monitor. The card shows
+the URL and a `curl` example.
+
+    POST /api/v1/events/<token>
+
+with a form or JSON body:
+
+| Field | |
+| --- | --- |
+| `title` | Required, a one-line description |
+| `message` | Optional, a longer text |
+| `severity` | `info` (default), `warning` or `ok`, see below |
+| `key` | Which warning a `warning` or `ok` event raises or clears (default: none) |
+| `ttl` | `warning` only: the warning expires after this long unless raised again, in seconds or with a unit (`90`, `30m`, `12h`, `7d`; at most 365 days) |
+| *anything else* | Kept as details of the event (e.g. `action`, `role`, `cluster`, `host`) |
+
+The answer is `201 {"ok": true, "status": "warning"}` with the monitor's
+resulting status, `400` with an `error` for invalid fields, `404` for an
+unknown token or a paused monitor and `429` when rate limited
+(`EVENTS_RATE_LIMIT`).
+
+A Patroni callback (`on_role_change`, `on_start`, `on_stop`, …) that records
+promotions and demotions on the node's monitor:
+
+```sh
+#!/bin/sh
+# patroni calls: <script> <action> <role> <cluster_name>
+curl -fsS -X POST "https://sentinelix.example/api/v1/events/$TOKEN" \
+  -d title="Patroni $1: $(hostname -s) is now $2" \
+  -d action="$1" -d role="$2" -d cluster="$3" -d host="$(hostname -f)"
+```
+
+Events show in the monitor's *Incidents and events* timeline, with their
+details folded away. What else happens depends on the severity:
+
+* `info`: nothing, the monitor's status doesn't change.
+* `warning`: raises the warning `key`. While a monitor has an active
+  warning, its successful checks show it as **warning** (amber) instead of
+  up, right away and until the warning is cleared. A check that fails still
+  takes it down; when it recovers, it is back in warning.
+* `ok`: clears the warning with the same `key`.
+
+Use keys for independent warnings, e.g. `key=disk` and `key=lag`: the
+monitor stays in warning until all of them are cleared. An `ok` without a
+key clears the warning without a key only. Raising a warning again replaces
+its title, message and ttl. Warnings with a `ttl` expire by themselves if no
+`ok` arrives, so a forgotten warning doesn't stay forever, and the monitor's
+page lists the active warnings with a button to clear them by hand. Expired
+and cleared warnings are logged as `ok` events.
+
+* `warning` **counts as up** for uptime and response times: the service
+  works, but needs attention.
+* Entering warning opens an incident and going back up resolves it, like
+  going down does. Channels are notified of the warning and of its clear,
+  like a certificate warning.
+* Status pages show a monitor in warning as *Degraded*, without the warning
+  incident or any events.
+* While a monitor is in maintenance or unreachable, warnings wait for its
+  next normal check.
+* Events are deleted after `RETENTION_DAYS`, like raw check results, and
+  with the monitor. Event tokens are not exported or copied by cloning.
+
 ## Import and export
 
 Monitors can be exported as YAML and imported again, e.g. to keep the setup
@@ -895,7 +969,8 @@ monitors:
 ## Data retention
 
 Raw check results are rolled up into hourly statistics every 5 minutes.
-Raw results older than `RETENTION_DAYS` (default 90) and rollups older than
+Raw results and [monitor events](#events-and-warnings) older than
+`RETENTION_DAYS` (default 90) and rollups older than
 `ROLLUP_RETENTION_DAYS` (default 365) are deleted hourly; 0 keeps them
 forever. Uptime and response time statistics for long windows are computed
 from the rollups.
@@ -956,7 +1031,7 @@ unlock unused deps, check formatting, Credo, run the tests). CI
 ```
 Sentinelix.Supervisor
 ├── SentinelixWeb.Telemetry, Sentinelix.Repo, Phoenix.PubSub, Finch
-├── Sentinelix.RateLimit                 login / push rate limits (ETS)
+├── Sentinelix.RateLimit                 login / push / events / wall rate limits (ETS)
 ├── OIDC provider configuration worker   (when OIDC is configured)
 ├── Sentinelix.Notifications.Supervisor  dispatcher + delivery tasks
 ├── Sentinelix.Maintenance.Cache         active maintenance windows
@@ -988,6 +1063,10 @@ Sentinelix.Supervisor
   succeeded in the engine's registry and broadcasts it to its children,
   which read their parent's state there when a check of theirs fails (see
   [Dependencies](#dependencies)).
+* **Events** – `Sentinelix.Monitoring.Events` stores events and the
+  active warnings they raise (per monitor and key) and tells the monitor's
+  worker, which applies them to its status right away and expires warnings
+  with a ttl (see [Events and warnings](#events-and-warnings)).
 * **Saved views** – `Sentinelix.SavedViews` stores a view as its URL
   parameters (`Monitoring.View.to_params/1`, so new view settings need no
   migration) and checks who sees and changes it against the caller's
@@ -1001,6 +1080,7 @@ Sentinelix.Supervisor
 * **Stats** – `Sentinelix.Stats` answers uptime/response time queries from
   hourly rollups plus recent raw results.
 * **Web** – LiveViews for the dashboard, monitors, maintenance, status pages
-  and settings; controllers for login/OIDC, push, health and metrics.
+  and settings; controllers for login/OIDC, push, events, health and
+  metrics.
   `SentinelixWeb.Plugs.ClientIP` resolves the client address behind trusted
   proxies.

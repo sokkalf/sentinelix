@@ -269,6 +269,9 @@ defmodule Sentinelix.StatusPagesTest do
       {:ok, _} = Monitoring.resolve_incident(recent)
       _other = incident_fixture(m3)
 
+      # Warning incidents are internal.
+      _warning = incident_fixture(m2, %{to_status: :warning})
+
       assert StatusPages.open_incident_monitor_ids([m1.id, m2.id]) == MapSet.new([m1.id])
 
       since = DateTime.add(DateTime.utc_now(), -7, :day)
@@ -284,6 +287,7 @@ defmodule Sentinelix.StatusPagesTest do
       assert status.(base) == :operational
       assert status.(%{base | incident?: true}) == :degraded
       assert status.(%{base | latest_status: :pending}) == :degraded
+      assert status.(%{base | latest_status: :warning}) == :degraded
       assert status.(%{base | latest_status: :down}) == :outage
       assert status.(%{base | latest_status: :unreachable}) == :unreachable
       assert status.(%{base | latest_status: :maintenance}) == :maintenance

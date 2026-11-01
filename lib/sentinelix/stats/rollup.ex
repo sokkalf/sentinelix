@@ -19,7 +19,9 @@ defmodule Sentinelix.Stats.Rollup do
 
     * raw check results older than `:retention_days` (default 90) – but
       never results that are not yet covered by a rollup,
-    * rollups older than `:rollup_retention_days` (default 365).
+    * rollups older than `:rollup_retention_days` (default 365),
+    * monitor events (`Sentinelix.Monitoring.Events`) older than
+      `:retention_days`, like the raw results.
 
   Both are read from `config :sentinelix, Sentinelix.Stats` (see
   `config/runtime.exs` for the `RETENTION_DAYS` and
@@ -29,7 +31,7 @@ defmodule Sentinelix.Stats.Rollup do
 
   import Ecto.Query
 
-  alias Sentinelix.Monitoring.{CheckResult, Monitor}
+  alias Sentinelix.Monitoring.{CheckResult, Events, Monitor}
   alias Sentinelix.Repo
   alias Sentinelix.Stats
   alias Sentinelix.Stats.{HourlyStat, RollupState}
@@ -106,6 +108,9 @@ defmodule Sentinelix.Stats.Rollup do
   end
 
   defp rollup_query(since, until) do
+    # `:warning` results count as up (see Semantics in Sentinelix.Stats).
+    up = Stats.up_statuses()
+
     query =
       from r in CheckResult,
         where: r.checked_at < ^until,
@@ -113,15 +118,15 @@ defmodule Sentinelix.Stats.Rollup do
         select: %{
           monitor_id: r.monitor_id,
           hour: fragment("date_trunc('hour', ?)", r.checked_at),
-          up_count: filter(count(), r.status == ^:up),
+          up_count: filter(count(), r.status in ^up),
           down_count: filter(count(), r.status == ^:down),
           pending_count: filter(count(), r.status == ^:pending),
           maintenance_count: filter(count(), r.status == ^:maintenance),
           unreachable_count: filter(count(), r.status == ^:unreachable),
-          response_count: filter(count(r.response_time_ms), r.status == ^:up),
-          avg_ms: filter(avg(r.response_time_ms), r.status == ^:up),
-          min_ms: filter(min(r.response_time_ms), r.status == ^:up),
-          max_ms: filter(max(r.response_time_ms), r.status == ^:up)
+          response_count: filter(count(r.response_time_ms), r.status in ^up),
+          avg_ms: filter(avg(r.response_time_ms), r.status in ^up),
+          min_ms: filter(min(r.response_time_ms), r.status in ^up),
+          max_ms: filter(max(r.response_time_ms), r.status in ^up)
         }
 
     if since, do: where(query, [r], r.checked_at >= ^since), else: query
@@ -136,7 +141,11 @@ defmodule Sentinelix.Stats.Rollup do
 
   Returns the number of deleted rows.
   """
-  @spec prune(keyword()) :: %{results: non_neg_integer(), rollups: non_neg_integer()}
+  @spec prune(keyword()) :: %{
+          results: non_neg_integer(),
+          rollups: non_neg_integer(),
+          events: non_neg_integer()
+        }
   def prune(opts \\ []) do
     config = Application.get_env(:sentinelix, Stats, [])
     now = Keyword.get_lazy(opts, :now, &DateTime.utc_now/0)
@@ -147,7 +156,8 @@ defmodule Sentinelix.Stats.Rollup do
 
     %{
       results: prune_results(now, retention_days, batch_size),
-      rollups: prune_rollups(now, rollup_days)
+      rollups: prune_rollups(now, rollup_days),
+      events: prune_events(now, retention_days)
     }
   end
 
@@ -187,6 +197,9 @@ defmodule Sentinelix.Stats.Rollup do
       do: delete_results(monitor_id, cutoff, batch_size, total + count),
       else: total + count
   end
+
+  defp prune_events(_now, days) when days in [nil, 0], do: 0
+  defp prune_events(now, days), do: Events.prune_events(DateTime.add(now, -days, :day))
 
   defp prune_rollups(_now, days) when days in [nil, 0], do: 0
 

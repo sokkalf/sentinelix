@@ -178,6 +178,8 @@ if config_env() != :test do
   #                      (default 10, 0 disables)
   #   PUSH_RATE_LIMIT    push endpoint requests per minute and client IP
   #                      (default 300, 0 disables)
+  #   EVENTS_RATE_LIMIT  monitor events posted per minute and client IP
+  #                      (default 120, 0 disables)
   #   WALL_RATE_LIMIT    wall display page loads and (re)connects per
   #                      minute and client IP (default 60, 0 disables)
   #   TRUSTED_PROXIES    comma separated IPs/CIDR ranges of reverse proxies
@@ -198,6 +200,7 @@ if config_env() != :test do
          reject_nil.(
            login: rate_limit.("LOGIN_RATE_LIMIT"),
            push: rate_limit.("PUSH_RATE_LIMIT"),
+           events: rate_limit.("EVENTS_RATE_LIMIT"),
            wall: rate_limit.("WALL_RATE_LIMIT")
          )
 

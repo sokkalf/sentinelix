@@ -19,6 +19,17 @@ defmodule Sentinelix.Notifications.Dispatcher do
     * `{:warning_cleared, m, r}` → `:warning_cleared` if a warning was
       notified.
 
+  The `:warning` status (a warning raised by an event, see
+  `Sentinelix.Monitoring.Events`) is up with a warning:
+
+    * `{:status_changed, m, old, :warning, r}` → a recovery (`:up`) as for
+      `:up` above, then `:warning` unless a warning was already notified;
+    * `{:status_changed, m, :warning, :up, r}` → `:warning_cleared` if a
+      warning was notified.
+
+  Warnings of checks and of events share the notified warning: whichever
+  comes first is notified, and clearing either one notifies the clear.
+
   The last notified status and warning are persisted per monitor
   (`Sentinelix.Notifications.State`). Workers start from the last stored
   check result, but they don't persist their warning flag (so every restart
@@ -104,11 +115,13 @@ defmodule Sentinelix.Notifications.Dispatcher do
         {:ok, _} = Notifications.put_state(notified, %{status: :down})
         dispatch(Event.new(:down, monitor, result), state)
 
-      {:up, last} ->
+      {:up, _last} ->
         {:ok, _} = Notifications.put_state(notified, %{status: :up, warning: false})
+        notify_up(notified, monitor, old, result, state)
 
-        if last == :down or (last == nil and old == :down),
-          do: dispatch(Event.new(:up, monitor, result), state)
+      {:warning, _last} ->
+        {:ok, _} = Notifications.put_state(notified, %{status: :up, warning: true})
+        notify_warning_status(notified, monitor, old, result, state)
 
       _pending ->
         :ok
@@ -138,6 +151,30 @@ defmodule Sentinelix.Notifications.Dispatcher do
   end
 
   defp handle_event(_message, _state), do: :ok
+
+  defp notify_up(notified, monitor, old, result, state) do
+    cond do
+      recovery?(old, notified.status) ->
+        dispatch(Event.new(:up, monitor, result), state)
+
+      old == :warning and notified.warning ->
+        dispatch(Event.new(:warning_cleared, monitor, result), state)
+
+      true ->
+        :ok
+    end
+  end
+
+  # Up, with a warning: a recovery clears the notified warning.
+  defp notify_warning_status(notified, monitor, old, result, state) do
+    recovery? = recovery?(old, notified.status)
+    if recovery?, do: dispatch(Event.new(:up, monitor, result), state)
+
+    if recovery? or not notified.warning,
+      do: dispatch(Event.new(:warning, monitor, result), state)
+  end
+
+  defp recovery?(old, last), do: last == :down or (last == nil and old == :down)
 
   defp dispatch(%Event{} = event, state) do
     for channel <- Notifications.list_notified_channels(event.monitor_id) do

@@ -11,7 +11,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
   import Sentinelix.StatusPagesFixtures
 
   alias Sentinelix.{Maintenance, Monitoring, Notifications, Repo}
-  alias Sentinelix.Monitoring.{Monitor, Settings}
+  alias Sentinelix.Monitoring.{Events, Monitor, Settings}
   alias Sentinelix.StatusPages.PageMonitor
   alias SentinelixWeb.MonitorLive.Form
 
@@ -376,6 +376,117 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
       new_incident = incident_fixture(monitor, %{message: "down again"})
       assert has_element?(view, "#incidents-#{new_incident.id}", "down again")
+    end
+
+    test "events show in the timeline, with their details, and live", %{conn: conn} do
+      monitor = monitor_fixture(:postgres, %{name: "DB"})
+      incident = incident_fixture(monitor, %{message: "refused"})
+
+      {:ok, _event, _status} =
+        Events.record_event(monitor, %{
+          "title" => "Patroni on_role_change: db1 is now primary",
+          "role" => "primary",
+          "attempt" => 2
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+      [event] = Events.list_events(monitor)
+
+      assert has_element?(view, "#incidents-#{incident.id}[data-kind=incident]", "refused")
+      row = "#incidents-event-#{event.id}[data-kind=event][data-severity=info]"
+      assert has_element?(view, row, "Patroni on_role_change: db1 is now primary")
+      assert has_element?(view, "#{row} dt", "role")
+      assert has_element?(view, "#{row} dd", "primary")
+      assert has_element?(view, "#{row} dd", "2")
+
+      # Newest first.
+      assert view |> element("#incidents") |> render() |> :binary.match("Patroni") <
+               view |> element("#incidents") |> render() |> :binary.match("refused")
+
+      {:ok, live_event, _} =
+        Events.record_event(monitor, %{"title" => "Disk 91% full", "severity" => "warning"})
+
+      assert has_element?(view, "#incidents-event-#{live_event.id}[data-severity=warning]")
+    end
+
+    test "shows active warnings and clears them", %{conn: conn, user: user} do
+      monitor = monitor_fixture(:postgres)
+
+      for {key, title} <- [{"disk", "Disk 91% full"}, {"", "Replication lag"}] do
+        {:ok, _, _} =
+          Events.record_event(monitor, %{
+            "title" => title,
+            "severity" => "warning",
+            "key" => key,
+            "ttl" => "1h"
+          })
+      end
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+      [disk, lag] = Events.active_warnings(monitor)
+      assert has_element?(view, "#warning-#{disk.id}", "Disk 91% full")
+      assert has_element?(view, "#warning-#{disk.id} code", "disk")
+      assert has_element?(view, "#warning-#{disk.id}-expires")
+      assert has_element?(view, "#warning-#{lag.id}", "Replication lag")
+
+      view |> element("#clear-warning-#{lag.id}") |> render_click()
+      assert render(view) =~ "Warning cleared."
+      refute has_element?(view, "#warning-#{lag.id}")
+      assert has_element?(view, "#warning-#{disk.id}")
+      refute has_element?(view, "#clear-warnings")
+
+      assert [%{title: "Warning cleared: Replication lag", metadata: metadata} | _] =
+               Events.list_events(monitor)
+
+      assert metadata == %{"cleared_by" => user.email}
+
+      # Live: a new warning shows up.
+      {:ok, _, _} =
+        Events.record_event(monitor, %{
+          "title" => "Backup late",
+          "severity" => "warning",
+          "key" => "backup"
+        })
+
+      assert has_element?(view, "#active-warnings", "Backup late")
+
+      view |> element("#clear-warnings") |> render_click()
+      assert render(view) =~ "2 warnings cleared."
+      refute has_element?(view, "#active-warnings")
+    end
+
+    test "generates, regenerates and revokes the event token", %{conn: conn} do
+      monitor = monitor_fixture(:http)
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+
+      refute has_element?(view, "#event-url-value")
+      view |> element("#generate-event-token") |> render_click()
+      %{event_token: token} = Monitoring.get_monitor!(monitor.id)
+      assert is_binary(token)
+
+      assert view |> element("#event-url-value") |> render() =~ "/api/v1/events/#{token}"
+      assert view |> element("#event-curl") |> render() =~ "/api/v1/events/#{token}"
+
+      view |> element("#regenerate-event-token") |> render_click()
+      %{event_token: new_token} = Monitoring.get_monitor!(monitor.id)
+      assert new_token != token
+      assert view |> element("#event-url-value") |> render() =~ new_token
+
+      view |> element("#revoke-event-token") |> render_click()
+      assert Monitoring.get_monitor!(monitor.id).event_token == nil
+      assert has_element?(view, "#generate-event-token")
+    end
+
+    test "the warning status", %{conn: conn} do
+      monitor = monitor_fixture()
+      check_result_fixture(monitor, %{status: :warning, message: "Warning: Disk 91% full"})
+      incident_fixture(monitor, %{to_status: :warning, message: "Warning: Disk 91% full"})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+      assert has_element?(view, "#monitor-status", "Warning")
+      assert has_element?(view, "#heartbeats [data-status=warning]")
+      assert has_element?(view, "#incidents [data-kind=incident]", "Warning")
+      assert has_element?(view, "#stat-uptime-24h", "100%")
     end
 
     test "switches the chart range", %{conn: conn} do

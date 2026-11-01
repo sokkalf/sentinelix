@@ -74,7 +74,7 @@ defmodule SentinelixWeb.MonitorComponentsTest do
   end
 
   test "every status has an icon" do
-    for status <- ~w(up down unreachable pending maintenance paused)a do
+    for status <- ~w(up down unreachable pending maintenance warning paused)a do
       refute MonitorComponents.status_icon_name(status) == "hero-question-mark-circle-mini"
     end
   end

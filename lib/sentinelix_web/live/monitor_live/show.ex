@@ -1,9 +1,11 @@
 defmodule SentinelixWeb.MonitorLive.Show do
   @moduledoc """
   Monitor detail page: current status, heartbeats, uptime, a response time
-  chart with selectable range, incidents, dependencies (the parent and the
-  dependents), the notification channels (attached or routed by selector,
-  with a test send to them) and the monitor's runtime state.
+  chart with selectable range, incidents and events (one timeline), the
+  active warnings raised by events (which can be cleared here), the event
+  token, dependencies (the parent and the dependents), the notification
+  channels (attached or routed by selector, with a test send to them) and
+  the monitor's runtime state.
   """
 
   use SentinelixWeb, :live_view
@@ -11,12 +13,13 @@ defmodule SentinelixWeb.MonitorLive.Show do
   import SentinelixWeb.MonitorComponents
 
   alias Sentinelix.{Maintenance, Monitoring, Notifications}
-  alias Sentinelix.Monitoring.History
+  alias Sentinelix.Monitoring.{Events, History, Incident, MonitorEvent}
   alias Sentinelix.Notifications.Delivery
   alias Sentinelix.Stats
 
   @heartbeats 100
   @incidents 25
+  @events 25
   @tick_ms 5_000
 
   # range => {label, seconds, source}: every raw result (:raw) or the
@@ -168,6 +171,64 @@ defmodule SentinelixWeb.MonitorLive.Show do
         </p>
       </div>
 
+      <div
+        :if={@warnings != []}
+        id="active-warnings"
+        class="rounded-box border border-amber-500/40 bg-amber-500/5 p-4"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="flex items-center gap-2 text-sm font-medium">
+            <.icon name="hero-exclamation-triangle" class="size-4 text-amber-500" />
+            {if length(@warnings) == 1, do: "Active warning", else: "Active warnings"}
+          </span>
+          <button
+            :if={length(@warnings) > 1}
+            id="clear-warnings"
+            type="button"
+            phx-click="clear_warnings"
+            data-confirm="Clear all warnings of this monitor?"
+            class="btn btn-xs"
+          >
+            Clear all
+          </button>
+        </div>
+        <ul class="mt-2 divide-y divide-amber-500/20 text-sm">
+          <li
+            :for={warning <- @warnings}
+            id={"warning-#{warning.id}"}
+            class="flex items-start justify-between gap-3 py-2"
+          >
+            <div class="min-w-0">
+              <div class="break-words font-medium">{warning.title}</div>
+              <p :if={warning.message} class="mt-0.5 whitespace-pre-line break-words text-xs">
+                {warning.message}
+              </p>
+              <div class="mt-0.5 text-xs text-base-content/60">
+                <span :if={warning.key != ""}>Key <code>{warning.key}</code> ·</span>
+                Raised <.local_time id={"warning-#{warning.id}-raised"} at={warning.raised_at} />
+                <span :if={warning.expires_at}>
+                  · Expires
+                  <.local_time id={"warning-#{warning.id}-expires"} at={warning.expires_at} />
+                </span>
+              </div>
+            </div>
+            <button
+              id={"clear-warning-#{warning.id}"}
+              type="button"
+              phx-click="clear_warning"
+              phx-value-id={warning.id}
+              class="btn btn-xs btn-ghost"
+            >
+              Clear
+            </button>
+          </li>
+        </ul>
+        <p class="mt-1 text-xs text-base-content/60">
+          Raised by events: while a warning is active, successful checks show the monitor as
+          warning. An event with <code>severity=ok</code> and the same key clears it.
+        </p>
+      </div>
+
       <div class="rounded-box border border-base-300 bg-base-100 p-4">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
           <span class="font-medium">Recent checks</span>
@@ -276,7 +337,9 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
       <div class="grid gap-4 lg:grid-cols-3">
         <div class="rounded-box border border-base-300 bg-base-100 lg:col-span-2">
-          <div class="border-b border-base-300 px-4 py-3 text-sm font-medium">Incidents</div>
+          <div class="border-b border-base-300 px-4 py-3 text-sm font-medium">
+            Incidents and events
+          </div>
           <div class="overflow-x-auto">
             <table class="table table-sm">
               <thead>
@@ -284,7 +347,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
                   <th>Status</th>
                   <th>Started</th>
                   <th>Duration</th>
-                  <th class="hidden sm:table-cell">Message</th>
+                  <th>Message</th>
                 </tr>
               </thead>
               <tbody id="incidents" phx-update="stream">
@@ -293,28 +356,18 @@ defmodule SentinelixWeb.MonitorLive.Show do
                     No incidents. <.icon name="hero-sparkles-micro" class="size-4" />
                   </td>
                 </tr>
-                <tr :for={{dom_id, incident} <- @streams.incidents} id={dom_id}>
-                  <td>
-                    <span :if={incident.resolved_at} class="badge badge-success badge-soft badge-sm">Resolved</span>
-                    <span :if={!incident.resolved_at} class="badge badge-error badge-sm">Ongoing</span>
-                  </td>
-                  <td class="whitespace-nowrap">
-                    <.local_time id={"#{dom_id}-started"} at={incident.started_at} />
-                  </td>
-                  <td class="whitespace-nowrap tabular-nums">{incident_duration(incident)}</td>
-                  <td
-                    class="hidden max-w-sm truncate text-base-content/70 sm:table-cell"
-                    title={incident.message}
-                  >
-                    {incident.message}
-                  </td>
-                </tr>
+                <%= for {dom_id, item} <- @streams.incidents do %>
+                  <.incident_row :if={match?(%Incident{}, item)} id={dom_id} incident={item} />
+                  <.event_row :if={match?(%MonitorEvent{}, item)} id={dom_id} event={item} />
+                <% end %>
               </tbody>
             </table>
           </div>
         </div>
 
         <div class="space-y-4">
+          <.event_token_card monitor={@monitor} />
+
           <div class="rounded-box border border-base-300 bg-base-100 p-4">
             <div class="mb-2 text-sm font-medium">Configuration</div>
             <dl id="monitor-config" class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
@@ -427,6 +480,170 @@ defmodule SentinelixWeb.MonitorLive.Show do
     """
   end
 
+  attr :id, :string, required: true
+  attr :incident, Incident, required: true
+
+  defp incident_row(assigns) do
+    ~H"""
+    <tr id={@id} data-kind="incident">
+      <td>
+        <span :if={@incident.resolved_at} class="badge badge-success badge-soft badge-sm">
+          Resolved
+        </span>
+        <span
+          :if={!@incident.resolved_at && @incident.to_status == :warning}
+          class="badge badge-sm border-amber-500 bg-amber-500 text-white"
+        >
+          Warning
+        </span>
+        <span
+          :if={!@incident.resolved_at && @incident.to_status != :warning}
+          class="badge badge-error badge-sm"
+        >
+          Ongoing
+        </span>
+      </td>
+      <td class="whitespace-nowrap">
+        <.local_time id={"#{@id}-started"} at={@incident.started_at} />
+      </td>
+      <td class="whitespace-nowrap tabular-nums">{incident_duration(@incident)}</td>
+      <td class="max-w-sm truncate text-base-content/70" title={@incident.message}>
+        {@incident.message}
+      </td>
+    </tr>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :event, MonitorEvent, required: true
+
+  defp event_row(assigns) do
+    assigns = assign(assigns, details: event_details(assigns.event))
+
+    ~H"""
+    <tr id={@id} data-kind="event" data-severity={@event.severity}>
+      <td>
+        <span class={["badge badge-sm gap-1", event_badge_class(@event.severity)]}>
+          <.icon name={event_icon(@event.severity)} class="size-3" />
+          {event_label(@event.severity)}
+        </span>
+      </td>
+      <td class="whitespace-nowrap">
+        <.local_time id={"#{@id}-at"} at={@event.occurred_at} />
+      </td>
+      <td class="text-base-content/40">–</td>
+      <td class="max-w-sm">
+        <div class="truncate" title={@event.title}>{@event.title}</div>
+        <div :if={@event.message} class="truncate text-xs text-base-content/60" title={@event.message}>
+          {@event.message}
+        </div>
+        <details :if={@details != []} class="text-xs">
+          <summary class="cursor-pointer text-base-content/60">Details</summary>
+          <dl class="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 font-mono">
+            <%= for {key, value} <- @details do %>
+              <dt class="text-base-content/60">{key}</dt>
+              <dd class="break-all">{value}</dd>
+            <% end %>
+          </dl>
+        </details>
+      </td>
+    </tr>
+    """
+  end
+
+  attr :monitor, :map, required: true
+
+  defp event_token_card(assigns) do
+    assigns = assign(assigns, url: event_url(assigns.monitor.event_token))
+
+    ~H"""
+    <div id="event-token" class="rounded-box border border-base-300 bg-base-100 p-4">
+      <div class="mb-2 flex items-center justify-between gap-2">
+        <span class="text-sm font-medium">Events</span>
+        <div :if={@url} class="flex gap-1">
+          <button
+            id="regenerate-event-token"
+            type="button"
+            phx-click="generate_event_token"
+            data-confirm="Generate a new event token? The current one stops working."
+            class="btn btn-xs"
+          >
+            Regenerate
+          </button>
+          <button
+            id="revoke-event-token"
+            type="button"
+            phx-click="revoke_event_token"
+            data-confirm="Revoke the event token? Events can't be posted until a new one is generated."
+            class="btn btn-xs btn-error btn-soft"
+          >
+            Revoke
+          </button>
+        </div>
+      </div>
+      <%= if @url do %>
+        <p class="text-xs text-base-content/60">
+          POST events to this URL, as a form or JSON: <code>title</code>
+          (required), <code>message</code>, <code>severity=info|warning|ok</code>, <code>key</code>,
+          <code>ttl</code>
+          (e.g. <code>30m</code>, warnings only). Other fields are kept as details.
+        </p>
+        <div class="join mt-2 w-full">
+          <input
+            id="event-url-value"
+            type="text"
+            readonly
+            value={@url}
+            class="input input-sm join-item w-full font-mono"
+          />
+          <button
+            id="copy-event-url"
+            type="button"
+            class="btn btn-sm join-item"
+            phx-hook="CopyToClipboard"
+            data-target="event-url-value"
+            title="Copy the URL"
+          >
+            <.icon name="hero-clipboard-document" class="size-4" />
+            <span class="sr-only">Copy the URL</span>
+          </button>
+        </div>
+        <div class="relative mt-2">
+          <textarea
+            id="event-curl"
+            readonly
+            rows="5"
+            class="textarea textarea-sm w-full resize-none bg-base-200 font-mono text-xs"
+          >{event_curl(@url)}</textarea>
+          <button
+            id="copy-event-curl"
+            type="button"
+            class="btn btn-xs absolute right-2 top-2"
+            phx-hook="CopyToClipboard"
+            data-target="event-curl"
+          >
+            <.icon name="hero-clipboard-document" class="size-3" /> Copy
+          </button>
+        </div>
+      <% else %>
+        <p class="text-xs text-base-content/60">
+          Let external systems (e.g. Patroni callbacks or a disk space script) post events to
+          this monitor. Events show in the timeline; warnings mark the monitor as warning until
+          they are cleared.
+        </p>
+        <button
+          id="generate-event-token"
+          type="button"
+          phx-click="generate_event_token"
+          class="btn btn-sm mt-2"
+        >
+          <.icon name="hero-key" class="size-4" /> Generate token
+        </button>
+      <% end %>
+    </div>
+    """
+  end
+
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     case get_monitor(id) do
@@ -455,7 +672,9 @@ defmodule SentinelixWeb.MonitorLive.Show do
           |> assign_maintenance()
           |> assign_dependencies()
           |> assign_stats()
-          |> stream(:incidents, Monitoring.list_incidents(monitor, @incidents))
+          |> assign_warnings()
+          |> stream_configure(:incidents, dom_id: &timeline_dom_id/1)
+          |> stream(:incidents, timeline(monitor))
 
         {:ok, socket}
     end
@@ -496,6 +715,36 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
       {:error, _changeset} ->
         {:noreply, put_flash(socket, :error, "Could not update the monitor.")}
+    end
+  end
+
+  def handle_event("clear_warning", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.warnings, &(to_string(&1.id) == id)) do
+      nil -> {:noreply, assign_warnings(socket)}
+      warning -> clear_warnings(socket, [warning.key])
+    end
+  end
+
+  def handle_event("clear_warnings", _params, socket), do: clear_warnings(socket, :all)
+
+  def handle_event("generate_event_token", _params, socket) do
+    case Monitoring.generate_event_token(socket.assigns.monitor) do
+      {:ok, monitor} ->
+        {:noreply,
+         socket |> assign(monitor: monitor) |> put_flash(:info, "Event token generated.")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Could not generate an event token.")}
+    end
+  end
+
+  def handle_event("revoke_event_token", _params, socket) do
+    case Monitoring.revoke_event_token(socket.assigns.monitor) do
+      {:ok, monitor} ->
+        {:noreply, socket |> assign(monitor: monitor) |> put_flash(:info, "Event token revoked.")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Could not revoke the event token.")}
     end
   end
 
@@ -577,6 +826,11 @@ defmodule SentinelixWeb.MonitorLive.Show do
     {:noreply, stream_insert(socket, :incidents, incident, at: at)}
   end
 
+  def handle_info({:event_recorded, event}, socket),
+    do: {:noreply, stream_insert(socket, :incidents, event, at: 0)}
+
+  def handle_info({:warnings_changed, _id}, socket), do: {:noreply, assign_warnings(socket)}
+
   def handle_info({:monitor_updated, monitor}, socket) do
     {:noreply,
      socket
@@ -637,6 +891,37 @@ defmodule SentinelixWeb.MonitorLive.Show do
     latest = List.last(socket.assigns.heartbeats)
     assign(socket, latest: latest, status: display_status(socket.assigns.monitor, latest))
   end
+
+  defp assign_warnings(socket),
+    do: assign(socket, warnings: Events.active_warnings(socket.assigns.monitor))
+
+  defp clear_warnings(socket, keys) do
+    {:ok, cleared} =
+      Events.clear_warnings(socket.assigns.monitor, keys,
+        by: socket.assigns.current_scope.user.email
+      )
+
+    message =
+      case cleared do
+        [] -> "No warning to clear."
+        [_] -> "Warning cleared."
+        _ -> "#{length(cleared)} warnings cleared."
+      end
+
+    {:noreply, socket |> put_flash(:info, message) |> assign_warnings()}
+  end
+
+  # Incidents and events, newest first.
+  defp timeline(monitor) do
+    (Monitoring.list_incidents(monitor, @incidents) ++ Events.list_events(monitor, @events))
+    |> Enum.sort_by(&{DateTime.to_unix(timeline_at(&1), :microsecond), &1.id}, :desc)
+  end
+
+  defp timeline_at(%Incident{started_at: at}), do: at
+  defp timeline_at(%MonitorEvent{occurred_at: at}), do: at
+
+  defp timeline_dom_id(%Incident{id: id}), do: "incidents-#{id}"
+  defp timeline_dom_id(%MonitorEvent{id: id}), do: "incidents-event-#{id}"
 
   defp assign_worker(socket) do
     assign(socket, worker: Monitoring.worker_info(socket.assigns.monitor))
@@ -754,6 +1039,39 @@ defmodule SentinelixWeb.MonitorLive.Show do
   end
 
   defp next_check_text(_monitor, _worker, _now), do: ""
+
+  defp event_label(:info), do: "Info"
+  defp event_label(:warning), do: "Warning"
+  defp event_label(:ok), do: "OK"
+
+  defp event_icon(:info), do: "hero-information-circle-micro"
+  defp event_icon(:warning), do: "hero-exclamation-triangle-micro"
+  defp event_icon(:ok), do: "hero-check-circle-micro"
+
+  defp event_badge_class(:info), do: "badge-info badge-soft"
+  defp event_badge_class(:warning), do: "border-amber-500 bg-amber-500 text-white"
+  defp event_badge_class(:ok), do: "badge-success badge-soft"
+
+  # The key and metadata of an event as key/value pairs, sorted by key.
+  defp event_details(event) do
+    key = if event.key in [nil, ""], do: [], else: [{"key", event.key}]
+
+    metadata =
+      event.metadata
+      |> Enum.map(fn {k, v} -> {k, if(is_binary(v), do: v, else: Jason.encode!(v))} end)
+      |> Enum.sort()
+
+    key ++ metadata
+  end
+
+  defp event_curl(url) do
+    """
+    curl -fsS -X POST "#{url}" \\
+      -d title="Disk almost full" \\
+      -d message="/var/lib/postgresql is 91% full" \\
+      -d severity=warning -d key=disk -d ttl=1h\
+    """
+  end
 
   defp incident_duration(%{started_at: started, resolved_at: nil}),
     do: format_duration(DateTime.diff(DateTime.utc_now(), started)) <> " so far"

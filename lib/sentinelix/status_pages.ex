@@ -423,12 +423,15 @@ defmodule Sentinelix.StatusPages do
   ## Public page data
 
   @doc """
-  The ids of the given monitors that have an open incident.
+  The ids of the given monitors that have an open incident. Warning
+  incidents (raised by events, see `Sentinelix.Monitoring.Events`) are
+  internal and not included.
   """
   @spec open_incident_monitor_ids([pos_integer()]) :: MapSet.t(pos_integer())
   def open_incident_monitor_ids(monitor_ids) do
     Incident
     |> where([i], i.monitor_id in ^monitor_ids and is_nil(i.resolved_at))
+    |> where([i], i.to_status != :warning)
     |> select([i], i.monitor_id)
     |> Repo.all()
     |> MapSet.new()
@@ -436,13 +439,15 @@ defmodule Sentinelix.StatusPages do
 
   @doc """
   The incidents of the given monitors that were open at some point since
-  `since`, most recent first.
+  `since`, most recent first. Warning incidents are not included, see
+  `open_incident_monitor_ids/1`.
   """
   @spec recent_incidents([pos_integer()], DateTime.t(), pos_integer()) :: [Incident.t()]
   def recent_incidents(monitor_ids, %DateTime{} = since, limit \\ 50) do
     Incident
     |> where([i], i.monitor_id in ^monitor_ids)
     |> where([i], is_nil(i.resolved_at) or i.resolved_at >= ^since)
+    |> where([i], i.to_status != :warning)
     |> order_by([i], desc: i.started_at, desc: i.id)
     |> limit(^limit)
     |> Repo.all()
@@ -493,8 +498,9 @@ defmodule Sentinelix.StatusPages do
     * `:outage` – its latest check failed
     * `:unreachable` – its latest check failed while the monitor it
       depends on was down (counts as an outage for the page)
-    * `:degraded` – a failed check is being retried (`:pending`), or it has
-      an open incident while its latest check succeeded
+    * `:degraded` – a failed check is being retried (`:pending`), it has a
+      warning (`:warning`), or it has an open incident while its latest
+      check succeeded
     * `:operational` – its latest check succeeded
     * `:unknown` – no checks yet
   """
@@ -506,7 +512,7 @@ defmodule Sentinelix.StatusPages do
       Map.get(state, :maintenance?, false) or latest == :maintenance -> :maintenance
       latest == :down -> :outage
       latest == :unreachable -> :unreachable
-      latest == :pending or incident? -> :degraded
+      latest in [:pending, :warning] or incident? -> :degraded
       latest == :up -> :operational
       true -> :unknown
     end

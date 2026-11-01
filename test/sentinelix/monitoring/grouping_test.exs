@@ -141,6 +141,7 @@ defmodule Sentinelix.Monitoring.GroupingTest do
              down: 0,
              unreachable: 0,
              pending: 1,
+             warning: 0,
              maintenance: 1,
              paused: 0
            }

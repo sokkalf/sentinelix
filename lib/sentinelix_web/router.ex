@@ -59,6 +59,9 @@ defmodule SentinelixWeb.Router do
 
     get "/push/:token", PushController, :push
     post "/push/:token", PushController, :push
+
+    # Monitor events (#67); the monitor's event token is the credential.
+    post "/v1/events/:token", EventController, :create
   end
 
   # Health check and Prometheus metrics: no pipeline at all (no session,

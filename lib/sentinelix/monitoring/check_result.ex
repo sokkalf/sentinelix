@@ -9,7 +9,10 @@ defmodule Sentinelix.Monitoring.CheckResult do
     * `:pending` – the check failed and is being retried,
     * `:maintenance` – checked during a maintenance window,
     * `:unreachable` – the check failed while the monitor's parent was down
-      (see Dependencies in `Sentinelix.Monitoring.Worker`).
+      (see Dependencies in `Sentinelix.Monitoring.Worker`),
+    * `:warning` – the check succeeded but the monitor has an active warning
+      raised by an event (see `Sentinelix.Monitoring.Events`). Counts as up
+      for the uptime.
   """
 
   use Ecto.Schema
@@ -17,7 +20,7 @@ defmodule Sentinelix.Monitoring.CheckResult do
 
   alias Sentinelix.Monitoring.Monitor
 
-  @statuses [:up, :down, :pending, :maintenance, :unreachable]
+  @statuses [:up, :down, :pending, :maintenance, :unreachable, :warning]
   @max_message_length 2_000
 
   schema "check_results" do
@@ -31,7 +34,7 @@ defmodule Sentinelix.Monitoring.CheckResult do
   end
 
   @type t :: %__MODULE__{}
-  @type status :: :up | :down | :pending | :maintenance | :unreachable
+  @type status :: :up | :down | :pending | :maintenance | :unreachable | :warning
 
   @doc "All check result statuses."
   @spec statuses() :: [status()]

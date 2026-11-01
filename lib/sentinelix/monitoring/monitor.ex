@@ -33,6 +33,14 @@ defmodule Sentinelix.Monitoring.Monitor do
   Clones (`Sentinelix.Monitoring.clone_monitor/1`) start without secrets, so
   a blank value can't keep the secret of the source monitor.
 
+  ## Event token
+
+  `event_token` (optional, `nil` until generated) authorizes posting
+  events to the monitor, whatever its type (see
+  `Sentinelix.Monitoring.Events`). It isn't cast from params: see
+  `Sentinelix.Monitoring.generate_event_token/1` and
+  `Sentinelix.Monitoring.revoke_event_token/1`. Clones don't get it.
+
   ## Dependencies
 
   `parent_id` is the monitor this one depends on (typically the ping
@@ -48,7 +56,16 @@ defmodule Sentinelix.Monitoring.Monitor do
   import Ecto.Changeset
 
   alias Sentinelix.EncryptedMap
-  alias Sentinelix.Monitoring.{AutoLabels, CheckResult, Incident, Labels, Settings}
+
+  alias Sentinelix.Monitoring.{
+    AutoLabels,
+    CheckResult,
+    Incident,
+    Labels,
+    MonitorEvent,
+    Settings,
+    Warning
+  }
 
   @types [:http, :keyword, :tcp, :ping, :dns, :cert, :push, :postgres]
 
@@ -75,11 +92,14 @@ defmodule Sentinelix.Monitoring.Monitor do
 
     embeds_one :settings, Settings, on_replace: :update
     field :secrets, EncryptedMap, default: %{}, redact: true, skip_default_validation: true
+    field :event_token, :string, redact: true
 
     belongs_to :parent, __MODULE__
     has_many :children, __MODULE__, foreign_key: :parent_id
     has_many :check_results, CheckResult
     has_many :incidents, Incident
+    has_many :events, MonitorEvent
+    has_many :warnings, Warning
 
     timestamps(type: :utc_datetime)
   end
@@ -183,6 +203,16 @@ defmodule Sentinelix.Monitoring.Monitor do
         do: [parent_id: "can't be the monitor itself"],
         else: []
     end)
+  end
+
+  @doc """
+  A changeset that sets (or, with `nil`, removes) the event token.
+  """
+  @spec event_token_changeset(t(), String.t() | nil) :: Ecto.Changeset.t()
+  def event_token_changeset(monitor, token) do
+    monitor
+    |> change(event_token: token)
+    |> unique_constraint(:event_token)
   end
 
   @doc """
