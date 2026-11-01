@@ -67,7 +67,7 @@ defmodule Sentinelix.Monitoring.Monitor do
     Warning
   }
 
-  @types [:http, :keyword, :tcp, :ping, :dns, :cert, :push, :postgres]
+  @types [:http, :tcp, :ping, :dns, :cert, :push, :postgres]
 
   @secret_fields %{postgres: ["password"]}
 
@@ -105,7 +105,7 @@ defmodule Sentinelix.Monitoring.Monitor do
   end
 
   @type t :: %__MODULE__{}
-  @type type :: :http | :keyword | :tcp | :ping | :dns | :cert | :push | :postgres
+  @type type :: :http | :tcp | :ping | :dns | :cert | :push | :postgres
 
   @doc "All monitor types."
   @spec types() :: [type()]

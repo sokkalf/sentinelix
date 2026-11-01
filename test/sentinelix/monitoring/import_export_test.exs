@@ -7,6 +7,7 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
   alias Sentinelix.{Monitoring, Notifications, Repo}
   alias Sentinelix.Monitoring.{Export, Import, Monitor}
   alias Sentinelix.Monitoring.Import.{Change, Error, Result}
+  alias Sentinelix.Monitoring.Settings.Assertion
 
   defp export!(opts \\ []) do
     {:ok, yaml} = Export.export(opts)
@@ -52,7 +53,12 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
           method: "POST",
           headers: %{"Authorization" => "Bearer header-token"},
           body: ~s({"ping": true}),
-          accepted_status_codes: ["200", "300-399"]
+          accepted_status_codes: ["200", "300-399"],
+          assertions: [
+            %{source: "json", path: "status", comparison: "equals", value: "ok"},
+            %{source: "header", path: "x-version", comparison: "exists"},
+            %{source: "body", comparison: "regex", value: "^\\s*\\{", case_sensitive: false}
+          ]
         }
       })
 
@@ -73,7 +79,7 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
     push = monitor_fixture(:push, %{name: "Backup job"})
 
     others =
-      for type <- [:keyword, :tcp, :dns, :cert],
+      for type <- [:http, :tcp, :dns, :cert],
           do: monitor_fixture(type, %{name: "Other #{type}"})
 
     Notifications.put_monitor_channels(api, [email, slack])
@@ -122,6 +128,18 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
                    follow_redirects: true
                    max_redirects: 10
                    verify_tls: true
+                   assertions:
+                     - source: json
+                       path: status
+                       comparison: equals
+                       value: ok
+                     - source: header
+                       path: x-version
+                       comparison: exists
+                     - source: body
+                       comparison: regex
+                       value: "^\\\\s*\\\\{"
+                       case_sensitive: false
              """
 
       assert api.auto_labels != %{}
@@ -391,7 +409,7 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
       assert result.missing == []
 
       result = import!(yaml, missing: :report, selector: "type=http")
-      assert result.missing == ["Shop API"]
+      assert result.missing == ["Other http", "Shop API"]
 
       # Never deleted.
       assert Repo.aggregate(Monitor, :count) == 8
@@ -430,7 +448,7 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
 
       assert import_errors(yaml) == [
                ~s(monitor 1 "A": settings.hostname is not a setting of http monitors),
-               ~s(monitor 2 "B": type must be one of http, keyword, tcp, ping, dns, cert, push, postgres),
+               ~s(monitor 2 "B": type must be one of http, tcp, ping, dns, cert, push, postgres),
                ~s(monitor 3: name must be a non-empty string),
                # The valid monitors are checked too.
                ~s(monitor 4 "C": channels "Nope" doesn't exist),
@@ -467,6 +485,97 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
              monitors:
                - {name: C, type: ping, settings: {host: "-bad"}}
              """) == [~s(monitor 1 "C": settings.host must be a valid hostname or IP address)]
+    end
+
+    test "imports assertions and names the failing one in errors" do
+      yaml = """
+      version: 1
+      monitors:
+        - name: Health
+          type: http
+          settings:
+            url: https://health.example.com
+            assertions:
+              - {source: json, path: queue.depth, comparison: "<", value: "100"}
+              - {source: body, comparison: regex, value: "("}
+              - {source: header, comparison: exists}
+      """
+
+      assert import_errors(yaml) == [
+               ~s(monitor 1 "Health": settings.assertions.1.value must be a valid regular expression),
+               ~s(monitor 1 "Health": settings.assertions.2.path can't be blank)
+             ]
+
+      yaml = String.replace(yaml, ~s(value: "("}), ~s(value: "^ok"}))
+      yaml = String.replace(yaml, "{source: header, ", "{source: header, path: etag, ")
+      import!(yaml)
+
+      [monitor] = Monitoring.list_monitors(selector: "name=Health")
+
+      assert [
+               %{source: "json", path: "queue.depth", comparison: "<", value: "100"},
+               %{source: "body", path: nil, comparison: "regex", value: "^ok"},
+               %{source: "header", path: "etag", comparison: "exists", value: nil}
+             ] = monitor.settings.assertions
+
+      assert yaml |> import!() |> Result.counts() == %{create: 0, update: 0, unchanged: 1}
+    end
+
+    test "imports keyword monitors of older files as http monitors with an assertion" do
+      yaml = """
+      version: 1
+      monitors:
+        - name: Homepage
+          type: keyword
+          settings:
+            url: https://www.example.com
+            keyword: Welcome
+            case_sensitive: false
+        - name: Status API
+          type: keyword
+          settings:
+            url: https://api.example.com/status
+            keyword: DOWN
+            json_path: data.status
+            invert_keyword: true
+        - name: Broken
+          type: keyword
+          settings: {url: "https://x.example.com", json_path: "a..b"}
+      """
+
+      assert import_errors(yaml) == [
+               ~s(monitor 3 "Broken": settings.assertions.0.path must be a dot-separated path like "data.items.0.status"),
+               ~s(monitor 3 "Broken": settings.assertions.0.value can't be blank)
+             ]
+
+      yaml |> String.split("  - name: Broken") |> hd() |> import!()
+
+      [homepage] = Monitoring.list_monitors(selector: "name=Homepage")
+      [api] = Monitoring.list_monitors(selector: ~s(name="Status API"))
+
+      assert homepage.type == :http
+      assert homepage.auto_labels["type"] == "http"
+      assert homepage.settings.url == "https://www.example.com"
+
+      assert [
+               %Assertion{
+                 source: "body",
+                 path: nil,
+                 comparison: "contains",
+                 value: "Welcome",
+                 case_sensitive: false
+               }
+             ] = homepage.settings.assertions
+
+      assert [
+               %Assertion{
+                 source: "json",
+                 path: "data.status",
+                 comparison: "not_equals",
+                 value: "DOWN",
+                 case_sensitive: true
+               }
+             ] = api.settings.assertions
     end
 
     test "checks the file structure and version" do

@@ -24,7 +24,9 @@ defmodule Sentinelix.Monitoring.Settings do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Sentinelix.Checks.Comparison
   alias Sentinelix.Checks.Postgres.{Expectation, Replication}
+  alias Sentinelix.Monitoring.Settings.Assertion
 
   @http_methods ~w(GET HEAD POST PUT PATCH DELETE OPTIONS)
   @dns_record_types ~w(A AAAA CNAME MX TXT NS)
@@ -32,6 +34,7 @@ defmodule Sentinelix.Monitoring.Settings do
   @max_push_grace_seconds 86_400
   @ssl_modes ~w(disable require verify-full)
   @max_query_length 10_000
+  @max_assertions 20
 
   @http_fields [
     url: nil,
@@ -45,11 +48,10 @@ defmodule Sentinelix.Monitoring.Settings do
   ]
 
   # field => default value, per type. A `nil` default means "no default".
+  # Embedded fields (`assertions`) are cast with their own changeset.
+
   @type_fields %{
-    http: @http_fields,
-    keyword:
-      @http_fields ++
-        [keyword: nil, invert_keyword: false, case_sensitive: true, json_path: nil],
+    http: @http_fields ++ [assertions: []],
     tcp: [host: nil, port: nil],
     ping: [host: nil],
     dns: [host: nil, dns_record_type: "A", dns_resolver: nil, expected_value: nil],
@@ -78,7 +80,7 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @primary_key false
   embedded_schema do
-    # http / keyword
+    # http
     field :url, :string
     field :method, :string
     field :headers, {:map, :string}
@@ -87,14 +89,8 @@ defmodule Sentinelix.Monitoring.Settings do
     field :follow_redirects, :boolean
     field :max_redirects, :integer
     field :verify_tls, :boolean
-
-    # keyword
-    field :keyword, :string
-    field :invert_keyword, :boolean
-    field :case_sensitive, :boolean
-    # Optional: compare the value at this dot-path of a JSON response body
-    # with `keyword` instead of searching the body for it.
-    field :json_path, :string
+    # http: checks on the response, see Settings.Assertion.
+    embeds_many :assertions, Assertion, on_replace: :delete
 
     # tcp / ping / dns / cert / postgres
     field :host, :string
@@ -142,6 +138,9 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @type t :: %__MODULE__{}
 
+  @doc "The maximum number of response assertions of an HTTP monitor."
+  def max_assertions, do: @max_assertions
+
   @doc "Allowed HTTP methods."
   def http_methods, do: @http_methods
 
@@ -170,18 +169,53 @@ defmodule Sentinelix.Monitoring.Settings do
   """
   def changeset(settings, attrs, type) do
     fields = fields_for(type)
-    irrelevant = __schema__(:fields) -- fields
+    embeds = __schema__(:embeds)
+    irrelevant = (__schema__(:fields) -- embeds) -- fields
 
     settings
-    |> cast(attrs, fields)
+    |> cast(attrs, fields -- embeds)
+    |> cast_assertions(:assertions in fields)
     |> trim_strings()
     |> reset_fields(irrelevant)
     |> apply_defaults(type)
     |> validate_type(type)
   end
 
+  # `assertions_sort` and `assertions_drop` add, remove and reorder rows of
+  # the form (see `Ecto.Changeset.cast_embed/3`).
+  defp cast_assertions(changeset, true) do
+    changeset
+    |> cast_embed(:assertions,
+      with: &Assertion.changeset/2,
+      sort_param: :assertions_sort,
+      drop_param: :assertions_drop
+    )
+    |> drop_unchanged_assertions()
+  end
+
+  defp cast_assertions(changeset, false) do
+    if get_field(changeset, :assertions) in [nil, []],
+      do: changeset,
+      else: put_embed(changeset, :assertions, [])
+  end
+
+  # Assertions have no ids, so casting them always replaces the old ones,
+  # even with the same values. Keep the settings unchanged then (e.g. for
+  # an import of an unchanged monitor).
+  defp drop_unchanged_assertions(changeset) do
+    with {:ok, changesets} <- fetch_change(changeset, :assertions),
+         true <- Enum.all?(changesets, & &1.valid?),
+         new =
+           for(%{action: action} = cs <- changesets, action != :replace, do: apply_changes(cs)),
+         true <- new == changeset.data.assertions do
+      delete_change(changeset, :assertions)
+    else
+      _ -> changeset
+    end
+  end
+
   # Identifier-like fields where surrounding whitespace is never intended.
-  # (Free-text fields such as `body` and `keyword` are kept verbatim.)
+  # (Free-text fields such as `body` are kept verbatim.)
   # Blank accepted status code entries (e.g. empty form inputs) are dropped.
   @trimmed_fields [
     :url,
@@ -189,7 +223,6 @@ defmodule Sentinelix.Monitoring.Settings do
     :host,
     :dns_record_type,
     :dns_resolver,
-    :json_path,
     :push_token,
     :database,
     :username,
@@ -232,7 +265,7 @@ defmodule Sentinelix.Monitoring.Settings do
     end)
   end
 
-  defp validate_type(changeset, type) when type in [:http, :keyword] do
+  defp validate_type(changeset, :http) do
     changeset
     |> validate_required([:url])
     |> validate_http_url(:url)
@@ -244,7 +277,7 @@ defmodule Sentinelix.Monitoring.Settings do
     )
     |> validate_status_codes()
     |> validate_headers()
-    |> validate_keyword(type)
+    |> validate_length(:assertions, max: @max_assertions)
   end
 
   defp validate_type(changeset, type) when type in [:tcp, :ping] do
@@ -317,19 +350,6 @@ defmodule Sentinelix.Monitoring.Settings do
 
   defp validate_type(changeset, _type), do: changeset
 
-  defp validate_keyword(changeset, :keyword) do
-    changeset
-    |> validate_required([:keyword])
-    |> validate_change(:json_path, fn field, path ->
-      case parse_json_path(path) do
-        {:ok, _segments} -> []
-        :error -> [{field, ~s(must be a dot-separated path like "data.items.0.status")}]
-      end
-    end)
-  end
-
-  defp validate_keyword(changeset, _type), do: changeset
-
   # Validated whenever the comparison or the value changes.
   defp validate_expected_value(changeset) do
     comparison = get_field(changeset, :comparison)
@@ -339,10 +359,10 @@ defmodule Sentinelix.Monitoring.Settings do
       is_nil(value) ->
         changeset
 
-      Expectation.numeric?(comparison) and Expectation.parse_number(value) == :error ->
+      Comparison.numeric?(comparison) and Comparison.parse_number(value) == :error ->
         add_error(changeset, :expected_value, "must be a number for #{comparison}")
 
-      comparison == "regex" and match?({:error, _}, Regex.compile(value)) ->
+      comparison == "regex" and not Comparison.valid_regex?(value) ->
         add_error(changeset, :expected_value, "must be a valid regular expression")
 
       true ->

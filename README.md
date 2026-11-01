@@ -9,8 +9,9 @@ public status pages.
 
 ## Features
 
-* **Check types:** HTTP(S) (status codes, redirects, TLS verification),
-  keyword / JSON (body contains a keyword or a JSON path matches), TCP port,
+* **Check types:** HTTP(S) (status codes, redirects, TLS verification and
+  [response assertions](#http-monitors) on the body, JSON values and
+  headers), TCP port,
   ping (ICMP), DNS records (A, AAAA, CNAME, MX, TXT, NS), TLS certificate
   expiry, PostgreSQL (login, query with expected result, replication status
   and lag) and push (heartbeat) monitors for cron jobs and backups.
@@ -325,10 +326,9 @@ use. The dashboard and the monitor list filter by labels with
 Every monitor also has read-only automatic labels, derived from its
 settings whenever it is saved:
 
-* `type`: the monitor type (`http`, `keyword`, `tcp`, `ping`, `dns`,
-  `cert`, `push` or `postgres`).
-* `host`: the host it checks: the host of the URL (HTTP and keyword
-  monitors) or the hostname or IP address (TCP, ping, DNS, certificate and
+* `type`: the monitor type (`http`, `tcp`, `ping`, `dns`, `cert`, `push`
+  or `postgres`).
+* `host`: the host it checks: the host of the URL (HTTP monitors) or the hostname or IP address (TCP, ping, DNS, certificate and
   PostgreSQL monitors), lowercased, without port or trailing dot
   (`https://WWW.Example.com:8443/` gives `host=www.example.com`). Push
   monitors have none.
@@ -576,6 +576,57 @@ changed monitors restart with the new configuration, as after editing a
 monitor. Only monitors that are shown can be selected: narrowing the selector
 deselects the monitors it hides, and monitors that start matching are not
 selected automatically.
+
+## HTTP monitors
+
+An HTTP monitor requests a URL (method, headers and body of your choice)
+and is up when the final response, after following up to *max. redirects*
+redirects, has an accepted status code: by default 200–399, or 200–299
+when redirects aren't followed; set your own codes and ranges like
+`200-299, 301`.
+
+### Response assertions
+
+Response assertions check what the response says, not only its status.
+They are evaluated in order once the status code is accepted, and **all**
+must pass; the first one that fails takes the monitor down with a message
+like `JSON queue.depth is "250", expected < 100` or `Body does not match
+/^\s*healthy\s*$/`.
+
+| Source | Tests | Example |
+| --- | --- | --- |
+| Body | the whole response body as text | contains `OK`, regex `^\s*healthy\s*$` |
+| JSON | the value at a dot-path of the JSON body (`data.items.0.status`, `$.` prefix optional); strings as they are, other values as JSON (`true`, `42`, `null`, `{"a":1}`) | `status` equals `ok`, `queue.depth` `<` `100` |
+| Header | a response header (repeated headers joined with `, `) | `content-type` contains `application/json` |
+
+Comparisons: equals, does not equal, contains, does not contain, matches /
+does not match a regular expression, numerically `<`, `<=`, `>`, `>=`
+(both sides must be numbers), and for JSON and headers *exists* / *does not
+exist*. Each assertion can ignore case. Several assertions are combined
+with AND; for "any of" use a regular expression alternation
+(`^(ok|degraded)$`).
+
+* The body is only downloaded when a body or JSON assertion needs it, and at
+  most 1 MiB of it (`config :sentinelix, Sentinelix.Checks.HTTP,
+  max_body_bytes: ...`); body and JSON assertions on a larger body fail
+  with "Response body exceeds 1048576 bytes". Compression isn't requested,
+  so the body is tested as the server sends it.
+* Regular expressions are PCRE, checked when the monitor is saved, and run
+  with Unicode semantics when the body is valid UTF-8. A pattern with
+  catastrophic backtracking is cut off by the monitor's timeout like any
+  slow check.
+* A failing assertion's position is passed on as `failed_assertion`
+  (starting at 0) in the check's telemetry metadata and status change events.
+
+**The keyword monitor type was folded into HTTP monitors.** Upgrading
+converts every keyword monitor into an HTTP monitor with one assertion:
+body *contains* the keyword (*does not contain* when inverted), or, with a
+JSON path, the JSON value *equals* the keyword (*does not equal* when
+inverted), with the same case sensitivity. Their automatic label changes
+from `type=keyword` to `type=http`: update selectors that use
+`type=keyword` (notification routing, status page groups, saved views).
+Exported files with `type: keyword` can still be imported and are
+converted the same way.
 
 ## PostgreSQL monitors
 
@@ -937,6 +988,20 @@ monitors:
     settings:
       url: https://shop.example.com/health
       method: GET
+      assertions:
+        - source: json
+          path: status
+          comparison: equals
+          value: ok
+        - source: json
+          path: checks.db.latency_ms
+          comparison: "<"
+          value: "250"
+        - source: header
+          path: content-type
+          comparison: contains
+          value: application/json
+          case_sensitive: false
 ```
 
 * `version` is the format version (1); other versions are rejected.

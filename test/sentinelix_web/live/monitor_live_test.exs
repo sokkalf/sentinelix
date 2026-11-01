@@ -652,11 +652,131 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert monitor.settings.accepted_status_codes == ["200-299", "301"]
     end
 
+    test "edits response assertions", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/monitors/new")
+      assert has_element?(view, "#settings-group-response-assertions #add-assertion")
+      refute has_element?(view, "#assertion-0")
+
+      # Adding a row keeps what was entered in the form.
+      view
+      |> form("#monitor-form",
+        monitor: %{name: "API", settings: %{url: "https://api.example.com"}}
+      )
+      |> render_change()
+
+      view
+      |> form("#monitor-form")
+      |> render_change(%{"monitor" => %{"settings" => %{"assertions_sort" => ["new"]}}})
+
+      assert has_element?(view, "#assertion-0")
+      assert has_element?(view, "#monitor_name[value=API]")
+      # A body row has no path and the body can't be tested for presence.
+      refute has_element?(view, "#assertion-0 [name='monitor[settings][assertions][0][path]']")
+      refute has_element?(view, "#assertion-0 option[value=exists]")
+
+      view
+      |> form("#monitor-form")
+      |> render_change(%{
+        "monitor" => %{
+          "settings" => %{
+            "assertions" => %{
+              "0" => %{
+                "source" => "json",
+                "path" => "status",
+                "comparison" => "equals",
+                "value" => "ok"
+              }
+            },
+            "assertions_sort" => ["0", "new", "new"]
+          }
+        }
+      })
+
+      assert has_element?(view, "#assertion-2")
+
+      assert has_element?(
+               view,
+               "#assertion-0 [name='monitor[settings][assertions][0][path]'][value=status]"
+             )
+
+      html =
+        view
+        |> form("#monitor-form")
+        |> render_change(%{
+          "monitor" => %{
+            "settings" => %{
+              "assertions" => %{
+                "0" => %{
+                  "source" => "json",
+                  "path" => "status",
+                  "comparison" => "equals",
+                  "value" => "ok"
+                },
+                "1" => %{
+                  "source" => "header",
+                  "path" => "x-version",
+                  "comparison" => "exists",
+                  "value" => ""
+                },
+                "2" => %{"source" => "body", "comparison" => "<", "value" => "lots"}
+              },
+              "assertions_sort" => ["0", "1", "2"]
+            }
+          }
+        })
+
+      assert html =~ "must be a number for &lt;"
+      # exists needs no value.
+      refute has_element?(view, "#assertion-1 [name='monitor[settings][assertions][1][value]']")
+
+      # Remove the invalid row, move the header row up.
+      view
+      |> form("#monitor-form")
+      |> render_change(%{"monitor" => %{"settings" => %{"assertions_drop" => ["2"]}}})
+
+      refute has_element?(view, "#assertion-2")
+      view |> element("#assertion-1-up") |> render_click()
+
+      assert has_element?(
+               view,
+               "#assertion-0 [name='monitor[settings][assertions][0][path]'][value=x-version]"
+             )
+
+      {:ok, _view, html} =
+        view
+        |> form("#monitor-form")
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      assert html =~ "Monitor created"
+      [monitor] = Monitoring.list_monitors()
+
+      assert [
+               %{source: "header", path: "x-version", comparison: "exists"},
+               %{source: "json", path: "status", comparison: "equals", value: "ok"}
+             ] = monitor.settings.assertions
+
+      # Editing shows them and moves them without other changes first.
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}/edit")
+
+      assert has_element?(
+               view,
+               "#assertion-1 [name='monitor[settings][assertions][1][path]'][value=status]"
+             )
+
+      view |> element("#assertion-0-down") |> render_click()
+
+      {:ok, _view, _html} =
+        view |> form("#monitor-form") |> render_submit() |> follow_redirect(conn)
+
+      assert [%{source: "json"}, %{source: "header"}] =
+               Monitoring.get_monitor!(monitor.id).settings.assertions
+    end
+
     test "renders type specific fields when the type changes", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/monitors/new")
 
       for {type, fields} <- [
-            keyword: ~w(url keyword invert_keyword case_sensitive json_path),
             tcp: ~w(host port),
             ping: ~w(host),
             dns: ~w(host dns_record_type dns_resolver expected_value),

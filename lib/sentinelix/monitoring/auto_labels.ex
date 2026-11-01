@@ -4,10 +4,9 @@ defmodule Sentinelix.Monitoring.AutoLabels do
   configuration, so monitors can be grouped and selected without labelling
   them by hand.
 
-    * `type` – the monitor type (`http`, `keyword`, `tcp`, `ping`, `dns`,
+    * `type` – the monitor type (`http`, `tcp`, `ping`, `dns`,
       `cert`, `push` or `postgres`).
-    * `host` – the host the monitor checks: the host of the URL (http,
-      keyword), or the hostname or IP address (tcp, ping, dns, cert,
+    * `host` – the host the monitor checks: the host of the URL (http), or the hostname or IP address (tcp, ping, dns, cert,
       postgres), normalized by `normalize_host/1`. Push monitors have none.
 
   Their keys are reserved (`reserved?/1`): user labels can't use them.
@@ -50,7 +49,7 @@ defmodule Sentinelix.Monitoring.AutoLabels do
     end
   end
 
-  defp host(type, %Settings{url: url}) when type in [:http, :keyword] and is_binary(url) do
+  defp host(type, %Settings{url: url}) when type == :http and is_binary(url) do
     case URI.new(url) do
       {:ok, %URI{host: host}} -> normalize_host(host)
       {:error, _part} -> nil

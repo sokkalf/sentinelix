@@ -13,7 +13,6 @@ defmodule SentinelixWeb.MonitorComponents do
 
   @type_labels %{
     http: "HTTP(S)",
-    keyword: "HTTP(S) keyword",
     tcp: "TCP port",
     ping: "Ping",
     dns: "DNS",

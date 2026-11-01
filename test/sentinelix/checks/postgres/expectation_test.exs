@@ -49,41 +49,6 @@ defmodule Sentinelix.Checks.Postgres.ExpectationTest do
     end
   end
 
-  describe "compare/3" do
-    test "text comparisons" do
-      assert Expectation.compare("ok", "equals", "ok") == :ok
-      assert {:error, _} = Expectation.compare("ok", "equals", "OK")
-      assert Expectation.compare("ok", "not_equals", "fail") == :ok
-      assert {:error, _} = Expectation.compare("ok", "not_equals", "ok")
-      assert Expectation.compare("PostgreSQL 16.4", "contains", "16.") == :ok
-      assert {:error, _} = Expectation.compare("PostgreSQL 15.8", "contains", "16.")
-      assert Expectation.compare("PostgreSQL 16.4", "regex", ~S"^PostgreSQL 1[6-9]\.") == :ok
-      assert {:error, _} = Expectation.compare("PostgreSQL 15.8", "regex", ~S"^PostgreSQL 16")
-
-      assert Expectation.compare("x", "regex", "(") ==
-               {:error, " (invalid regular expression)"}
-    end
-
-    test "numeric comparisons" do
-      assert Expectation.compare("42", "<", "100") == :ok
-      assert {:error, ""} = Expectation.compare("100", "<", "100")
-      assert Expectation.compare("100", "<=", "100") == :ok
-      assert {:error, ""} = Expectation.compare("100.5", "<=", "100")
-      assert Expectation.compare("1e3", ">", "999.9") == :ok
-      assert {:error, ""} = Expectation.compare("-1", ">", "0")
-      assert Expectation.compare("0.10", ">=", "0.1") == :ok
-      assert {:error, ""} = Expectation.compare("0.09", ">=", "0.1")
-    end
-
-    test "numeric comparisons fail for values that are not numbers" do
-      assert Expectation.compare("abc", ">", "1") == {:error, " (not a number)"}
-      assert Expectation.compare("NULL", ">", "1") == {:error, " (not a number)"}
-      assert Expectation.compare("NaN", ">", "1") == {:error, " (not a number)"}
-      assert Expectation.compare("Infinity", ">", "1") == {:error, " (not a number)"}
-      assert Expectation.compare("1x", ">", "0") == {:error, " (not a number)"}
-    end
-  end
-
   describe "check_value/3" do
     test "compares the first column of the first row" do
       assert Expectation.check_value(result([[42, "x"], [1, "y"]]), nil, "equals") == :skip

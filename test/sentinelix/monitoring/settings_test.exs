@@ -5,6 +5,7 @@ defmodule Sentinelix.Monitoring.SettingsTest do
 
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.{Monitor, Settings}
+  alias Sentinelix.Monitoring.Settings.Assertion
 
   defp settings_errors(type, settings) do
     changeset =
@@ -94,37 +95,102 @@ defmodule Sentinelix.Monitoring.SettingsTest do
     end
   end
 
-  describe "keyword" do
-    test "requires a URL and keyword, with defaults for the options" do
-      assert %{url: ["can't be blank"], keyword: ["can't be blank"]} =
-               settings_errors(:keyword, %{})
-
-      settings = apply_settings(:keyword, %{url: "https://example.com", keyword: " Welcome"})
-      # Keywords are kept verbatim (whitespace may be significant).
-      assert settings.keyword == " Welcome"
-      assert settings.invert_keyword == false
-      assert settings.case_sensitive == true
-      assert settings.method == "GET"
-      assert settings.json_path == nil
+  describe "http assertions" do
+    defp assertion_errors(assertions) do
+      case settings_errors(:http, %{url: "https://example.com", assertions: assertions}) do
+        %{assertions: errors} -> errors
+        _ -> Enum.map(assertions, fn _ -> %{} end)
+      end
     end
 
-    test "validates the optional JSON path" do
-      base = %{url: "https://example.com", keyword: "UP"}
+    test "defaults to none" do
+      assert apply_settings(:http, %{url: "https://example.com"}).assertions == []
+    end
 
-      for path <- ["status", "$.data.items.0.status", "a-b.c_d"] do
-        assert valid?(:keyword, Map.put(base, :json_path, path)),
-               "expected #{inspect(path)} to be accepted"
+    test "accepts every source and comparison combination that makes sense" do
+      for source <- ~w(body json header),
+          comparison <- Assertion.comparisons(source) do
+        value =
+          cond do
+            comparison in ~w(< <= > >=) -> "100"
+            comparison in ~w(regex not_regex) -> "^ok$"
+            true -> "ok"
+          end
+
+        assertion = %{source: source, path: "status", comparison: comparison, value: value}
+        assert assertion_errors([assertion]) == [%{}], "#{source} #{comparison}"
       end
+    end
 
-      for path <- [".status", "data..status", "status.", "$."] do
-        assert %{json_path: [_]} = settings_errors(:keyword, Map.put(base, :json_path, path)),
-               "expected #{inspect(path)} to be rejected"
-      end
+    test "normalizes fields that don't apply" do
+      settings =
+        apply_settings(:http, %{
+          url: "https://example.com",
+          assertions: [
+            %{source: "body", path: "ignored", comparison: "contains", value: " OK "},
+            %{source: "header", path: " ETag ", comparison: "exists", value: "ignored"}
+          ]
+        })
 
-      assert apply_settings(:keyword, Map.put(base, :json_path, " status ")).json_path ==
-               "status"
+      assert [
+               %Assertion{source: "body", path: nil, value: " OK ", case_sensitive: true},
+               %Assertion{source: "header", path: "ETag", value: nil}
+             ] = settings.assertions
+    end
 
-      assert apply_settings(:keyword, Map.put(base, :json_path, "  ")).json_path == nil
+    test "validates source, comparison, path and value" do
+      assert [
+               %{source: ["is invalid"]},
+               %{comparison: ["is invalid"]},
+               %{comparison: ["is not available for the body"]},
+               %{path: ["can't be blank"]},
+               %{path: [~s(must be a dot-separated path like "data.items.0.status")]},
+               %{path: ["must be a header name"]},
+               %{value: ["can't be blank"]},
+               %{value: ["must be a number for <"]},
+               %{value: ["must be a valid regular expression"]}
+             ] =
+               assertion_errors([
+                 %{source: "xml", comparison: "contains", value: "x"},
+                 %{source: "body", comparison: "like", value: "x"},
+                 %{source: "body", comparison: "exists"},
+                 %{source: "json", comparison: "exists"},
+                 %{source: "json", path: "a..b", comparison: "exists"},
+                 %{source: "header", path: "Bad Header", comparison: "exists"},
+                 %{source: "body", comparison: "contains", value: ""},
+                 %{source: "json", path: "depth", comparison: "<", value: "many"},
+                 %{source: "body", comparison: "not_regex", value: "(unclosed"}
+               ])
+    end
+
+    test "limits the number of assertions" do
+      assertion = %{source: "body", comparison: "contains", value: "x"}
+      max = Settings.max_assertions()
+
+      assert valid?(:http, %{url: "https://x.com", assertions: List.duplicate(assertion, max)})
+
+      assert %{assertions: [_]} =
+               settings_errors(:http, %{
+                 url: "https://x.com",
+                 assertions: List.duplicate(assertion, max + 1)
+               })
+    end
+
+    test "are removed when the type changes" do
+      {:ok, monitor} =
+        Monitoring.create_monitor(
+          valid_monitor_attrs(:http, %{
+            settings: %{
+              url: "https://example.com",
+              assertions: [%{source: "body", comparison: "contains", value: "x"}]
+            }
+          })
+        )
+
+      {:ok, monitor} =
+        Monitoring.update_monitor(monitor, %{type: :tcp, settings: %{host: "x.com", port: 1}})
+
+      assert monitor.settings.assertions == []
     end
   end
 
@@ -334,10 +400,15 @@ defmodule Sentinelix.Monitoring.SettingsTest do
 
   test "fields not relevant for the type are discarded" do
     settings =
-      apply_settings(:tcp, %{host: "example.com", port: 22, url: "https://x", keyword: "y"})
+      apply_settings(:tcp, %{
+        host: "example.com",
+        port: 22,
+        url: "https://x",
+        assertions: [%{source: "body", comparison: "contains", value: "y"}]
+      })
 
     assert settings.url == nil
-    assert settings.keyword == nil
+    assert settings.assertions == []
   end
 
   describe "accepted_status_ranges/1 and accepted_status?/2" do
