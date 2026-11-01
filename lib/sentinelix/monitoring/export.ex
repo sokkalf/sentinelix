@@ -41,6 +41,15 @@ defmodule Sentinelix.Monitoring.Export do
             follow_redirects: true
             max_redirects: 10
             verify_tls: true
+            assertions:
+              - source: json
+                path: status
+                comparison: equals
+                value: ok
+              - source: header
+                path: content-type
+                comparison: contains
+                value: application/json
 
     * `version` – the format version, `1`. An import rejects other versions,
       so a later, incompatible format can't be misread.
@@ -49,7 +58,11 @@ defmodule Sentinelix.Monitoring.Export do
       (by name), its user `labels` (a label without a value is `""`; the
       automatic labels are derived and not exported) and its notification
       `channels` (by name). `settings` holds the type's settings (see
-      `Sentinelix.Monitoring.Settings`) that have a value.
+      `Sentinelix.Monitoring.Settings`) that have a value. The response
+      `assertions` of HTTP monitors are a list of mappings with `source`,
+      `path` (json and header), `comparison`, `value` (all but `exists` and
+      `not_exists`) and `case_sensitive: false` when set, see
+      `Sentinelix.Monitoring.Settings.Assertion`.
 
   Names are the key: the import matches monitors, parents and channels by
   name, so monitor names need to be unique for a file to be imported.
@@ -73,6 +86,7 @@ defmodule Sentinelix.Monitoring.Export do
 
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.{Monitor, Selector, Settings}
+  alias Sentinelix.Monitoring.Settings.Assertion
   alias Sentinelix.Notifications.Channel
   alias Sentinelix.{Repo, YAML}
 
@@ -144,10 +158,15 @@ defmodule Sentinelix.Monitoring.Export do
 
     for field <- Settings.fields_for(type),
         field != :push_token or push_tokens?,
-        value = settings && Map.get(settings, field),
+        value = settings && export_value(Map.get(settings, field)),
         not blank?(value),
         do: {Atom.to_string(field), value}
   end
+
+  defp export_value([%Assertion{} | _] = assertions),
+    do: Enum.map(assertions, &Assertion.to_pairs/1)
+
+  defp export_value(value), do: value
 
   defp blank?(value), do: value in [nil, "", [], %{}]
 

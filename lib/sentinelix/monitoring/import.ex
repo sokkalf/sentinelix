@@ -388,9 +388,9 @@ defmodule Sentinelix.Monitoring.Import do
       "description" => monitor["description"],
       "labels" => monitor["labels"] || %{},
       "settings" =>
-        Map.new(Settings.fields_for(type), fn field ->
-          key = Atom.to_string(field)
-          {key, settings[key]}
+        Map.new(Settings.fields_for(type), fn
+          :assertions -> {"assertions", settings["assertions"] || []}
+          field -> {Atom.to_string(field), settings[Atom.to_string(field)]}
         end)
     })
   end
@@ -590,6 +590,14 @@ defmodule Sentinelix.Monitoring.Import do
     Enum.flat_map(errors, fn
       {key, %{} = nested} ->
         flatten_errors(nested, path ++ [Atom.to_string(key)])
+
+      # Embedded lists (e.g. settings.assertions): one map per element.
+      {key, [%{} | _] = list} ->
+        list
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {nested, index} ->
+          flatten_errors(nested, path ++ [Atom.to_string(key), Integer.to_string(index)])
+        end)
 
       {key, messages} when is_list(messages) ->
         field = Enum.join(path ++ [Atom.to_string(key)], ".")

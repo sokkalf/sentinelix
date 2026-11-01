@@ -26,6 +26,7 @@ defmodule Sentinelix.Monitoring.Settings do
 
   alias Sentinelix.Checks.Comparison
   alias Sentinelix.Checks.Postgres.{Expectation, Replication}
+  alias Sentinelix.Monitoring.Settings.Assertion
 
   @http_methods ~w(GET HEAD POST PUT PATCH DELETE OPTIONS)
   @dns_record_types ~w(A AAAA CNAME MX TXT NS)
@@ -33,6 +34,7 @@ defmodule Sentinelix.Monitoring.Settings do
   @max_push_grace_seconds 86_400
   @ssl_modes ~w(disable require verify-full)
   @max_query_length 10_000
+  @max_assertions 20
 
   @http_fields [
     url: nil,
@@ -46,8 +48,10 @@ defmodule Sentinelix.Monitoring.Settings do
   ]
 
   # field => default value, per type. A `nil` default means "no default".
+  # Embedded fields (`assertions`) are cast with their own changeset.
+
   @type_fields %{
-    http: @http_fields,
+    http: @http_fields ++ [assertions: []],
     keyword:
       @http_fields ++
         [keyword: nil, invert_keyword: false, case_sensitive: true, json_path: nil],
@@ -88,6 +92,8 @@ defmodule Sentinelix.Monitoring.Settings do
     field :follow_redirects, :boolean
     field :max_redirects, :integer
     field :verify_tls, :boolean
+    # http: checks on the response, see Settings.Assertion.
+    embeds_many :assertions, Assertion, on_replace: :delete
 
     # keyword
     field :keyword, :string
@@ -143,6 +149,9 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @type t :: %__MODULE__{}
 
+  @doc "The maximum number of response assertions of an HTTP monitor."
+  def max_assertions, do: @max_assertions
+
   @doc "Allowed HTTP methods."
   def http_methods, do: @http_methods
 
@@ -171,14 +180,49 @@ defmodule Sentinelix.Monitoring.Settings do
   """
   def changeset(settings, attrs, type) do
     fields = fields_for(type)
-    irrelevant = __schema__(:fields) -- fields
+    embeds = __schema__(:embeds)
+    irrelevant = (__schema__(:fields) -- embeds) -- fields
 
     settings
-    |> cast(attrs, fields)
+    |> cast(attrs, fields -- embeds)
+    |> cast_assertions(:assertions in fields)
     |> trim_strings()
     |> reset_fields(irrelevant)
     |> apply_defaults(type)
     |> validate_type(type)
+  end
+
+  # `assertions_sort` and `assertions_drop` add, remove and reorder rows of
+  # the form (see `Ecto.Changeset.cast_embed/3`).
+  defp cast_assertions(changeset, true) do
+    changeset
+    |> cast_embed(:assertions,
+      with: &Assertion.changeset/2,
+      sort_param: :assertions_sort,
+      drop_param: :assertions_drop
+    )
+    |> drop_unchanged_assertions()
+  end
+
+  defp cast_assertions(changeset, false) do
+    if get_field(changeset, :assertions) in [nil, []],
+      do: changeset,
+      else: put_embed(changeset, :assertions, [])
+  end
+
+  # Assertions have no ids, so casting them always replaces the old ones,
+  # even with the same values. Keep the settings unchanged then (e.g. for
+  # an import of an unchanged monitor).
+  defp drop_unchanged_assertions(changeset) do
+    with {:ok, changesets} <- fetch_change(changeset, :assertions),
+         true <- Enum.all?(changesets, & &1.valid?),
+         new =
+           for(%{action: action} = cs <- changesets, action != :replace, do: apply_changes(cs)),
+         true <- new == changeset.data.assertions do
+      delete_change(changeset, :assertions)
+    else
+      _ -> changeset
+    end
   end
 
   # Identifier-like fields where surrounding whitespace is never intended.
@@ -245,6 +289,7 @@ defmodule Sentinelix.Monitoring.Settings do
     )
     |> validate_status_codes()
     |> validate_headers()
+    |> validate_length(:assertions, max: @max_assertions)
     |> validate_keyword(type)
   end
 

@@ -507,6 +507,9 @@ defmodule SentinelixWeb.MonitorLive.Form do
     """
   end
 
+  # Not editable in the form yet.
+  defp settings_field(%{name: :assertions} = assigns), do: ~H""
+
   defp settings_field(%{name: :push_grace_seconds} = assigns) do
     ~H"""
     <div>
