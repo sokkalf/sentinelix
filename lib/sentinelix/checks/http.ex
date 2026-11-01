@@ -319,8 +319,7 @@ defmodule Sentinelix.Checks.HTTP do
 
   # Reads the body only when an assertion needs it, up to the cap.
   defp body_collector(settings) do
-    # (Keyword monitors read the body too.)
-    if settings.keyword || Enum.any?(settings.assertions || [], &Assertion.needs_body?/1),
+    if Enum.any?(settings.assertions || [], &Assertion.needs_body?/1),
       do: collect_body(max_body_bytes()),
       else: &discard_body/2
   end

@@ -6,11 +6,9 @@ defmodule Sentinelix.Monitoring.AutoLabelsTest do
   doctest AutoLabels
 
   describe "derive/2" do
-    test "the URL host of http and keyword monitors" do
-      for type <- [:http, :keyword] do
-        assert AutoLabels.derive(type, %Settings{url: "https://user:pw@WWW.Example.com./x?y"}) ==
-                 %{"type" => Atom.to_string(type), "host" => "www.example.com"}
-      end
+    test "the URL host of http monitors" do
+      assert AutoLabels.derive(:http, %Settings{url: "https://user:pw@WWW.Example.com./x?y"}) ==
+               %{"type" => "http", "host" => "www.example.com"}
 
       assert AutoLabels.derive(:http, %Settings{url: "http://[2001:DB8::1]:8080/"}) ==
                %{"type" => "http", "host" => "2001:db8::1"}

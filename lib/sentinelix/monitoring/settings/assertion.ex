@@ -143,6 +143,39 @@ defmodule Sentinelix.Monitoring.Settings.Assertion do
   end
 
   @doc """
+  The assertion params replacing the settings of a former keyword monitor
+  (`keyword`, `json_path`, `invert_keyword`, `case_sensitive`, string
+  keys): without `json_path` the body must contain the keyword, with it the
+  JSON value at that path must equal it; `invert_keyword` negates the
+  comparison.
+
+      iex> from_keyword(%{"keyword" => "UP", "json_path" => "status", "invert_keyword" => true})
+      %{"source" => "json", "path" => "status", "comparison" => "not_equals", "value" => "UP", "case_sensitive" => true}
+  """
+  @spec from_keyword(map()) :: map()
+  def from_keyword(%{} = settings) do
+    inverted? = settings["invert_keyword"] in [true, "true"]
+    case_sensitive? = settings["case_sensitive"] not in [false, "false"]
+
+    {source, comparison} =
+      case settings["json_path"] do
+        path when path in [nil, ""] ->
+          {"body", if(inverted?, do: "not_contains", else: "contains")}
+
+        _path ->
+          {"json", if(inverted?, do: "not_equals", else: "equals")}
+      end
+
+    %{
+      "source" => source,
+      "path" => if(source == "json", do: settings["json_path"]),
+      "comparison" => comparison,
+      "value" => settings["keyword"],
+      "case_sensitive" => case_sensitive?
+    }
+  end
+
+  @doc """
   The assertion as a list of `{key, value}` pairs (for the export), without
   the fields that don't apply and with `case_sensitive` only when `false`.
   """

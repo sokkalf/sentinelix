@@ -484,29 +484,6 @@ defmodule SentinelixWeb.MonitorLive.Form do
     """
   end
 
-  defp settings_field(%{name: :keyword} = assigns) do
-    ~H"""
-    <.input field={@field} type="text" label="Keyword" placeholder="OK" phx-debounce="300" />
-    """
-  end
-
-  defp settings_field(%{name: :json_path} = assigns) do
-    ~H"""
-    <div>
-      <.input
-        field={@field}
-        type="text"
-        label="JSON path (optional)"
-        placeholder="data.items.0.status"
-        phx-debounce="300"
-      />
-      <p class="-mt-1 mb-2 text-xs text-base-content/60">
-        When set, the value at this path of a JSON response must equal the keyword.
-      </p>
-    </div>
-    """
-  end
-
   # Not editable in the form yet.
   defp settings_field(%{name: :assertions} = assigns), do: ~H""
 
@@ -522,7 +499,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
   end
 
   defp settings_field(%{name: name} = assigns)
-       when name in [:follow_redirects, :verify_tls, :invert_keyword, :case_sensitive] do
+       when name in [:follow_redirects, :verify_tls] do
     ~H"""
     <.input field={@field} type="checkbox" label={checkbox_label(@name)} />
     """
@@ -770,11 +747,12 @@ defmodule SentinelixWeb.MonitorLive.Form do
 
   defp checkbox_label(:follow_redirects), do: "Follow redirects"
   defp checkbox_label(:verify_tls), do: "Verify TLS certificate"
-  defp checkbox_label(:invert_keyword), do: "Down if the keyword is found"
-  defp checkbox_label(:case_sensitive), do: "Case sensitive"
 
-  defp type_help(:http), do: "Checks that a URL responds with an accepted HTTP status code."
-  defp type_help(:keyword), do: "Checks that a URL's response body contains a keyword."
+  defp type_help(:http),
+    do:
+      "Checks that a URL responds with an accepted HTTP status code " <>
+        "and, optionally, that the response passes assertions."
+
   defp type_help(:tcp), do: "Checks that a TCP port accepts connections."
   defp type_help(:ping), do: "Checks that a host answers ICMP echo requests."
   defp type_help(:dns), do: "Resolves a hostname and optionally compares the answer."

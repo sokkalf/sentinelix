@@ -17,7 +17,6 @@ defmodule Sentinelix.MonitoringFixtures do
   end
 
   def valid_settings(:http), do: %{url: "https://example.com/health"}
-  def valid_settings(:keyword), do: %{url: "https://example.com", keyword: "OK"}
   def valid_settings(:tcp), do: %{host: "db.example.com", port: 5432}
   def valid_settings(:ping), do: %{host: "192.0.2.1"}
   def valid_settings(:dns), do: %{host: "example.com"}

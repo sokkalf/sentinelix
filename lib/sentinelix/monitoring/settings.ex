@@ -52,9 +52,6 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @type_fields %{
     http: @http_fields ++ [assertions: []],
-    keyword:
-      @http_fields ++
-        [keyword: nil, invert_keyword: false, case_sensitive: true, json_path: nil],
     tcp: [host: nil, port: nil],
     ping: [host: nil],
     dns: [host: nil, dns_record_type: "A", dns_resolver: nil, expected_value: nil],
@@ -83,7 +80,7 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @primary_key false
   embedded_schema do
-    # http / keyword
+    # http
     field :url, :string
     field :method, :string
     field :headers, {:map, :string}
@@ -94,14 +91,6 @@ defmodule Sentinelix.Monitoring.Settings do
     field :verify_tls, :boolean
     # http: checks on the response, see Settings.Assertion.
     embeds_many :assertions, Assertion, on_replace: :delete
-
-    # keyword
-    field :keyword, :string
-    field :invert_keyword, :boolean
-    field :case_sensitive, :boolean
-    # Optional: compare the value at this dot-path of a JSON response body
-    # with `keyword` instead of searching the body for it.
-    field :json_path, :string
 
     # tcp / ping / dns / cert / postgres
     field :host, :string
@@ -226,7 +215,7 @@ defmodule Sentinelix.Monitoring.Settings do
   end
 
   # Identifier-like fields where surrounding whitespace is never intended.
-  # (Free-text fields such as `body` and `keyword` are kept verbatim.)
+  # (Free-text fields such as `body` are kept verbatim.)
   # Blank accepted status code entries (e.g. empty form inputs) are dropped.
   @trimmed_fields [
     :url,
@@ -234,7 +223,6 @@ defmodule Sentinelix.Monitoring.Settings do
     :host,
     :dns_record_type,
     :dns_resolver,
-    :json_path,
     :push_token,
     :database,
     :username,
@@ -277,7 +265,7 @@ defmodule Sentinelix.Monitoring.Settings do
     end)
   end
 
-  defp validate_type(changeset, type) when type in [:http, :keyword] do
+  defp validate_type(changeset, :http) do
     changeset
     |> validate_required([:url])
     |> validate_http_url(:url)
@@ -290,7 +278,6 @@ defmodule Sentinelix.Monitoring.Settings do
     |> validate_status_codes()
     |> validate_headers()
     |> validate_length(:assertions, max: @max_assertions)
-    |> validate_keyword(type)
   end
 
   defp validate_type(changeset, type) when type in [:tcp, :ping] do
@@ -362,19 +349,6 @@ defmodule Sentinelix.Monitoring.Settings do
   end
 
   defp validate_type(changeset, _type), do: changeset
-
-  defp validate_keyword(changeset, :keyword) do
-    changeset
-    |> validate_required([:keyword])
-    |> validate_change(:json_path, fn field, path ->
-      case parse_json_path(path) do
-        {:ok, _segments} -> []
-        :error -> [{field, ~s(must be a dot-separated path like "data.items.0.status")}]
-      end
-    end)
-  end
-
-  defp validate_keyword(changeset, _type), do: changeset
 
   # Validated whenever the comparison or the value changes.
   defp validate_expected_value(changeset) do

@@ -194,40 +194,6 @@ defmodule Sentinelix.Monitoring.SettingsTest do
     end
   end
 
-  describe "keyword" do
-    test "requires a URL and keyword, with defaults for the options" do
-      assert %{url: ["can't be blank"], keyword: ["can't be blank"]} =
-               settings_errors(:keyword, %{})
-
-      settings = apply_settings(:keyword, %{url: "https://example.com", keyword: " Welcome"})
-      # Keywords are kept verbatim (whitespace may be significant).
-      assert settings.keyword == " Welcome"
-      assert settings.invert_keyword == false
-      assert settings.case_sensitive == true
-      assert settings.method == "GET"
-      assert settings.json_path == nil
-    end
-
-    test "validates the optional JSON path" do
-      base = %{url: "https://example.com", keyword: "UP"}
-
-      for path <- ["status", "$.data.items.0.status", "a-b.c_d"] do
-        assert valid?(:keyword, Map.put(base, :json_path, path)),
-               "expected #{inspect(path)} to be accepted"
-      end
-
-      for path <- [".status", "data..status", "status.", "$."] do
-        assert %{json_path: [_]} = settings_errors(:keyword, Map.put(base, :json_path, path)),
-               "expected #{inspect(path)} to be rejected"
-      end
-
-      assert apply_settings(:keyword, Map.put(base, :json_path, " status ")).json_path ==
-               "status"
-
-      assert apply_settings(:keyword, Map.put(base, :json_path, "  ")).json_path == nil
-    end
-  end
-
   describe "tcp" do
     test "requires host and port in range" do
       assert %{host: ["can't be blank"], port: ["can't be blank"]} = settings_errors(:tcp, %{})
@@ -434,10 +400,15 @@ defmodule Sentinelix.Monitoring.SettingsTest do
 
   test "fields not relevant for the type are discarded" do
     settings =
-      apply_settings(:tcp, %{host: "example.com", port: 22, url: "https://x", keyword: "y"})
+      apply_settings(:tcp, %{
+        host: "example.com",
+        port: 22,
+        url: "https://x",
+        assertions: [%{source: "body", comparison: "contains", value: "y"}]
+      })
 
     assert settings.url == nil
-    assert settings.keyword == nil
+    assert settings.assertions == []
   end
 
   describe "accepted_status_ranges/1 and accepted_status?/2" do

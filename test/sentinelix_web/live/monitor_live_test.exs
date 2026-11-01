@@ -656,7 +656,6 @@ defmodule SentinelixWeb.MonitorLiveTest do
       {:ok, view, _html} = live(conn, ~p"/monitors/new")
 
       for {type, fields} <- [
-            keyword: ~w(url keyword invert_keyword case_sensitive json_path),
             tcp: ~w(host port),
             ping: ~w(host),
             dns: ~w(host dns_record_type dns_resolver expected_value),

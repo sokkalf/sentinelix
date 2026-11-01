@@ -6,6 +6,13 @@ defmodule Sentinelix.Monitoring.Import do
       mix sentinelix.import monitors.yaml --report-missing
       bin/import_monitors monitors.yaml --dry-run    # in a release
 
+  ## Keyword monitors
+
+  Files may still contain monitors of the former `keyword` type. They are
+  imported as `http` monitors with a response assertion in place of
+  `keyword`, `json_path`, `invert_keyword` and `case_sensitive` (see
+  `Sentinelix.Monitoring.Settings.Assertion.from_keyword/1`).
+
   ## Matching
 
   Monitors are matched with the existing ones **by name** (exact, after
@@ -53,6 +60,7 @@ defmodule Sentinelix.Monitoring.Import do
 
   alias Sentinelix.{Monitoring, Notifications, Repo, YAML}
   alias Sentinelix.Monitoring.{Export, Monitor, Selector, Settings}
+  alias Sentinelix.Monitoring.Settings.Assertion
   alias Sentinelix.Notifications.Channel
 
   @max_bytes 5_000_000
@@ -282,6 +290,7 @@ defmodule Sentinelix.Monitoring.Import do
     do: {:error, [file_error("expected a mapping with version and monitors")]}
 
   defp entry(%{} = monitor, index) do
+    monitor = upgrade_keyword(monitor)
     name = monitor["name"]
     name = if is_binary(name), do: String.trim(name), else: name
     error = &%Error{index: index, name: if(is_binary(name), do: name), field: &1, message: &2}
@@ -305,6 +314,27 @@ defmodule Sentinelix.Monitoring.Import do
 
   defp entry(_monitor, index),
     do: {:error, [%Error{index: index, message: "must be a mapping with name, type, ..."}]}
+
+  @keyword_settings ~w(keyword invert_keyword case_sensitive json_path)
+
+  # Files from before the keyword type was folded into http: a keyword
+  # monitor becomes an http monitor with the equivalent assertion (as the
+  # migration did for the stored monitors).
+  defp upgrade_keyword(%{"type" => "keyword"} = monitor) do
+    case monitor["settings"] do
+      settings when is_map(settings) or is_nil(settings) ->
+        {keyword, settings} = Map.split(settings || %{}, @keyword_settings)
+        assertions = [Assertion.from_keyword(keyword) | List.wrap(settings["assertions"])]
+
+        %{monitor | "type" => "http"}
+        |> Map.put("settings", Map.put(settings, "assertions", assertions))
+
+      _invalid ->
+        %{monitor | "type" => "http"}
+    end
+  end
+
+  defp upgrade_keyword(monitor), do: monitor
 
   defp entry_errors(monitor, name, error) do
     errors =
