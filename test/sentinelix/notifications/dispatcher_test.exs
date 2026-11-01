@@ -152,6 +152,44 @@ defmodule Sentinelix.Notifications.DispatcherTest do
     refute_notified()
   end
 
+  test "the warning status raised by events is notified as a warning", %{monitor: monitor} do
+    {channel, url} = webhook()
+    :ok = Notifications.put_monitor_channels(monitor, [channel])
+
+    status_changed(monitor, :pending, :up)
+    status_changed(monitor, :up, :warning, message: "Warning: Disk 91% full")
+    assert_receive {:notification_request, %{url: ^url, body: body}}, 1_000
+    assert body["event"] == "warning"
+    assert body["message"] == "Warning: Disk 91% full"
+
+    # e.g. a restarted worker
+    status_changed(monitor, :pending, :warning)
+    refute_notified()
+
+    status_changed(monitor, :warning, :up, message: "Warnings cleared")
+    assert_notified(url, "[OK] Homepage warning cleared")
+    status_changed(monitor, :up, :pending)
+    status_changed(monitor, :pending, :up)
+    refute_notified()
+  end
+
+  test "down and back to the warning status: down, recovery and the warning again",
+       %{monitor: monitor} do
+    {channel, url} = webhook()
+    :ok = Notifications.put_monitor_channels(monitor, [channel])
+
+    status_changed(monitor, :up, :warning)
+    assert_notified(url, "[WARNING] Homepage has a warning")
+
+    status_changed(monitor, :warning, :down)
+    assert_notified(url, "[DOWN] Homepage is down")
+
+    status_changed(monitor, :down, :warning)
+    assert_notified(url, "[UP] Homepage is back up")
+    assert_notified(url, "[WARNING] Homepage has a warning")
+    refute_notified()
+  end
+
   test "a recovery resets the warning", %{monitor: monitor} do
     {channel, url} = webhook()
     :ok = Notifications.put_monitor_channels(monitor, [channel])
