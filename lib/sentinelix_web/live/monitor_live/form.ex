@@ -12,11 +12,15 @@ defmodule SentinelixWeb.MonitorLive.Form do
   The parent ("Depends on") can be any monitor except the monitor itself
   and the monitors that depend on it. The form suggests one (see
   `Sentinelix.Monitoring.suggest_parent/1`) while none is chosen.
+
+  The members selector of a group monitor completes label keys and values
+  and shows the monitors it matches as it is typed.
   """
 
   use SentinelixWeb, :live_view
 
   import SentinelixWeb.MonitorComponents
+  import SentinelixWeb.SelectorComponents, only: [selector_input: 1, suggestions: 2]
 
   alias Sentinelix.Checks.Postgres.Expectation
   alias Sentinelix.Monitoring
@@ -102,6 +106,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
                       name={name}
                       field={settings[name]}
                       type={@type}
+                      members={@members}
                     />
                   <% end %>
                 </div>
@@ -413,6 +418,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
   attr :name, :atom, required: true
   attr :field, Phoenix.HTML.FormField, required: true
   attr :type, :atom, required: true
+  attr :members, :map, default: %{}, doc: "the members selector's suggestions and preview"
 
   defp settings_field(%{name: :url} = assigns) do
     ~H"""
@@ -594,6 +600,61 @@ defmodule SentinelixWeb.MonitorLive.Form do
       >
         <.icon name="hero-plus-micro" class="size-4" /> Add assertion
       </button>
+    </div>
+    """
+  end
+
+  defp settings_field(%{name: :members} = assigns) do
+    ~H"""
+    <div class="sm:col-span-2 mb-2">
+      <label for={@field.id} class="mb-1 block text-sm">Members</label>
+      <.selector_input
+        id={@field.id}
+        name={@field.name}
+        value={@field.value || ""}
+        error={
+          if Phoenix.Component.used_input?(@field),
+            do: @field.errors |> Enum.map(&translate_error/1) |> List.first()
+        }
+        suggestions={@members.suggestions}
+        placeholder="app=shop"
+      />
+      <p class="mt-1 text-xs text-base-content/60">
+        The monitors that make up the group, by label and name, e.g. app=shop or
+        name~shop. Groups can't be members.
+      </p>
+      <div :if={@members.preview} id="members-preview" class="mt-2 text-sm">
+        <p class="text-xs text-base-content/60">{members_summary(@members.preview)}</p>
+        <ul :if={@members.preview != []} class="mt-1 space-y-0.5">
+          <li
+            :for={monitor <- Enum.take(@members.preview, @members.limit)}
+            id={"member-preview-#{monitor.id}"}
+            class="flex items-center gap-2"
+          >
+            <span class="truncate">{monitor.name}</span>
+            <span class="badge badge-ghost badge-xs">{type_label(monitor.type)}</span>
+            <span :if={!monitor.enabled} class="badge badge-ghost badge-xs">paused</span>
+          </li>
+        </ul>
+        <p
+          :if={length(@members.preview) > @members.limit}
+          class="text-xs text-base-content/60"
+        >
+          and {length(@members.preview) - @members.limit} more
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  defp settings_field(%{name: :alert_through_group} = assigns) do
+    ~H"""
+    <div class="sm:col-span-2">
+      <.input field={@field} type="checkbox" label="Members alert through this group only" />
+      <p class="-mt-1 mb-2 text-xs text-base-content/60">
+        One alert for the group instead of one per member: while the group is enabled, its
+        members send no notifications of their own.
+      </p>
     </div>
     """
   end
@@ -887,7 +948,16 @@ defmodule SentinelixWeb.MonitorLive.Form do
   defp type_help(:push),
     do: "Passive monitor: your service calls the push URL; it goes down when the pushes stop."
 
+  defp type_help(:group),
+    do:
+      "Combines other monitors, e.g. the ports and the database of one application: " <>
+        "down when one of them is down."
+
   defp type_help(_type), do: nil
+
+  defp members_summary([]), do: "Matches no monitors yet."
+  defp members_summary([_monitor]), do: "Matches 1 monitor:"
+  defp members_summary(monitors), do: "Matches #{length(monitors)} monitors:"
 
   @impl true
   def mount(params, _session, socket) do
@@ -1179,7 +1249,55 @@ defmodule SentinelixWeb.MonitorLive.Form do
     )
     |> assign_routed_channels(changeset)
     |> assign_suggested_parent(changeset)
+    |> assign_members(changeset)
   end
+
+  @members_preview_limit 20
+
+  # The members selector of a group: completions and the monitors it
+  # matches, looked up again only when it changes.
+  defp assign_members(socket, changeset) do
+    settings = Ecto.Changeset.get_field(changeset, :settings)
+    text = (settings && settings.members) || ""
+    type = Ecto.Changeset.get_field(changeset, :type)
+
+    cond do
+      type != :group ->
+        assign(socket, members: %{}, members_for: nil)
+
+      socket.assigns[:members_for] == text ->
+        socket
+
+      true ->
+        values =
+          socket.assigns
+          |> Map.get_lazy(:member_label_values, fn ->
+            Monitoring.list_label_values(automatic: true)
+          end)
+
+        group = %Monitor{type: :group, settings: %Settings{members: text}}
+
+        preview =
+          if members_error?(changeset),
+            do: nil,
+            else: Monitoring.list_group_members(group)
+
+        socket
+        |> assign(member_label_values: values, members_for: text)
+        |> assign(
+          members: %{
+            preview: preview,
+            suggestions: suggestions(text, Map.put(values, "name", [])),
+            limit: @members_preview_limit
+          }
+        )
+    end
+  end
+
+  defp members_error?(%{changes: %{settings: %{errors: errors}}}),
+    do: Keyword.has_key?(errors, :members)
+
+  defp members_error?(_changeset), do: false
 
   # The channels whose selector matches the monitor as edited (its labels,
   # automatic labels and name in the form; `all_labels` is the stored union

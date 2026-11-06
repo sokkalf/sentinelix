@@ -927,6 +927,62 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert saved != token
     end
 
+    test "creates a group monitor with a preview of its members", %{conn: conn} do
+      monitor_fixture(:tcp, %{name: "Shop 8080", labels: %{"app" => "shop"}})
+      monitor_fixture(:postgres, %{name: "Shop DB", labels: %{"app" => "shop"}, enabled: false})
+      monitor_fixture(:tcp, %{name: "Blog", labels: %{"app" => "blog"}})
+      monitor_fixture(:group, %{name: "Other group", labels: %{"app" => "shop"}})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/new")
+      view |> form("#monitor-form", monitor: %{type: :group}) |> render_change()
+
+      assert has_element?(view, "[name='monitor[settings][members]']")
+      assert has_element?(view, "[name='monitor[settings][alert_through_group]']")
+      refute has_element?(view, "[name='monitor[settings][url]']")
+
+      html =
+        view
+        |> form("#monitor-form", monitor: %{settings: %{members: "status=down"}})
+        |> render_change()
+
+      assert html =~ "status can&#39;t be used here"
+      refute has_element?(view, "#members-preview")
+
+      view
+      |> form("#monitor-form", monitor: %{settings: %{members: "app=shop"}})
+      |> render_change()
+
+      assert has_element?(view, "#members-preview", "Matches 2 monitors:")
+      assert has_element?(view, "#members-preview li", "Shop 8080")
+      assert has_element?(view, "#members-preview li", "paused")
+      refute has_element?(view, "#members-preview li", "Blog")
+      refute has_element?(view, "#members-preview li", "Other group")
+
+      # Completes label keys and values.
+      view
+      |> form("#monitor-form", monitor: %{settings: %{members: "app=b"}})
+      |> render_change()
+
+      assert has_element?(
+               view,
+               "#monitor_settings_0_members-suggestions option[value='app=blog']"
+             )
+
+      {:ok, _view, _html} =
+        view
+        |> form("#monitor-form",
+          monitor: %{
+            name: "Shop",
+            settings: %{members: "app=shop", alert_through_group: "true"}
+          }
+        )
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      assert %{settings: %{members: "app=shop", alert_through_group: true}} =
+               Repo.get_by!(Monitor, name: "Shop")
+    end
+
     test "edits a monitor", %{conn: conn} do
       monitor = monitor_fixture(:tcp, %{name: "DB", labels: %{"env" => "prod"}})
       {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}/edit")
