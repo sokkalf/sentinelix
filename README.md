@@ -735,8 +735,9 @@ alerts.
 
 The group's page lists its members with their status, recent checks and
 uptime, and charts their response times with a line per member, in a
-fixed color per member (the eight oldest members are charted). A
-member's page names its groups. In the form, the members selector
+fixed color per member (the eight oldest members are charted). Its
+timeline of incidents and events has the members' too, each naming its
+member. A member's page names its groups. In the form, the members selector
 completes label keys and values and lists the monitors it matches as you
 type. In [YAML files](#import-and-export) a group is
 
