@@ -23,7 +23,9 @@ defmodule Sentinelix.Checks.Group do
   `Sentinelix.Monitoring.Events`) are seen: a check's warning (e.g. a TLS
   certificate close to expiry) isn't stored with the result.
 
-  The check runs every `interval_seconds` like any other. The status machine of the group (retries,
+  The check runs every `interval_seconds` like any other, and right away
+  (debounced) when a member's status changes or a monitor is changed, see
+  `subscribe/1` and `recheck?/2`. The status machine of the group (retries,
   incidents, notifications, maintenance, its own parent) is the worker's,
   as for every monitor.
 
@@ -51,6 +53,29 @@ defmodule Sentinelix.Checks.Group do
     |> Enum.map(&{&1, latest[&1.id]})
     |> aggregate()
   end
+
+  @impl true
+  def subscribe(%Monitor{}) do
+    :ok = Monitoring.subscribe_status_changes()
+    :ok = Monitoring.subscribe_monitors()
+  end
+
+  @impl true
+  def recheck?(group, {:status_changed, monitor, _old, _new, _result}),
+    do: Monitoring.group_member?(group, monitor)
+
+  def recheck?(group, {event, monitor, _result})
+      when event in [:warning_raised, :warning_cleared],
+      do: Monitoring.group_member?(group, monitor)
+
+  # A monitor that joins or leaves the group, or a member that is paused
+  # or resumed. Not known which monitors were members before a change, so
+  # every change of a monitor that can be a member counts.
+  def recheck?(%Monitor{id: id}, {event, %Monitor{id: other, type: type}})
+      when event in [:monitor_created, :monitor_updated, :monitor_deleted],
+      do: type != :group and other != id
+
+  def recheck?(_group, _message), do: false
 
   @doc """
   The check result of a group from its members, each with its latest

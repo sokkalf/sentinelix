@@ -29,6 +29,10 @@ defmodule Sentinelix.Monitoring.Supervisor do
       `nil` (default). See `Sentinelix.Monitoring.Worker`.
     * `:jitter` – random extra delay added to each scheduled check, as a
       fraction of the interval (default `0.05`).
+    * `:recheck_delay_ms` – how long a check that reacts to messages (e.g.
+      a group to its members) waits before it runs, to make one check of a
+      burst of messages (default `1000`). See "Re-checks" in
+      `Sentinelix.Monitoring.Worker`.
   """
 
   use Supervisor
@@ -36,6 +40,7 @@ defmodule Sentinelix.Monitoring.Supervisor do
   alias Sentinelix.Monitoring.{Manager, Monitor, Worker}
 
   @default_jitter 0.05
+  @default_recheck_delay_ms 1_000
 
   @type engine :: atom()
 
@@ -53,6 +58,7 @@ defmodule Sentinelix.Monitoring.Supervisor do
       checks: Keyword.get_lazy(opts, :checks, &Sentinelix.Checks.modules/0),
       maintenance: Keyword.get(opts, :maintenance),
       jitter: Keyword.get(opts, :jitter, @default_jitter),
+      recheck_delay_ms: Keyword.get(opts, :recheck_delay_ms, @default_recheck_delay_ms),
       task_supervisor: task_supervisor(name)
     }
 

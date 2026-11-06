@@ -63,5 +63,22 @@ defmodule Sentinelix.Checks.Check do
   """
   @callback passive?() :: boolean()
 
-  @optional_callbacks passive?: 0
+  @doc """
+  Subscribes the worker of `monitor` to the messages its check reacts to
+  (optional). Called in the worker process when it starts; see
+  `c:recheck?/2`.
+  """
+  @callback subscribe(monitor :: Monitor.t()) :: :ok
+
+  @doc """
+  Whether a message the worker received (through `c:subscribe/1`) calls
+  for a check right away (optional, implement it together with
+  `c:subscribe/1`). See "Re-checks" in `Sentinelix.Monitoring.Worker`.
+
+  Called in the worker process for every message the worker doesn't handle
+  itself, so it must be quick and must not raise.
+  """
+  @callback recheck?(monitor :: Monitor.t(), message :: term()) :: boolean()
+
+  @optional_callbacks passive?: 0, subscribe: 1, recheck?: 2
 end
