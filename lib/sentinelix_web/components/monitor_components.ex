@@ -18,7 +18,8 @@ defmodule SentinelixWeb.MonitorComponents do
     dns: "DNS",
     cert: "TLS certificate",
     push: "Push",
-    postgres: "PostgreSQL"
+    postgres: "PostgreSQL",
+    group: "Group"
   }
 
   @doc "A human readable label for a monitor type."
@@ -38,10 +39,15 @@ defmodule SentinelixWeb.MonitorComponents do
   def display_status(_monitor, nil), do: :pending
 
   @doc """
-  The target of a monitor (URL, host:port, host, ...), or nil.
+  The target of a monitor (URL, host:port, host, a group's members
+  selector, ...), or nil.
   """
   @spec target(Monitor.t()) :: String.t() | nil
   def target(%Monitor{type: :push}), do: nil
+
+  def target(%Monitor{type: :group, settings: %{members: members}}) when is_binary(members),
+    do: members
+
   def target(%Monitor{settings: %{url: url}}) when is_binary(url), do: url
 
   def target(%Monitor{type: :dns, settings: %{host: host, dns_record_type: type}})

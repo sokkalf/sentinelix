@@ -26,6 +26,7 @@ defmodule Sentinelix.Monitoring.Settings do
 
   alias Sentinelix.Checks.Comparison
   alias Sentinelix.Checks.Postgres.{Expectation, Replication}
+  alias Sentinelix.Monitoring.Selector
   alias Sentinelix.Monitoring.Settings.Assertion
 
   @http_methods ~w(GET HEAD POST PUT PATCH DELETE OPTIONS)
@@ -35,6 +36,9 @@ defmodule Sentinelix.Monitoring.Settings do
   @ssl_modes ~w(disable require verify-full)
   @max_query_length 10_000
   @max_assertions 20
+  # Group members are chosen by label and name, never by status: a group
+  # whose members change as they go down would hide the outage.
+  @members_selector_options [allow: [:labels, :name]]
 
   @http_fields [
     url: nil,
@@ -75,7 +79,8 @@ defmodule Sentinelix.Monitoring.Settings do
       lag_critical_seconds: nil,
       lag_warn_bytes: nil,
       lag_critical_bytes: nil
-    ]
+    ],
+    group: [members: nil, alert_through_group: false]
   }
 
   @primary_key false
@@ -134,6 +139,12 @@ defmodule Sentinelix.Monitoring.Settings do
     field :lag_critical_seconds, :integer
     field :lag_warn_bytes, :integer
     field :lag_critical_bytes, :integer
+
+    # group: a selector (labels and name) choosing the member monitors, see
+    # Sentinelix.Checks.Group.
+    field :members, :string
+    # Members don't notify on their own: the group alerts for them.
+    field :alert_through_group, :boolean
   end
 
   @type t :: %__MODULE__{}
@@ -149,6 +160,13 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @doc "Allowed PostgreSQL SSL modes."
   def ssl_modes, do: @ssl_modes
+
+  @doc """
+  The options of `Sentinelix.Monitoring.Selector.parse/2` for the `members`
+  selector of group monitors: labels and names, no status.
+  """
+  @spec members_selector_options() :: keyword()
+  def members_selector_options, do: @members_selector_options
 
   @doc """
   The settings fields (in display order) relevant for a monitor type.
@@ -228,7 +246,8 @@ defmodule Sentinelix.Monitoring.Settings do
     :username,
     :ssl_mode,
     :ssl_ca_cert,
-    :query
+    :query,
+    :members
   ]
 
   defp trim_strings(changeset) do
@@ -346,6 +365,12 @@ defmodule Sentinelix.Monitoring.Settings do
     |> validate_number(:min_standbys, greater_than_or_equal_to: 0)
     |> validate_thresholds(:lag_warn_seconds, :lag_critical_seconds)
     |> validate_thresholds(:lag_warn_bytes, :lag_critical_bytes)
+  end
+
+  defp validate_type(changeset, :group) do
+    changeset
+    |> validate_required([:members, :alert_through_group])
+    |> Selector.validate_selector(:members, @members_selector_options)
   end
 
   defp validate_type(changeset, _type), do: changeset

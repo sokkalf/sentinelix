@@ -16,7 +16,8 @@ defmodule Sentinelix.Checks do
     dns: Checks.DNS,
     cert: Checks.Cert,
     push: Checks.Push,
-    postgres: Checks.Postgres
+    postgres: Checks.Postgres,
+    group: Checks.Group
   }
 
   @doc """

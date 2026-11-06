@@ -15,6 +15,10 @@ public status pages.
   ping (ICMP), DNS records (A, AAAA, CNAME, MX, TXT, NS), TLS certificate
   expiry, PostgreSQL (login, query with expected result, replication status
   and lag) and push (heartbeat) monitors for cron jobs and backups.
+* **Group monitors:** one monitor for an application made of several
+  checks (its ports, its database): down when a member is, one alert
+  instead of one per member, and a response time chart with a line per
+  member. See [Group monitors](#group-monitors).
 * **Live dashboard** with per-monitor status, heartbeat bars, response time
   charts, uptime over 24 hours / 7 / 30 / 90 days and incident history
   (LiveView, updates without reloading).
@@ -326,12 +330,12 @@ use. The dashboard and the monitor list filter by labels with
 Every monitor also has read-only automatic labels, derived from its
 settings whenever it is saved:
 
-* `type`: the monitor type (`http`, `tcp`, `ping`, `dns`, `cert`, `push`
-  or `postgres`).
+* `type`: the monitor type (`http`, `tcp`, `ping`, `dns`, `cert`, `push`,
+  `postgres` or `group`).
 * `host`: the host it checks: the host of the URL (HTTP monitors) or the hostname or IP address (TCP, ping, DNS, certificate and
   PostgreSQL monitors), lowercased, without port or trailing dot
   (`https://WWW.Example.com:8443/` gives `host=www.example.com`). Push
-  monitors have none.
+  and group monitors have none.
 
 Selectors use them like your own labels (`type=tcp`,
 `host=db1.example.com`), and they appear as muted, dashed badges on the
@@ -683,6 +687,67 @@ matches the default SSL mode *require*). For replication checks on standbys,
 the role is replicated from the primary; their `pg_hba.conf` needs the entry
 too.
 
+## Group monitors
+
+Many services are more than one check: an application serving several
+ports, plus its database. A **group monitor** combines such checks into
+one monitor. The checks stay ordinary monitors with their own intervals,
+retries, secrets and dependencies; the group chooses them by a
+**members** [selector](#selectors) on labels and name, e.g. `app=shop`
+or `name~shop` (no `status` terms: members don't come and go as they go
+down). Groups can't be members of groups.
+
+```
+Shop (group, members: app=shop)
+├── Shop web 443   (tcp, app=shop)
+├── Shop API 8443  (http, app=shop)
+└── Shop DB        (postgres, app=shop)
+```
+
+The group's status is the worst of its members':
+
+* a member that is **down** or **unreachable** takes the group down,
+  with a message naming it (`1 of 3 members down: Shop DB`),
+* otherwise a member with a **warning** (raised by an
+  [event](#events-and-warnings)) gives the group a warning,
+* members that are still retrying (pending) count as up.
+
+Paused members and members in maintenance don't count, and neither do
+members that haven't been checked yet. A group whose selector matches no
+monitor at all is down, so a typo doesn't pass for a healthy group.
+
+The group is checked on its interval and right away (within a second)
+when a member's status changes or a monitor joins or leaves it. It is a
+monitor like any other: it has its own history, uptime, incidents,
+notification channels, maintenance windows, labels and status page entry,
+and it can have a parent – give it the ping monitor of the host its
+members run on to keep it quiet while the host is down, as unreachable
+members count as down. Its retries come on top of the members': leave
+them at 0 to go down as soon as a member does.
+
+**Members alert through this group only** (in the group's settings)
+turns the members' own notifications off while the group is enabled: an
+outage of the shop is one alert from the group instead of one per port.
+The members still record their status and incidents, and their
+notification state stays current, so pausing the group (or turning the
+option off) makes them alert on their own again without repeating old
+alerts.
+
+The group's page lists its members with their status, recent checks and
+uptime, and charts their response times with a line per member, in a
+fixed color per member (the eight oldest members are charted). A
+member's page names its groups. In the form, the members selector
+completes label keys and values and lists the monitors it matches as you
+type. In [YAML files](#import-and-export) a group is
+
+```yaml
+- name: Shop
+  type: group
+  settings:
+    members: app=shop
+    alert_through_group: true
+```
+
 ## Status pages
 
 Status pages are managed at `/status-pages`. A page has a slug, title,
@@ -806,6 +871,9 @@ sends a test notification to exactly the channels a real alert would go to;
 * The last notified state per monitor is persisted, so restarts (monitor
   edits, deploys) don't re-send notifications for monitors that are already
   down or warned about.
+* Members of a [group monitor](#group-monitors) with *Members alert
+  through this group only* send nothing on their own while the group is
+  enabled; the group alerts for them.
 
 ## Maintenance windows
 
@@ -1124,6 +1192,12 @@ Sentinelix.Supervisor
   (`Sentinelix.Notifications.Providers.*`).
 * **Maintenance** – the engine asks `Sentinelix.Maintenance` after every
   check whether the monitor is in a window.
+* **Groups** – a group monitor's check (`Sentinelix.Checks.Group`) reads
+  its members' latest results. Checks can implement the optional
+  `subscribe/1` and `recheck?/2` callbacks to react to messages besides
+  their schedule; the group subscribes to status and monitor changes and
+  its worker runs it again after a short debounce (see
+  [Group monitors](#group-monitors)).
 * **Dependencies** – every worker publishes whether its latest check
   succeeded in the engine's registry and broadcasts it to its children,
   which read their parent's state there when a check of theirs fails (see

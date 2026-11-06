@@ -448,7 +448,7 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
 
       assert import_errors(yaml) == [
                ~s(monitor 1 "A": settings.hostname is not a setting of http monitors),
-               ~s(monitor 2 "B": type must be one of http, tcp, ping, dns, cert, push, postgres),
+               ~s(monitor 2 "B": type must be one of http, tcp, ping, dns, cert, push, postgres, group),
                ~s(monitor 3: name must be a non-empty string),
                # The valid monitors are checked too.
                ~s(monitor 4 "C": channels "Nope" doesn't exist),
@@ -519,6 +519,36 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
              ] = monitor.settings.assertions
 
       assert yaml |> import!() |> Result.counts() == %{create: 0, update: 0, unchanged: 1}
+    end
+
+    test "imports group monitors and round trips them" do
+      yaml = """
+      version: 1
+      monitors:
+        - name: Shop
+          type: group
+          labels:
+            app: shop
+          settings:
+            members: "app=shop, status=down"
+            alert_through_group: true
+      """
+
+      assert import_errors(yaml) == [
+               ~s(monitor 1 "Shop": settings.members status can't be used here at column 11)
+             ]
+
+      yaml = String.replace(yaml, ", status=down", "")
+      import!(yaml)
+
+      [group] = Monitoring.list_monitors(type: :group)
+      assert %{members: "app=shop", alert_through_group: true} = group.settings
+
+      exported = export!()
+      assert exported =~ "members: app=shop"
+      assert exported =~ "alert_through_group: true"
+      # With the monitors of the setup.
+      assert exported |> import!() |> Result.counts() == %{create: 0, update: 0, unchanged: 9}
     end
 
     test "imports keyword monitors of older files as http monitors with an assertion" do

@@ -138,6 +138,19 @@ defmodule Sentinelix.Monitoring.Worker do
   pushes as unreachable too, but have nothing to re-check: their deadline
   decides, and they don't ask the parent to confirm.
 
+  ## Re-checks
+
+  A check can react to messages besides its schedule (see
+  `c:Sentinelix.Checks.Check.subscribe/1` and
+  `c:Sentinelix.Checks.Check.recheck?/2`), e.g. a group monitor to the
+  status changes of its members (`Sentinelix.Checks.Group`). The worker
+  calls `subscribe/1` when it starts and asks `recheck?/2` about every
+  message it doesn't handle itself. When it says yes, the next check runs
+  after the engine's `:recheck_delay_ms` (unless one is due sooner), so a
+  burst of messages (a bulk change of monitors) makes one check. A message
+  that arrives while a check is running asks for another one after it, as
+  the running check may have missed the change.
+
   ## Telemetry
 
     * `[:sentinelix, :check, :start]` – measurements `%{system_time:,
@@ -179,6 +192,10 @@ defmodule Sentinelix.Monitoring.Worker do
     :next_check_at,
     :expiry_timer,
     passive: false,
+    # The check reacts to messages, see Re-checks.
+    reactive: false,
+    # A re-check was asked for while a check was running.
+    recheck: false,
     status: :pending,
     retries: 0,
     warning: false,
@@ -299,7 +316,8 @@ defmodule Sentinelix.Monitoring.Worker do
       monitor: Keyword.fetch!(opts, :monitor),
       check: check,
       config: Keyword.fetch!(opts, :config),
-      passive: passive?(check)
+      passive: passive?(check),
+      reactive: reactive?(check)
     }
 
     # Finish recording a check that is being processed before shutting down.
@@ -309,6 +327,8 @@ defmodule Sentinelix.Monitoring.Worker do
     if parent_id = state.monitor.parent_id do
       :ok = PubSub.subscribe(@pubsub, dependents_topic(state.config.engine, parent_id))
     end
+
+    if state.reactive, do: :ok = check.subscribe(state.monitor)
 
     {:ok, state, {:continue, :restore}}
   end
@@ -436,6 +456,12 @@ defmodule Sentinelix.Monitoring.Worker do
   def handle_info({ref, _result}, state) when is_reference(ref), do: {:noreply, state}
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:noreply, state}
 
+  def handle_info(message, %{reactive: true} = state) do
+    if state.check.recheck?(state.monitor, message),
+      do: {:noreply, request_check(state)},
+      else: {:noreply, state}
+  end
+
   def handle_info(message, state) do
     Logger.debug("#{inspect(__MODULE__)} ignoring unexpected message #{inspect(message)}")
     {:noreply, state}
@@ -484,6 +510,42 @@ defmodule Sentinelix.Monitoring.Worker do
     Code.ensure_loaded?(check) and function_exported?(check, :passive?, 0) and check.passive?()
   end
 
+  defp reactive?(check) do
+    Code.ensure_loaded?(check) and function_exported?(check, :subscribe, 1) and
+      function_exported?(check, :recheck?, 2)
+  end
+
+  # A check after the recheck delay, unless one is due sooner or running
+  # (then after it), see Re-checks.
+  defp request_check(%{task: %Task{}} = state), do: %{state | recheck: true}
+  defp request_check(%{passive: true} = state), do: state
+
+  defp request_check(state) do
+    delay = state.config.recheck_delay_ms
+
+    if due_within?(state.timer, delay) do
+      state
+    else
+      cancel_timer(state.timer)
+
+      %{
+        state
+        | timer: Process.send_after(self(), :check, delay),
+          next_check_at: DateTime.add(DateTime.utc_now(), delay, :millisecond)
+      }
+    end
+  end
+
+  defp due_within?(nil, _delay), do: false
+
+  defp due_within?(timer, delay) do
+    case Process.read_timer(timer) do
+      # Fired: the check message is on its way.
+      false -> true
+      remaining -> remaining <= delay
+    end
+  end
+
   defp crash_reason({exception, stacktrace})
        when is_exception(exception) and is_list(stacktrace),
        do: Exception.format_banner(:error, exception)
@@ -502,7 +564,11 @@ defmodule Sentinelix.Monitoring.Worker do
 
     case finish(state, result, error) do
       {:ok, state, _check_result} ->
-        {:noreply, schedule(state, System.monotonic_time() - state.started_at)}
+        state = schedule(state, System.monotonic_time() - state.started_at)
+
+        if state.recheck,
+          do: {:noreply, request_check(%{state | recheck: false})},
+          else: {:noreply, state}
 
       :stop ->
         {:stop, :normal, state}

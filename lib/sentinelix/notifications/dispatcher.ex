@@ -27,6 +27,12 @@ defmodule Sentinelix.Notifications.Dispatcher do
     * `{:status_changed, m, :warning, :up, r}` → `:warning_cleared` if a
       warning was notified.
 
+  A member of a group monitor whose members alert through the group
+  (`alert_through_group`, see `Sentinelix.Checks.Group`) sends nothing on
+  its own while the group is enabled: the group alerts for it. Its
+  notified state is kept up to date all the same, so nothing is sent
+  twice, or for an old outage, when the member alerts on its own again.
+
   Warnings of checks and of events share the notified warning: whichever
   comes first is notified, and clearing either one notifies the clear.
 
@@ -177,6 +183,18 @@ defmodule Sentinelix.Notifications.Dispatcher do
   defp recovery?(old, last), do: last == :down or (last == nil and old == :down)
 
   defp dispatch(%Event{} = event, state) do
+    if alerts_through_group?(event.monitor_id), do: :ok, else: send_event(event, state)
+  end
+
+  # From the monitor's current labels, like the routed channels.
+  defp alerts_through_group?(monitor_id) do
+    case Monitoring.get_monitor(monitor_id) do
+      nil -> false
+      monitor -> Monitoring.alerts_through_group?(monitor)
+    end
+  end
+
+  defp send_event(event, state) do
     for channel <- Notifications.list_notified_channels(event.monitor_id) do
       {:ok, _pid} =
         Task.Supervisor.start_child(state.task_supervisor, fn ->
