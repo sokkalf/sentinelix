@@ -448,7 +448,7 @@ defmodule Sentinelix.Monitoring.ImportExportTest do
 
       assert import_errors(yaml) == [
                ~s(monitor 1 "A": settings.hostname is not a setting of http monitors),
-               ~s(monitor 2 "B": type must be one of http, tcp, ping, dns, cert, push, postgres),
+               ~s(monitor 2 "B": type must be one of http, tcp, ping, dns, cert, push, postgres, group),
                ~s(monitor 3: name must be a non-empty string),
                # The valid monitors are checked too.
                ~s(monitor 4 "C": channels "Nope" doesn't exist),

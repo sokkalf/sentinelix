@@ -5,9 +5,10 @@ defmodule Sentinelix.Monitoring.AutoLabels do
   them by hand.
 
     * `type` – the monitor type (`http`, `tcp`, `ping`, `dns`,
-      `cert`, `push` or `postgres`).
+      `cert`, `push`, `postgres` or `group`).
     * `host` – the host the monitor checks: the host of the URL (http), or the hostname or IP address (tcp, ping, dns, cert,
-      postgres), normalized by `normalize_host/1`. Push monitors have none.
+      postgres), normalized by `normalize_host/1`. Push and group monitors
+      have none.
 
   Their keys are reserved (`reserved?/1`): user labels can't use them.
 

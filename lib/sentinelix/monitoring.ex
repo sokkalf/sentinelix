@@ -1,8 +1,9 @@
 defmodule Sentinelix.Monitoring do
   @moduledoc """
   The Monitoring context: monitors, their check results (heartbeats),
-  incidents and dependencies (a monitor's parent, see `suggest_parent/1`
-  and `Sentinelix.Monitoring.Worker`).
+  incidents, dependencies (a monitor's parent, see `suggest_parent/1`
+  and `Sentinelix.Monitoring.Worker`) and groups (see `list_group_members/1`
+  and `Sentinelix.Checks.Group`).
 
   ## PubSub events
 
@@ -691,6 +692,90 @@ defmodule Sentinelix.Monitoring do
     |> Repo.one()
   end
 
+  ## Groups
+
+  @doc """
+  The members of a group monitor (type `:group`): the monitors its
+  `members` selector matches, ordered by name, paused ones included.
+  Groups are never members (groups don't nest), and neither is the group
+  itself. `[]` for a monitor that isn't a group or whose selector doesn't
+  parse.
+  """
+  @spec list_group_members(Monitor.t()) :: [Monitor.t()]
+  def list_group_members(%Monitor{type: :group} = group) do
+    case members_selector(group) do
+      {:ok, selector} ->
+        Monitor
+        |> where([m], m.type != ^:group)
+        |> Selector.filter(selector)
+        |> order_by([m], asc: fragment("lower(?)", m.name), asc: m.id)
+        |> Repo.all()
+
+      :error ->
+        []
+    end
+  end
+
+  def list_group_members(%Monitor{}), do: []
+
+  @doc """
+  Whether `monitor` is a member of `group` (see `list_group_members/1`),
+  evaluated in memory on the monitor's labels and name.
+  """
+  @spec group_member?(Monitor.t(), map()) :: boolean()
+  def group_member?(%Monitor{type: :group} = group, %{type: type} = monitor)
+      when type != :group do
+    case members_selector(group) do
+      {:ok, selector} -> Selector.matches?(selector, monitor)
+      :error -> false
+    end
+  end
+
+  def group_member?(_group, _monitor), do: false
+
+  @doc """
+  The group monitors `monitor` is a member of, ordered by name.
+
+  ## Options
+
+    * `:enabled` – only enabled (`true`) or paused (`false`) groups.
+    * `:alert_through_group` – only groups whose members alert through
+      the group (`true`) or the other ones (`false`).
+  """
+  @spec list_groups_of(map(), keyword()) :: [Monitor.t()]
+  def list_groups_of(monitor, opts \\ [])
+  def list_groups_of(%{type: :group}, _opts), do: []
+
+  def list_groups_of(monitor, opts) do
+    {alert, opts} = Keyword.pop(opts, :alert_through_group)
+
+    [type: :group]
+    |> Keyword.merge(Keyword.take(opts, [:enabled]))
+    |> list_monitors()
+    |> Enum.filter(fn group ->
+      group_member?(group, monitor) and
+        (alert == nil or (group.settings && group.settings.alert_through_group) == alert)
+    end)
+  end
+
+  @doc """
+  Whether `monitor` doesn't notify on its own because an enabled group it
+  is a member of alerts for it (`alert_through_group`).
+  """
+  @spec alerts_through_group?(map()) :: boolean()
+  def alerts_through_group?(monitor),
+    do: list_groups_of(monitor, enabled: true, alert_through_group: true) != []
+
+  defp members_selector(%Monitor{settings: %Settings{members: members}})
+       when is_binary(members) and members != "" do
+    case Selector.parse(members, Settings.members_selector_options()) do
+      {:ok, selector} -> {:ok, selector}
+      {:error, _error} -> :error
+    end
+  end
+
+  defp members_selector(_group), do: :error
+
   ## Engine
 
   @doc """
@@ -830,11 +915,15 @@ defmodule Sentinelix.Monitoring do
 
   @doc """
   Returns a map of monitor id => most recent check result, for all monitors
-  that have at least one result.
+  (or the monitors with the given `ids`) that have at least one result.
   """
-  @spec latest_result_per_monitor() :: %{pos_integer() => CheckResult.t()}
-  def latest_result_per_monitor do
+  @spec latest_result_per_monitor([pos_integer()] | nil) :: %{pos_integer() => CheckResult.t()}
+  def latest_result_per_monitor(ids \\ nil)
+  def latest_result_per_monitor([]), do: %{}
+
+  def latest_result_per_monitor(ids) do
     CheckResult
+    |> then(fn query -> if ids, do: where(query, [r], r.monitor_id in ^ids), else: query end)
     |> distinct([r], r.monitor_id)
     |> order_by([r], asc: r.monitor_id, desc: r.checked_at, desc: r.id)
     |> Repo.all()

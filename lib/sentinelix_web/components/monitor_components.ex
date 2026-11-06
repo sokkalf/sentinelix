@@ -18,7 +18,8 @@ defmodule SentinelixWeb.MonitorComponents do
     dns: "DNS",
     cert: "TLS certificate",
     push: "Push",
-    postgres: "PostgreSQL"
+    postgres: "PostgreSQL",
+    group: "Group"
   }
 
   @doc "A human readable label for a monitor type."
