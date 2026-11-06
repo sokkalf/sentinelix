@@ -1011,14 +1011,15 @@ defmodule Sentinelix.Monitoring do
   end
 
   @doc """
-  Returns the incidents of a monitor, most recent first.
+  Returns the incidents of a monitor, or of several (a list), most recent
+  first.
   """
-  @spec list_incidents(monitor_ref(), pos_integer()) :: [Incident.t()]
-  def list_incidents(monitor, limit \\ @default_results_limit) do
-    id = monitor_id(monitor)
+  @spec list_incidents(monitor_ref() | [monitor_ref()], pos_integer()) :: [Incident.t()]
+  def list_incidents(monitors, limit \\ @default_results_limit) do
+    ids = monitors |> List.wrap() |> Enum.map(&monitor_id/1)
 
     Incident
-    |> where([i], i.monitor_id == ^id)
+    |> where([i], i.monitor_id in ^ids)
     |> order_by([i], desc: i.started_at, desc: i.id)
     |> limit(^limit)
     |> Repo.all()

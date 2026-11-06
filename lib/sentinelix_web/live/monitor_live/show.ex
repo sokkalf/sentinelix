@@ -11,8 +11,9 @@ defmodule SentinelixWeb.MonitorLive.Show do
   checks and uptime, and charts the response times of its members, one
   line each (at most 8, the first by id: a member keeps its color as
   others join). It follows the members' topics; their messages are told
-  apart from the group's own by monitor id. The page of a member names
-  its groups.
+  apart from the group's own by monitor id. Its timeline has the members'
+  incidents and events too, each naming its member. The page of a member
+  names its groups.
   """
 
   use SentinelixWeb, :live_view
@@ -378,8 +379,18 @@ defmodule SentinelixWeb.MonitorLive.Show do
                   </td>
                 </tr>
                 <%= for {dom_id, item} <- @streams.incidents do %>
-                  <.incident_row :if={match?(%Incident{}, item)} id={dom_id} incident={item} />
-                  <.event_row :if={match?(%MonitorEvent{}, item)} id={dom_id} event={item} />
+                  <.incident_row
+                    :if={match?(%Incident{}, item)}
+                    id={dom_id}
+                    incident={item}
+                    member={@timeline_members[item.monitor_id]}
+                  />
+                  <.event_row
+                    :if={match?(%MonitorEvent{}, item)}
+                    id={dom_id}
+                    event={item}
+                    member={@timeline_members[item.monitor_id]}
+                  />
                 <% end %>
               </tbody>
             </table>
@@ -595,10 +606,11 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
   attr :id, :string, required: true
   attr :incident, Incident, required: true
+  attr :member, Monitor, default: nil, doc: "the group member it is about"
 
   defp incident_row(assigns) do
     ~H"""
-    <tr id={@id} data-kind="incident">
+    <tr id={@id} data-kind="incident" data-member={@member && @member.id}>
       <td>
         <span :if={@incident.resolved_at} class="badge badge-success badge-soft badge-sm">
           Resolved
@@ -620,8 +632,11 @@ defmodule SentinelixWeb.MonitorLive.Show do
         <.local_time id={"#{@id}-started"} at={@incident.started_at} />
       </td>
       <td class="whitespace-nowrap tabular-nums">{incident_duration(@incident)}</td>
-      <td class="max-w-sm truncate text-base-content/70" title={@incident.message}>
-        {@incident.message}
+      <td class="max-w-sm">
+        <.timeline_member member={@member} />
+        <div class="truncate text-base-content/70" title={@incident.message}>
+          {@incident.message}
+        </div>
       </td>
     </tr>
     """
@@ -629,12 +644,13 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
   attr :id, :string, required: true
   attr :event, MonitorEvent, required: true
+  attr :member, Monitor, default: nil, doc: "the group member it is about"
 
   defp event_row(assigns) do
     assigns = assign(assigns, details: event_details(assigns.event))
 
     ~H"""
-    <tr id={@id} data-kind="event" data-severity={@event.severity}>
+    <tr id={@id} data-kind="event" data-severity={@event.severity} data-member={@member && @member.id}>
       <td>
         <span class={["badge badge-sm gap-1", event_badge_class(@event.severity)]}>
           <.icon name={event_icon(@event.severity)} class="size-3" />
@@ -646,6 +662,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
       </td>
       <td class="text-base-content/40">–</td>
       <td class="max-w-sm">
+        <.timeline_member member={@member} />
         <div class="truncate" title={@event.title}>{@event.title}</div>
         <div :if={@event.message} class="truncate text-xs text-base-content/60" title={@event.message}>
           {@event.message}
@@ -661,6 +678,21 @@ defmodule SentinelixWeb.MonitorLive.Show do
         </details>
       </td>
     </tr>
+    """
+  end
+
+  attr :member, Monitor, default: nil
+
+  # The member a row of a group's timeline is about.
+  defp timeline_member(assigns) do
+    ~H"""
+    <.link
+      :if={@member}
+      navigate={~p"/monitors/#{@member}"}
+      class="link link-hover block truncate text-xs font-medium"
+    >
+      {@member.name}
+    </.link>
     """
   end
 
@@ -789,7 +821,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
           |> assign_stats()
           |> assign_warnings()
           |> stream_configure(:incidents, dom_id: &timeline_dom_id/1)
-          |> stream(:incidents, timeline(monitor))
+          |> stream_timeline()
 
         {:ok, socket}
     end
@@ -1028,6 +1060,11 @@ defmodule SentinelixWeb.MonitorLive.Show do
        when event in [:monitor_updated, :monitor_deleted],
        do: {:noreply, assign_members(socket)}
 
+  # The group's timeline has the members' incidents and events.
+  defp member_info({event, _item} = message, _id, socket)
+       when event in [:incident_opened, :incident_resolved, :event_recorded],
+       do: own_info(message, socket)
+
   defp member_info(_message, _id, socket), do: {:noreply, socket}
 
   # The members of a group with their status, recent checks, uptime and
@@ -1058,9 +1095,19 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
     socket
     |> follow_members(ids)
-    |> assign(members: members, groups: [], alerting_group: nil)
-    # New or removed members: chart them (once the range is known).
-    |> then(&if(changed? and &1.assigns[:range], do: assign_chart(&1), else: &1))
+    |> assign(
+      members: members,
+      groups: [],
+      alerting_group: nil,
+      timeline_members: Map.new(monitors, &{&1.id, &1})
+    )
+    # New or removed members: chart them and list their incidents and
+    # events (once mounted).
+    |> then(fn socket ->
+      if changed? and socket.assigns[:range],
+        do: socket |> assign_chart() |> stream_timeline(reset: true),
+        else: socket
+    end)
   end
 
   defp assign_members(socket) do
@@ -1072,6 +1119,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
     |> follow_members([])
     |> assign(
       members: nil,
+      timeline_members: %{},
       groups:
         Enum.map(groups, fn group ->
           %{
@@ -1152,10 +1200,16 @@ defmodule SentinelixWeb.MonitorLive.Show do
     {:noreply, socket |> put_flash(:info, message) |> assign_warnings()}
   end
 
-  # Incidents and events, newest first.
-  defp timeline(monitor) do
-    (Monitoring.list_incidents(monitor, @incidents) ++ Events.list_events(monitor, @events))
-    |> Enum.sort_by(&{DateTime.to_unix(timeline_at(&1), :microsecond), &1.id}, :desc)
+  # Incidents and events, newest first: the monitor's own and, for a
+  # group, its members'.
+  defp stream_timeline(socket, opts \\ []) do
+    ids = [socket.assigns.monitor.id | socket.assigns.member_ids]
+
+    items =
+      (Monitoring.list_incidents(ids, @incidents) ++ Events.list_events(ids, @events))
+      |> Enum.sort_by(&{DateTime.to_unix(timeline_at(&1), :microsecond), &1.id}, :desc)
+
+    stream(socket, :incidents, items, opts)
   end
 
   defp timeline_at(%Incident{started_at: at}), do: at

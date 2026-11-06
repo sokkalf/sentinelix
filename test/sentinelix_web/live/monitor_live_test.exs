@@ -600,6 +600,55 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#chart-members-limit", "Showing the 8 oldest of 9 members")
     end
 
+    test "a group's timeline has its members' incidents and events", %{conn: conn} do
+      group = monitor_fixture(:group, %{name: "Shop", settings: %{members: "app=shop"}})
+      web = monitor_fixture(:tcp, %{name: "Shop web", labels: %{"app" => "shop"}})
+      db = monitor_fixture(:postgres, %{name: "Shop DB", labels: %{"app" => "shop"}})
+      other = monitor_fixture(:tcp, %{name: "Blog", labels: %{"app" => "blog"}})
+
+      own = incident_fixture(group, %{message: "1 of 2 members down: Shop web"})
+      web_incident = incident_fixture(web, %{message: "refused"})
+      other_incident = incident_fixture(other, %{message: "timeout"})
+
+      {:ok, db_event, _status} =
+        Events.record_event(db, %{"title" => "Failover", "severity" => "info"})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{group}")
+
+      assert has_element?(view, "#incidents-#{own.id}:not([data-member])")
+      refute has_element?(view, "#incidents-#{own.id} a")
+
+      assert has_element?(
+               view,
+               "#incidents-#{web_incident.id}[data-member='#{web.id}']",
+               "refused"
+             )
+
+      assert has_element?(
+               view,
+               "#incidents-#{web_incident.id} a[href='/monitors/#{web.id}']",
+               "Shop web"
+             )
+
+      assert has_element?(view, "#incidents-event-#{db_event.id} a", "Shop DB")
+      refute has_element?(view, "#incidents-#{other_incident.id}")
+
+      # Members' incidents and events arrive live; other monitors' don't.
+      {:ok, _} = Monitoring.resolve_incident(web_incident)
+      assert has_element?(view, "#incidents-#{web_incident.id}", "Resolved")
+      new_incident = incident_fixture(db, %{message: "too many connections"})
+      assert has_element?(view, "#incidents-#{new_incident.id}", "Shop DB")
+      incident_fixture(monitor_fixture(:tcp, %{name: "Mail"}), %{message: "mail down"})
+      refute render(view) =~ "mail down"
+
+      # A member that leaves takes its incidents and events along.
+      {:ok, _db} = Monitoring.update_monitor(db, %{labels: %{"app" => "blog"}})
+      check_result_fixture(group, %{status: :up})
+      refute has_element?(view, "#incidents-#{new_incident.id}")
+      refute has_element?(view, "#incidents-event-#{db_event.id}")
+      assert has_element?(view, "#incidents-#{web_incident.id}")
+    end
+
     test "a member names its groups and where its alerts go", %{conn: conn} do
       web = monitor_fixture(:tcp, %{name: "Shop web", labels: %{"app" => "shop"}})
 

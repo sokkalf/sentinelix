@@ -410,14 +410,15 @@ defmodule Sentinelix.Monitoring.Events do
   ## Listing and pruning
 
   @doc """
-  The most recent events of a monitor, newest first.
+  The most recent events of a monitor, or of several (a list), newest
+  first.
   """
-  @spec list_events(monitor_ref(), pos_integer()) :: [MonitorEvent.t()]
-  def list_events(monitor, limit \\ @default_limit) do
-    id = monitor_id(monitor)
+  @spec list_events(monitor_ref() | [monitor_ref()], pos_integer()) :: [MonitorEvent.t()]
+  def list_events(monitors, limit \\ @default_limit) do
+    ids = monitors |> List.wrap() |> Enum.map(&monitor_id/1)
 
     MonitorEvent
-    |> where([e], e.monitor_id == ^id)
+    |> where([e], e.monitor_id in ^ids)
     |> order_by([e], desc: e.occurred_at, desc: e.id)
     |> limit(^limit)
     |> Repo.all()
