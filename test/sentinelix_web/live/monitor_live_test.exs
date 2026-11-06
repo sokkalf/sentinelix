@@ -526,15 +526,101 @@ defmodule SentinelixWeb.MonitorLiveTest do
       {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}?range=7d")
       refute has_element?(view, "#chart-empty")
 
-      [points] =
-        view
-        |> element("#response-chart")
-        |> render()
-        |> LazyHTML.from_fragment()
-        |> LazyHTML.attribute("data-points")
+      id = monitor.id
 
       # Average of the up checks; marked down.
-      assert Jason.decode!(points) == [[DateTime.to_unix(hour, :millisecond), 200, 1]]
+      assert [%{"id" => ^id, "name" => "Response time", "points" => points}] = chart_series(view)
+      assert points == [[DateTime.to_unix(hour, :millisecond), 200, 1]]
+    end
+
+    test "a group shows its members and charts them", %{conn: conn} do
+      group =
+        monitor_fixture(:group, %{
+          name: "Shop",
+          settings: %{members: "app=shop", alert_through_group: true}
+        })
+
+      web = monitor_fixture(:tcp, %{name: "Shop web", labels: %{"app" => "shop"}})
+      db = monitor_fixture(:postgres, %{name: "Shop DB", labels: %{"app" => "shop"}})
+      other = monitor_fixture(:tcp, %{name: "Blog", labels: %{"app" => "blog"}})
+      check_result_fixture(web, %{status: :up, response_time_ms: 12})
+      check_result_fixture(db, %{status: :down})
+      check_result_fixture(group, %{status: :down, message: "1 of 2 members down: Shop DB"})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{group}")
+
+      assert has_element?(view, "#group-selector", "app=shop")
+      assert has_element?(view, "#member-#{web.id}", "Shop web")
+      assert has_element?(view, "#member-#{db.id} [data-status=down]")
+      assert has_element?(view, "#member-#{web.id}-uptime", "100%")
+      assert has_element?(view, "#group-alerts")
+      refute has_element?(view, "#member-#{other.id}")
+      refute has_element?(view, "#stat-response")
+      refute has_element?(view, "#chart-members-limit")
+
+      # One series per member, by id (their colors).
+      web_id = web.id
+      db_id = db.id
+
+      assert [
+               %{"id" => ^web_id, "name" => "Shop web", "points" => [[_at, 12, 0]]},
+               %{"id" => ^db_id, "name" => "Shop DB", "points" => [[_, nil, 1]]}
+             ] = chart_series(view)
+
+      assert has_element?(view, "#member-#{web.id} [style*='--series-1']")
+      assert has_element?(view, "#member-#{db.id} [style*='--series-2']")
+
+      # Members' check results arrive live; other monitors' don't count.
+      result = check_result_fixture(db, %{status: :up, response_time_ms: 30})
+      assert_push_event(view, "response-chart:point", %{series: ^db_id, point: [_, 30, 0]})
+      assert has_element?(view, "#member-#{db.id} [data-status=up]")
+      assert has_element?(view, "#member-#{db.id} .badge", "Up")
+      # Not the group's own result.
+      refute has_element?(view, "#monitor-status", "Up")
+      assert result.monitor_id == db.id
+
+      check_result_fixture(other, %{status: :down})
+      refute has_element?(view, "#member-#{other.id}")
+
+      # A member that leaves (the group checks again: its own result
+      # refreshes the members).
+      {:ok, _db} = Monitoring.update_monitor(db, %{labels: %{"app" => "blog"}})
+      check_result_fixture(group, %{status: :up})
+      refute has_element?(view, "#member-#{db.id}")
+      assert [%{"id" => ^web_id}] = chart_series(view)
+    end
+
+    test "a group charts at most eight members", %{conn: conn} do
+      group = monitor_fixture(:group, %{settings: %{members: "app=big"}})
+      for n <- 1..9, do: monitor_fixture(:tcp, %{name: "M#{n}", labels: %{"app" => "big"}})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{group}")
+
+      assert length(chart_series(view)) == 8
+      assert has_element?(view, "#chart-members-limit", "Showing the 8 oldest of 9 members")
+    end
+
+    test "a member names its groups and where its alerts go", %{conn: conn} do
+      web = monitor_fixture(:tcp, %{name: "Shop web", labels: %{"app" => "shop"}})
+
+      quiet =
+        monitor_fixture(:group, %{
+          name: "Shop",
+          settings: %{members: "app=shop", alert_through_group: true}
+        })
+
+      loud = monitor_fixture(:group, %{name: "All TCP", settings: %{members: "type=tcp"}})
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{web}")
+
+      assert has_element?(view, "#group-#{quiet.id}", "Shop")
+      assert has_element?(view, "#group-#{loud.id}", "All TCP")
+      assert has_element?(view, "#alerts-through-group", "Shop")
+      refute has_element?(view, "#group-members")
+
+      {:ok, _quiet} = Monitoring.toggle_monitor(quiet)
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{web}")
+      refute has_element?(view, "#alerts-through-group")
     end
 
     test "pauses, resumes and checks now", %{conn: conn} do
@@ -1308,5 +1394,16 @@ defmodule SentinelixWeb.MonitorLiveTest do
     |> form(selector, data)
     |> put_submitter("button[name=op][value=#{op}]")
     |> render_submit()
+  end
+
+  defp chart_series(view) do
+    [series] =
+      view
+      |> element("#response-chart")
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.attribute("data-series")
+
+    Jason.decode!(series)
   end
 end

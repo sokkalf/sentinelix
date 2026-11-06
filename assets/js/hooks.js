@@ -21,11 +21,18 @@ const cssColor = (name, alpha = 1) => {
 
 const formatMs = value => value == null ? "–" : `${Math.round(value)} ms`
 
+// The number of categorical series colors (`--series-1` ... in app.css).
+const SERIES_COLORS = 8
+
 // Response time chart of the monitor page.
 //
-// The element carries the full series in `data-points` as JSON
-// `[[unix_ms, response_ms | null, down (0|1)], ...]` and the window size in
-// `data-range-ms`. New checks arrive as "response-chart:point" events while
+// The element carries the series in `data-series` as JSON
+// `[{id, name, points: [[unix_ms, response_ms | null, down (0|1)], ...]}]`
+// and the window size in `data-range-ms`. One series is drawn as an area in
+// the primary color; several (the members of a group, at most
+// SERIES_COLORS) as lines in the categorical colors, in the given order,
+// with a legend. New checks arrive
+// as "response-chart:point" events (`{series: id, point}`) while
 // `data-live` is "true" (raw, not bucketed ranges).
 Hooks.ResponseChart = {
   mounted() {
@@ -42,11 +49,15 @@ Hooks.ResponseChart = {
     this.themeObserver = new MutationObserver(() => this.render())
     this.themeObserver.observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme"]})
 
-    this.handleEvent("response-chart:point", ({point}) => {
+    this.handleEvent("response-chart:point", ({series: id, point}) => {
       if (this.el.dataset.live !== "true") return
-      this.points.push(point)
+      const series = this.series.find(s => s.id === id)
+      if (!series) return
+      series.points.push(point)
       const cutoff = Date.now() - Number(this.el.dataset.rangeMs)
-      while (this.points.length && this.points[0][0] < cutoff) this.points.shift()
+      for (const s of this.series) {
+        while (s.points.length && s.points[0][0] < cutoff) s.points.shift()
+      }
       this.render()
     })
   },
@@ -64,7 +75,7 @@ Hooks.ResponseChart = {
   },
 
   load() {
-    this.points = JSON.parse(this.el.dataset.points || "[]")
+    this.series = JSON.parse(this.el.dataset.series || "[]")
     this.render()
   },
 
@@ -72,15 +83,64 @@ Hooks.ResponseChart = {
     if (!this.chart) return
     const text = cssColor("--color-base-content", 0.7)
     const grid = cssColor("--color-base-content", 0.1)
-    const primary = cssColor("--color-primary")
+    const surface = cssColor("--color-base-100")
     const error = cssColor("--color-error")
     const now = Date.now()
     const rangeMs = Number(this.el.dataset.rangeMs)
+    const multi = this.series.length > 1
+
+    const lines = this.series.map((series, index) => {
+      // The server sends at most SERIES_COLORS series.
+      const color = cssColor(multi ? `--series-${(index % SERIES_COLORS) + 1}` : "--color-primary")
+      const line = {
+        name: series.name,
+        type: "line",
+        showSymbol: false,
+        connectNulls: false,
+        sampling: "lttb",
+        lineStyle: {width: multi ? 2 : 1.5, color},
+        itemStyle: {color},
+        data: series.points.map(([t, ms]) => [t, ms]),
+      }
+      if (!multi) {
+        line.areaStyle = {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            {offset: 0, color: cssColor("--color-primary", 0.35)},
+            {offset: 1, color: cssColor("--color-primary", 0.02)},
+          ]),
+        }
+      }
+      return line
+    })
+
+    const down = {
+      name: "Down",
+      type: "scatter",
+      symbolSize: 8,
+      itemStyle: {color: error, borderColor: surface, borderWidth: 2},
+      tooltip: {valueFormatter: () => "down"},
+      data: this.series.flatMap(series =>
+        series.points.filter(p => p[2] === 1).map(([t, ms]) => [t, ms ?? 0])
+      ),
+    }
 
     this.chart.setOption({
       backgroundColor: "transparent",
       animation: false,
-      grid: {left: 8, right: 16, top: 16, bottom: 8, containLabel: true},
+      legend: multi
+        ? {
+            top: 0,
+            left: 0,
+            type: "scroll",
+            icon: "roundRect",
+            itemWidth: 12,
+            itemHeight: 4,
+            textStyle: {color: text},
+            pageTextStyle: {color: text},
+            data: this.series.map(s => s.name),
+          }
+        : {show: false},
+      grid: {left: 8, right: 16, top: multi ? 40 : 16, bottom: 8, containLabel: true},
       tooltip: {
         trigger: "axis",
         valueFormatter: formatMs,
@@ -102,32 +162,7 @@ Hooks.ResponseChart = {
         axisLabel: {color: text, formatter: "{value} ms"},
         splitLine: {lineStyle: {color: grid}},
       },
-      series: [
-        {
-          name: "Response time",
-          type: "line",
-          showSymbol: false,
-          connectNulls: false,
-          sampling: "lttb",
-          lineStyle: {width: 1.5, color: primary},
-          itemStyle: {color: primary},
-          areaStyle: {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              {offset: 0, color: cssColor("--color-primary", 0.35)},
-              {offset: 1, color: cssColor("--color-primary", 0.02)},
-            ]),
-          },
-          data: this.points.map(([t, ms]) => [t, ms]),
-        },
-        {
-          name: "Down",
-          type: "scatter",
-          symbolSize: 6,
-          itemStyle: {color: error},
-          tooltip: {valueFormatter: () => "down"},
-          data: this.points.filter(p => p[2] === 1).map(([t, ms]) => [t, ms ?? 0]),
-        },
-      ],
+      series: [...lines, down],
     }, {notMerge: true})
   },
 }

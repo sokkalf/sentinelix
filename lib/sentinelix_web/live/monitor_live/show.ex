@@ -6,6 +6,13 @@ defmodule SentinelixWeb.MonitorLive.Show do
   token, dependencies (the parent and the dependents), the notification
   channels (attached or routed by selector, with a test send to them) and
   the monitor's runtime state.
+
+  A group monitor's page lists its members with their status, recent
+  checks and uptime, and charts the response times of its members, one
+  line each (at most 8, the first by id: a member keeps its color as
+  others join). It follows the members' topics; their messages are told
+  apart from the group's own by monitor id. The page of a member names
+  its groups.
   """
 
   use SentinelixWeb, :live_view
@@ -13,11 +20,14 @@ defmodule SentinelixWeb.MonitorLive.Show do
   import SentinelixWeb.MonitorComponents
 
   alias Sentinelix.{Maintenance, Monitoring, Notifications}
-  alias Sentinelix.Monitoring.{Events, History, Incident, MonitorEvent}
+  alias Sentinelix.Monitoring.{Events, History, Incident, Monitor, MonitorEvent}
   alias Sentinelix.Notifications.Delivery
   alias Sentinelix.Stats
 
   @heartbeats 100
+  @member_heartbeats 30
+  # The number of categorical series colors (--series-N in app.css).
+  @max_chart_members 8
   @incidents 25
   @events 25
   @tick_ms 5_000
@@ -260,20 +270,22 @@ defmodule SentinelixWeb.MonitorLive.Show do
         </p>
       </div>
 
+      <.members_card :if={@members} monitor={@monitor} members={@members} />
+
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <.stat_card title="Response" id="stat-response">
+        <.stat_card :if={!@members} title="Response" id="stat-response">
           {format_ms(@latest && @latest.response_time_ms)}
           <:desc>Latest check</:desc>
         </.stat_card>
-        <.stat_card title="Avg. response" id="stat-avg-response">
+        <.stat_card :if={!@members} title="Avg. response" id="stat-avg-response">
           {format_ms(@stats_24h.avg_ms)}
           <:desc>24 hours</:desc>
         </.stat_card>
-        <.stat_card title="P95 response" id="stat-p95-response">
+        <.stat_card :if={!@members} title="P95 response" id="stat-p95-response">
           {format_ms(@stats_24h.p95_ms)}
           <:desc>24 hours</:desc>
         </.stat_card>
-        <.stat_card title="Min / max response" id="stat-min-max-response">
+        <.stat_card :if={!@members} title="Min / max response" id="stat-min-max-response">
           <span class="text-lg">
             {format_ms(@stats_24h.min_ms)} / {format_ms(@stats_24h.max_ms)}
           </span>
@@ -307,7 +319,9 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
       <div class="rounded-box border border-base-300 bg-base-100 p-4">
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <span class="text-sm font-medium">Response time</span>
+          <span class="text-sm font-medium">
+            {if @members, do: "Response time of the members", else: "Response time"}
+          </span>
           <div class="join" id="range-selector">
             <.link
               :for={{key, {label, _seconds, _bucket}} <- ranges()}
@@ -323,7 +337,7 @@ defmodule SentinelixWeb.MonitorLive.Show do
         <div
           id="response-chart"
           phx-hook="ResponseChart"
-          data-points={@chart_points}
+          data-series={@chart_series}
           data-range-ms={@range_ms}
           data-live={to_string(@chart_live)}
           class="relative h-64 w-full sm:h-72"
@@ -332,6 +346,13 @@ defmodule SentinelixWeb.MonitorLive.Show do
         </div>
         <p :if={@chart_empty} id="chart-empty" class="text-center text-sm text-base-content/60">
           No response times in this period.
+        </p>
+        <p
+          :if={@members && length(@members) > max_chart_members()}
+          id="chart-members-limit"
+          class="mt-1 text-xs text-base-content/60"
+        >
+          Showing the {max_chart_members()} oldest of {length(@members)} members.
         </p>
       </div>
 
@@ -421,6 +442,21 @@ defmodule SentinelixWeb.MonitorLive.Show do
                   </li>
                 </ul>
               </dd>
+              <dt :if={@groups != []} class="text-base-content/60">Member of</dt>
+              <dd :if={@groups != []} id="groups">
+                <ul class="space-y-1">
+                  <li
+                    :for={group <- @groups}
+                    id={"group-#{group.monitor.id}"}
+                    class="flex items-center justify-between gap-2"
+                  >
+                    <.link navigate={~p"/monitors/#{group.monitor}"} class="truncate hover:underline">
+                      {group.monitor.name}
+                    </.link>
+                    <.status_badge status={group.status} />
+                  </li>
+                </ul>
+              </dd>
             </dl>
             <p class="mt-3 text-xs text-base-content/60">
               While the monitor this one depends on is down, failed checks are recorded as
@@ -442,6 +478,20 @@ defmodule SentinelixWeb.MonitorLive.Show do
                 <.icon name="hero-paper-airplane" class="size-3" /> Send test
               </button>
             </div>
+            <p
+              :if={@alerting_group}
+              id="alerts-through-group"
+              class="mb-2 flex items-center gap-2 text-sm text-base-content/70"
+            >
+              <.icon name="hero-bell-slash-micro" class="size-4 shrink-0" />
+              <span>
+                Alerts go through
+                <.link navigate={~p"/monitors/#{@alerting_group}"} class="link link-hover">
+                  {@alerting_group.name}
+                </.link>
+                only.
+              </span>
+            </p>
             <p :if={@channels == []} id="no-channels" class="text-sm text-base-content/60">
               No channels notify this monitor.
             </p>
@@ -477,6 +527,69 @@ defmodule SentinelixWeb.MonitorLive.Show do
         </div>
       </div>
     </Layouts.app>
+    """
+  end
+
+  attr :monitor, :map, required: true
+  attr :members, :list, required: true
+
+  defp members_card(assigns) do
+    ~H"""
+    <div id="group-members" class="rounded-box border border-base-300 bg-base-100 p-4">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+        <span class="font-medium">Members</span>
+        <code id="group-selector" class="text-xs text-base-content/60">
+          {@monitor.settings.members}
+        </code>
+      </div>
+      <p :if={@members == []} id="no-members" class="text-sm text-base-content/60">
+        No monitors match the members selector.
+      </p>
+      <ul :if={@members != []} class="space-y-2">
+        <li
+          :for={member <- @members}
+          id={"member-#{member.monitor.id}"}
+          class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(0,14rem)_auto_minmax(0,1fr)_auto]"
+        >
+          <div class="flex min-w-0 items-center gap-2">
+            <span
+              :if={member.color}
+              class="h-1 w-3 shrink-0 rounded-full"
+              style={"background-color: var(--series-#{member.color})"}
+              aria-hidden="true"
+            />
+            <.link
+              navigate={~p"/monitors/#{member.monitor}"}
+              class="truncate text-sm hover:underline"
+              title={type_label(member.monitor.type)}
+            >
+              {member.monitor.name}
+            </.link>
+          </div>
+          <.status_badge status={member.status} />
+          <.heartbeat_bar
+            id={"member-#{member.monitor.id}-heartbeats"}
+            results={member.heartbeats}
+            slots={member_heartbeats()}
+            class="col-span-2 sm:col-span-1"
+          />
+          <span
+            id={"member-#{member.monitor.id}-uptime"}
+            class={["badge badge-sm hidden sm:inline-flex", uptime_class(member.uptime)]}
+            title="Uptime, 24 hours"
+          >
+            {format_uptime(member.uptime)}
+          </span>
+        </li>
+      </ul>
+      <p class="mt-3 text-xs text-base-content/60">
+        Down while a member is down or unreachable; paused members and members in maintenance
+        don't count.
+        <span :if={@monitor.settings.alert_through_group} id="group-alerts">
+          The members alert through this group only.
+        </span>
+      </p>
+    </div>
     """
   end
 
@@ -671,6 +784,8 @@ defmodule SentinelixWeb.MonitorLive.Show do
           |> assign_worker()
           |> assign_maintenance()
           |> assign_dependencies()
+          |> assign(member_ids: [])
+          |> assign_members()
           |> assign_stats()
           |> assign_warnings()
           |> stream_configure(:incidents, dom_id: &timeline_dom_id/1)
@@ -805,7 +920,14 @@ defmodule SentinelixWeb.MonitorLive.Show do
   end
 
   @impl true
-  def handle_info({:check_result, result}, socket) do
+  def handle_info(message, socket) do
+    case member_id(message, socket.assigns) do
+      nil -> own_info(message, socket)
+      id -> member_info(message, id, socket)
+    end
+  end
+
+  defp own_info({:check_result, result}, socket) do
     heartbeats = Enum.take(socket.assigns.heartbeats ++ [result], -@heartbeats)
 
     socket =
@@ -814,57 +936,176 @@ defmodule SentinelixWeb.MonitorLive.Show do
       |> assign_latest()
       |> assign_worker()
       |> assign_dependencies()
+      |> assign_members()
       |> assign_stats()
       |> push_chart_point(result)
 
     {:noreply, socket}
   end
 
-  def handle_info({event, incident}, socket)
-      when event in [:incident_opened, :incident_resolved] do
+  defp own_info({event, incident}, socket)
+       when event in [:incident_opened, :incident_resolved] do
     at = if event == :incident_opened, do: 0, else: -1
     {:noreply, stream_insert(socket, :incidents, incident, at: at)}
   end
 
-  def handle_info({:event_recorded, event}, socket),
+  defp own_info({:event_recorded, event}, socket),
     do: {:noreply, stream_insert(socket, :incidents, event, at: 0)}
 
-  def handle_info({:warnings_changed, _id}, socket), do: {:noreply, assign_warnings(socket)}
+  defp own_info({:warnings_changed, _id}, socket), do: {:noreply, assign_warnings(socket)}
 
-  def handle_info({:monitor_updated, monitor}, socket) do
+  defp own_info({:monitor_updated, monitor}, socket) do
     {:noreply,
      socket
      |> assign(monitor: monitor, page_title: monitor.name)
      |> assign_latest()
      |> assign_worker()
      |> assign_dependencies()
+     |> assign_members()
      |> assign_channels()}
   end
 
-  def handle_info({event, _channel}, socket)
-      when event in [:channel_created, :channel_updated, :channel_deleted],
-      do: {:noreply, assign_channels(socket)}
+  defp own_info({event, _channel}, socket)
+       when event in [:channel_created, :channel_updated, :channel_deleted],
+       do: {:noreply, assign_channels(socket)}
 
-  def handle_info({:monitor_deleted, monitor}, socket) do
+  defp own_info({:monitor_deleted, monitor}, socket) do
     {:noreply,
      socket
      |> put_flash(:info, "#{monitor.name} was deleted.")
      |> push_navigate(to: ~p"/monitors")}
   end
 
-  def handle_info({event, _monitor, _result}, socket)
-      when event in [:warning_raised, :warning_cleared] do
+  defp own_info({event, _monitor, _result}, socket)
+       when event in [:warning_raised, :warning_cleared] do
     {:noreply, assign_worker(socket)}
   end
 
-  def handle_info({:maintenance_changed}, socket), do: {:noreply, assign_maintenance(socket)}
+  defp own_info({:maintenance_changed}, socket), do: {:noreply, assign_maintenance(socket)}
 
-  def handle_info(:tick, socket) do
+  defp own_info(:tick, socket) do
     schedule_tick()
     {:noreply, socket |> assign(now: DateTime.utc_now()) |> assign_worker()}
   end
 
-  def handle_info(_message, socket), do: {:noreply, socket}
+  defp own_info(_message, socket), do: {:noreply, socket}
+
+  ## Group members
+
+  # The id of the member a message is about (from a member's topic), nil
+  # for the monitor's own messages and everything else.
+  defp member_id(message, %{member_ids: ids, monitor: %{id: own}}) when ids != [] do
+    case message_monitor_id(message) do
+      id when is_integer(id) and id != own -> if id in ids, do: id
+      _ -> nil
+    end
+  end
+
+  defp member_id(_message, _assigns), do: nil
+
+  defp message_monitor_id({_event, %{monitor_id: id}}), do: id
+  defp message_monitor_id({:warnings_changed, id}), do: id
+  defp message_monitor_id({_event, %Monitor{id: id}}), do: id
+  defp message_monitor_id({_event, %Monitor{id: id}, _result}), do: id
+  defp message_monitor_id({:status_changed, %Monitor{id: id}, _old, _new, _result}), do: id
+  defp message_monitor_id(_message), do: nil
+
+  defp member_info({:check_result, result}, id, socket) do
+    members =
+      Enum.map(socket.assigns.members, fn
+        %{monitor: %{id: ^id} = monitor} = member ->
+          heartbeats = Enum.take(member.heartbeats ++ [result], -@member_heartbeats)
+          %{member | heartbeats: heartbeats, status: display_status(monitor, result)}
+
+        member ->
+          member
+      end)
+
+    {:noreply, socket |> assign(members: members) |> push_chart_point(result)}
+  end
+
+  defp member_info({event, _monitor}, _id, socket)
+       when event in [:monitor_updated, :monitor_deleted],
+       do: {:noreply, assign_members(socket)}
+
+  defp member_info(_message, _id, socket), do: {:noreply, socket}
+
+  # The members of a group with their status, recent checks, uptime and
+  # chart color (1-8, nil when not charted); nil for other monitors. The
+  # page follows the members' topics. Also the groups a monitor is a
+  # member of, and the one its alerts go through.
+  defp assign_members(%{assigns: %{monitor: %Monitor{type: :group} = group}} = socket) do
+    monitors = Monitoring.list_group_members(group)
+    ids = Enum.map(monitors, & &1.id)
+    heartbeats = History.recent_results_by_monitor(@member_heartbeats, ids)
+    uptimes = Stats.uptimes(ids, {24, :hour})
+    colors = chart_colors(monitors)
+
+    members =
+      for monitor <- monitors do
+        results = Map.get(heartbeats, monitor.id, [])
+
+        %{
+          monitor: monitor,
+          heartbeats: results,
+          status: display_status(monitor, List.last(results)),
+          uptime: uptimes[monitor.id],
+          color: colors[monitor.id]
+        }
+      end
+
+    changed? = ids != socket.assigns.member_ids
+
+    socket
+    |> follow_members(ids)
+    |> assign(members: members, groups: [], alerting_group: nil)
+    # New or removed members: chart them (once the range is known).
+    |> then(&if(changed? and &1.assigns[:range], do: assign_chart(&1), else: &1))
+  end
+
+  defp assign_members(socket) do
+    monitor = socket.assigns.monitor
+    groups = Monitoring.list_groups_of(monitor)
+    latest = History.recent_results_by_monitor(1, Enum.map(groups, & &1.id))
+
+    socket
+    |> follow_members([])
+    |> assign(
+      members: nil,
+      groups:
+        Enum.map(groups, fn group ->
+          %{
+            monitor: group,
+            status: display_status(group, latest |> Map.get(group.id, []) |> List.last())
+          }
+        end),
+      alerting_group: Enum.find(groups, &(&1.enabled and &1.settings.alert_through_group))
+    )
+  end
+
+  # The first members by id get the chart colors, so a member keeps its
+  # color as monitors join the group.
+  defp chart_colors(monitors) do
+    monitors
+    |> Enum.sort_by(& &1.id)
+    |> Enum.take(@max_chart_members)
+    |> Enum.with_index(1)
+    |> Map.new(fn {monitor, index} -> {monitor.id, index} end)
+  end
+
+  defp follow_members(socket, ids) do
+    old = socket.assigns.member_ids
+
+    if connected?(socket) do
+      Enum.each(old -- ids, &Monitoring.unsubscribe_monitor/1)
+      Enum.each(ids -- old, &Monitoring.subscribe_monitor/1)
+    end
+
+    assign(socket, member_ids: ids)
+  end
+
+  defp member_heartbeats, do: @member_heartbeats
+  defp max_chart_members, do: @max_chart_members
 
   ## Data
 
@@ -971,15 +1212,35 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
   defp assign_chart(socket) do
     {_label, seconds, source} = range_spec(socket.assigns.range)
-    points = chart_points(socket.assigns.monitor, seconds, source)
+
+    series =
+      for {id, name} <- chart_monitors(socket.assigns) do
+        %{id: id, name: name, points: chart_points(id, seconds, source)}
+      end
 
     assign(socket,
-      chart_points: Jason.encode!(Enum.map(points, &chart_point/1)),
-      chart_empty: points == [],
+      chart_series:
+        Jason.encode!(
+          Enum.map(series, fn series ->
+            %{series | points: Enum.map(series.points, &chart_point/1)}
+          end)
+        ),
+      chart_series_ids: Enum.map(series, & &1.id),
+      chart_empty: Enum.all?(series, &(&1.points == [])),
       chart_live: source == :raw,
       range_ms: seconds * 1000
     )
   end
+
+  # {id, name} of the charted monitors: a group's members in their color
+  # order, otherwise the monitor itself.
+  defp chart_monitors(%{members: members}) when is_list(members) do
+    for %{color: color} = member <- Enum.sort_by(members, & &1.color),
+        color != nil,
+        do: {member.monitor.id, member.monitor.name}
+  end
+
+  defp chart_monitors(%{monitor: monitor}), do: [{monitor.id, "Response time"}]
 
   defp chart_points(monitor, seconds, :raw) do
     History.response_times(monitor, DateTime.add(DateTime.utc_now(), -seconds, :second))
@@ -1003,6 +1264,14 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
   defp push_chart_point(%{assigns: %{chart_live: true}} = socket, %{status: status} = result)
        when status != :maintenance do
+    if result.monitor_id in socket.assigns.chart_series_ids,
+      do: push_live_point(socket, result),
+      else: socket
+  end
+
+  defp push_chart_point(socket, _result), do: socket
+
+  defp push_live_point(socket, %{status: status} = result) do
     point =
       chart_point(%{
         at: result.checked_at,
@@ -1012,10 +1281,8 @@ defmodule SentinelixWeb.MonitorLive.Show do
 
     socket
     |> assign(chart_empty: false)
-    |> push_event("response-chart:point", %{point: point})
+    |> push_event("response-chart:point", %{series: result.monitor_id, point: point})
   end
-
-  defp push_chart_point(socket, _result), do: socket
 
   defp chart_point(%{at: at, response_time_ms: ms, down: down}),
     do: [DateTime.to_unix(at, :millisecond), ms, if(down, do: 1, else: 0)]
