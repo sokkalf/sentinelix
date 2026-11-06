@@ -246,6 +246,48 @@ defmodule Sentinelix.Notifications.DispatcherTest do
     assert_notified(url, "[UP] Homepage is back up")
   end
 
+  test "members of a group alert through the group only", %{monitor: monitor} do
+    {:ok, monitor} = Monitoring.update_monitor(monitor, %{labels: %{"app" => "shop"}})
+    {channel, url} = webhook()
+    :ok = Notifications.put_monitor_channels(monitor, [channel])
+
+    group =
+      monitor_fixture(:group, %{
+        name: "Shop",
+        settings: %{members: "app=shop", alert_through_group: true}
+      })
+
+    :ok = Notifications.put_monitor_channels(group, [channel])
+
+    status_changed(monitor, :up, :down)
+    warning(monitor, :warning_raised)
+    refute_notified()
+
+    status_changed(group, :up, :down)
+    assert_notified(url, "[DOWN] Shop is down")
+
+    # The member's state still follows: its recovery isn't sent either, and
+    # once the group is paused, the member alerts again from where it is.
+    status_changed(monitor, :down, :up)
+    refute_notified()
+    {:ok, _group} = Monitoring.toggle_monitor(group)
+    status_changed(monitor, :up, :up)
+    refute_notified()
+    status_changed(monitor, :up, :down)
+    assert_notified(url, "[DOWN] Homepage is down")
+  end
+
+  test "members of a group without alert_through_group alert on their own",
+       %{monitor: monitor} do
+    {:ok, monitor} = Monitoring.update_monitor(monitor, %{labels: %{"app" => "shop"}})
+    {channel, url} = webhook()
+    :ok = Notifications.put_monitor_channels(monitor, [channel])
+    monitor_fixture(:group, %{settings: %{members: "app=shop"}})
+
+    status_changed(monitor, :up, :down)
+    assert_notified(url, "[DOWN] Homepage is down")
+  end
+
   test "failing sends are retried", %{monitor: monitor} do
     {channel, url} = webhook()
     :ok = Notifications.put_monitor_channels(monitor, [channel])
