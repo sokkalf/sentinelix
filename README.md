@@ -1010,6 +1010,14 @@ and cleared warnings are logged as `ok` events.
 * Events are deleted after `RETENTION_DAYS`, like raw check results, and
   with the monitor. Event tokens are not exported or copied by cloning.
 
+Warnings a check raises itself (a certificate close to expiry, replication
+lag above the warning threshold, a group whose member has a warning) don't
+change the status or open an incident, but they are logged in the timeline
+too: a `warning` event when one is raised and an `ok` event (*Warning
+cleared*) when a successful check no longer has it, both with `source:
+check` in their details. A warning is logged once, also if Sentinelix
+restarts while it is active.
+
 ## Import and export
 
 Monitors can be exported as YAML and imported again, e.g. to keep the setup

@@ -204,6 +204,43 @@ defmodule Sentinelix.Monitoring.EventsTest do
     end
   end
 
+  describe "warnings raised by checks" do
+    test "are logged and tracked apart from posted events", %{monitor: monitor} do
+      refute Events.check_warning_logged?(monitor)
+
+      result = check_result_fixture(monitor, %{message: "Warning: lag 30s", checked_at: @now})
+      {:ok, event} = Events.record_check_warning(monitor, :warning, result)
+
+      assert %MonitorEvent{
+               severity: :warning,
+               key: nil,
+               title: "Warning: lag 30s",
+               message: nil,
+               metadata: %{"source" => "check"},
+               occurred_at: @now
+             } = event
+
+      assert Events.check_warning_logged?(monitor)
+
+      # Posted events don't count: neither an ok nor a later warning.
+      {:ok, _, _} =
+        record(monitor, %{"title" => "fine", "severity" => "ok"}, DateTime.add(@now, 1))
+
+      assert Events.check_warning_logged?(monitor)
+
+      later = DateTime.add(@now, 2)
+      result = check_result_fixture(monitor, %{message: "Lag 0s", checked_at: later})
+      {:ok, event} = Events.record_check_warning(monitor, :ok, result)
+      assert %{severity: :ok, title: "Warning cleared", message: "Lag 0s"} = event
+      refute Events.check_warning_logged?(monitor)
+
+      {:ok, _, _} =
+        record(monitor, %{"title" => "disk", "severity" => "warning"}, DateTime.add(@now, 3))
+
+      refute Events.check_warning_logged?(monitor)
+    end
+  end
+
   describe "clear_warnings/3" do
     test "clears all or some warnings, logging who did", %{monitor: monitor} do
       for key <- ["a", "b", "c"] do

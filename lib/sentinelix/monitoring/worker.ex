@@ -53,6 +53,14 @@ defmodule Sentinelix.Monitoring.Worker do
   result}` on the same topics. The warning state is not persisted, so a
   restarted worker raises an active warning again.
 
+  Such warnings are also logged as events (see
+  `Sentinelix.Monitoring.Events.record_check_warning/3`), for the
+  monitor's timeline: a `warning` event when the check raises one and an
+  `ok` event when an up result without it follows (a check going down in
+  between doesn't clear it). Whether one is logged is restored from the
+  events when the worker starts, so a restart neither logs an active
+  warning twice nor misses that it cleared meanwhile.
+
   ## Warnings raised by events
 
   Events can raise warnings (see `Sentinelix.Monitoring.Events`), which are
@@ -199,6 +207,8 @@ defmodule Sentinelix.Monitoring.Worker do
     status: :pending,
     retries: 0,
     warning: false,
+    # The check's warning is logged as an event (see the moduledoc).
+    warning_logged: false,
     # The monitor has an active warning raised by an event.
     warned: false,
     # The latest result was recorded as unreachable.
@@ -347,7 +357,8 @@ defmodule Sentinelix.Monitoring.Worker do
       state
       | status: status,
         unreachable: match?(%CheckResult{status: :unreachable}, latest),
-        incident: Monitoring.get_open_incident(monitor)
+        incident: Monitoring.get_open_incident(monitor),
+        warning_logged: Events.check_warning_logged?(monitor)
     }
 
     # Until the first check: whether the latest stored one succeeded (not
@@ -666,7 +677,8 @@ defmodule Sentinelix.Monitoring.Worker do
 
     if target = warning_target(state) do
       # Keeps a check's warning (see update_warning/3).
-      details = %{message: warning_message(state), warning: state.warning}
+      # Not a check: leaves the logging of a check's warning alone.
+      details = %{message: warning_message(state), warning: state.warning, sync: true}
 
       case record(state, target, details, &apply_transition(&1, &2, target, details)) do
         {:ok, state, _status, _result} -> {:ok, state}
@@ -796,7 +808,10 @@ defmodule Sentinelix.Monitoring.Worker do
       )
     end
 
-    update_warning(state, new in [:up, :warning] and details[:warning] == true, result)
+    warning = new in [:up, :warning] and details[:warning] == true
+
+    state = update_warning(state, warning, result)
+    if details[:sync], do: state, else: log_warning(state, warning, result)
   end
 
   # One open incident at a time, for :down or :warning (see the moduledoc).
@@ -855,6 +870,20 @@ defmodule Sentinelix.Monitoring.Worker do
 
     %{state | warning: false}
   end
+
+  # Logs a check's warning as an event, once (see the moduledoc).
+  defp log_warning(%{warning_logged: false} = state, true, result) do
+    {:ok, _event} = Events.record_check_warning(state.monitor, :warning, result)
+    %{state | warning_logged: true}
+  end
+
+  defp log_warning(%{warning_logged: true} = state, false, %{status: status} = result)
+       when status in [:up, :warning] do
+    {:ok, _event} = Events.record_check_warning(state.monitor, :ok, result)
+    %{state | warning_logged: false}
+  end
+
+  defp log_warning(state, _warning, _result), do: state
 
   defp maintenance?(%{config: %{maintenance: nil}}), do: false
 

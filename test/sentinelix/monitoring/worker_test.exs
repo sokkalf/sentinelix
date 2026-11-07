@@ -5,6 +5,7 @@ defmodule Sentinelix.Monitoring.WorkerTest do
 
   alias Sentinelix.FakeCheck
   alias Sentinelix.Monitoring
+  alias Sentinelix.Monitoring.Events
   alias Sentinelix.Monitoring.Supervisor, as: Engine
   alias Sentinelix.Monitoring.Worker
 
@@ -235,6 +236,84 @@ defmodule Sentinelix.Monitoring.WorkerTest do
     check_now(monitor)
     result = assert_result(:up)
     assert_receive {:warning_cleared, _, ^result}
+  end
+
+  describe "warnings raised by checks are logged as events" do
+    @warning {:up, %{warning: true, message: "Warning: expires soon"}}
+
+    # The events logged so far, oldest first. The result is broadcast
+    # before the event is logged: the call waits for the worker.
+    defp logged(monitor) do
+      _ = Worker.info(monitor, @engine)
+      monitor |> Events.list_events() |> Enum.reverse() |> Enum.map(&{&1.severity, &1.title})
+    end
+
+    test "once when raised and once when cleared" do
+      monitor = monitor_fixture(:cert)
+      start(monitor, [@warning, @warning, {:up, %{message: "renewed"}}, {:up, %{}}])
+
+      result = assert_result(:up)
+      assert_receive {:event_recorded, event}
+      assert %{severity: :warning, key: nil, title: "Warning: expires soon"} = event
+      assert event.metadata == %{"source" => "check"}
+      assert event.occurred_at == result.checked_at
+
+      check_now(monitor)
+      assert_result(:up)
+      refute_receive {:event_recorded, _}, 100
+
+      check_now(monitor)
+      assert_result(:up)
+
+      assert_receive {:event_recorded,
+                      %{severity: :ok, title: "Warning cleared", message: "renewed"}}
+
+      check_now(monitor)
+      assert_result(:up)
+      refute_receive {:event_recorded, _}, 100
+
+      assert logged(monitor) == [warning: "Warning: expires soon", ok: "Warning cleared"]
+    end
+
+    test "going down in between doesn't clear it" do
+      monitor = monitor_fixture(:cert, %{max_retries: 0})
+      start(monitor, [@warning, {:down, %{message: "nope"}}, @warning, {:up, %{}}])
+
+      assert_result(:up)
+      check_now(monitor)
+      assert_result(:down)
+      check_now(monitor)
+      assert_result(:up)
+      assert logged(monitor) == [warning: "Warning: expires soon"]
+
+      check_now(monitor)
+      assert_result(:up)
+      assert logged(monitor) == [warning: "Warning: expires soon", ok: "Warning cleared"]
+    end
+
+    test "a restarted worker doesn't log an active warning again" do
+      monitor = monitor_fixture(:cert)
+      start(monitor, [@warning])
+      assert_result(:up)
+      :ok = Engine.stop_worker(monitor, @engine)
+
+      start(monitor, [@warning])
+      assert_result(:up)
+      # The broadcast (and so the notification) is repeated, the event isn't.
+      assert_receive {:warning_raised, _, _}
+      assert logged(monitor) == [warning: "Warning: expires soon"]
+    end
+
+    test "a restarted worker logs a warning that cleared meanwhile" do
+      monitor = monitor_fixture(:cert)
+      start(monitor, [@warning])
+      assert_result(:up)
+      :ok = Engine.stop_worker(monitor, @engine)
+
+      start(monitor, [{:up, %{}}])
+      assert_result(:up)
+      assert logged(monitor) == [warning: "Warning: expires soon", ok: "Warning cleared"]
+    end
   end
 
   test "fills in the response time when the check doesn't report one" do
