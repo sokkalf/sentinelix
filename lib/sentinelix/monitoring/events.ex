@@ -21,6 +21,12 @@ defmodule Sentinelix.Monitoring.Events do
   Warnings can also be cleared from the monitor page
   (`clear_warnings/3`).
 
+  Warnings a check raises itself (a check result with `warning: true`,
+  e.g. a certificate close to expiry) aren't stored as warnings, but the
+  monitor's worker logs them as events too: a `warning` event when one is
+  raised and an `ok` event when it is cleared (`record_check_warning/3`),
+  with `"source" => "check"` in their metadata.
+
   Events are pruned with the check results (`prune_events/1`, called by
   `Sentinelix.Stats.Rollup.prune/1`), and deleted with the monitor.
 
@@ -38,7 +44,7 @@ defmodule Sentinelix.Monitoring.Events do
   alias Ecto.Changeset
   alias Phoenix.PubSub
   alias Sentinelix.Monitoring
-  alias Sentinelix.Monitoring.{Monitor, MonitorEvent, Warning, Worker}
+  alias Sentinelix.Monitoring.{CheckResult, Monitor, MonitorEvent, Warning, Worker}
   alias Sentinelix.Repo
 
   @pubsub Sentinelix.PubSub
@@ -54,6 +60,8 @@ defmodule Sentinelix.Monitoring.Events do
   @max_metadata_bytes 8_192
   @max_ttl_seconds 365 * 86_400
   @ttl_units %{"" => 1, "s" => 1, "m" => 60, "h" => 3_600, "d" => 86_400}
+
+  @check_source "check"
 
   @type monitor_ref :: Monitor.t() | pos_integer()
 
@@ -380,6 +388,62 @@ defmodule Sentinelix.Monitoring.Events do
     end
 
     {:ok, removed}
+  end
+
+  ## Warnings raised by checks
+
+  @doc """
+  Logs that a check of the monitor raised a warning (`:warning`) or that
+  it cleared (`:ok`), for `result`, as an event with `"source" => "check"`
+  in its metadata (see the module docs). Called by the monitor's worker.
+  """
+  @spec record_check_warning(monitor_ref(), :warning | :ok, CheckResult.t()) ::
+          {:ok, MonitorEvent.t()}
+  def record_check_warning(monitor, severity, %CheckResult{} = result)
+      when severity in [:warning, :ok] do
+    message = if result.message in [nil, ""], do: nil, else: result.message
+
+    {title, message} =
+      case severity do
+        :warning -> {message || "Check warning", nil}
+        :ok -> {"Warning cleared", message}
+      end
+
+    event =
+      insert_event!(
+        %Monitor{id: monitor_id(monitor)},
+        %{
+          severity: severity,
+          key: nil,
+          title: truncate(title, @max_title_length),
+          message: message && truncate(message, @max_message_length),
+          metadata: %{"source" => @check_source}
+        },
+        result.checked_at
+      )
+
+    broadcast(monitor, {:event_recorded, event})
+    {:ok, event}
+  end
+
+  @doc """
+  Whether the latest warning a check raised for the monitor is logged as
+  still active: the latest event logged by `record_check_warning/3` is a
+  `warning`. The worker uses it to log a warning only once, also across
+  restarts.
+  """
+  @spec check_warning_logged?(monitor_ref()) :: boolean()
+  def check_warning_logged?(monitor) do
+    id = monitor_id(monitor)
+
+    MonitorEvent
+    |> where([e], e.monitor_id == ^id)
+    |> where([e], fragment("?->>'source'", e.metadata) == ^@check_source)
+    |> order_by([e], desc: e.occurred_at, desc: e.id)
+    |> limit(1)
+    |> select([e], e.severity)
+    |> Repo.one()
+    |> Kernel.==(:warning)
   end
 
   ## Status
