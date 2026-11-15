@@ -148,7 +148,7 @@ defmodule Sentinelix.MonitoringTest do
 
     test "rejects unknown types" do
       assert {:error, changeset} =
-               Monitoring.create_monitor(valid_monitor_attrs(:http, %{type: "smtp"}))
+               Monitoring.create_monitor(valid_monitor_attrs(:http, %{type: "gopher"}))
 
       assert "is invalid" in errors_on(changeset).type
     end
@@ -344,6 +344,12 @@ defmodule Sentinelix.MonitoringTest do
 
       assert Monitor.secret(monitor, "password") == nil
       assert Monitoring.get_monitor!(monitor.id).secrets == %{}
+    end
+
+    test "smtp monitors keep the AUTH password" do
+      monitor = monitor_fixture(:smtp, %{secrets: %{password: "mail pw"}})
+      assert Monitor.secret(monitor, "password") == "mail pw"
+      refute inspect(monitor) =~ "mail pw"
     end
 
     test "are dropped when they don't apply to the type" do

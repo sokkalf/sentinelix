@@ -20,7 +20,7 @@ defmodule Sentinelix.Monitoring.Monitor do
   ## Secrets
 
   Type-specific secrets (see `secret_fields/1`, e.g. the password of a
-  PostgreSQL monitor) are not part of `settings`: they are stored encrypted
+  PostgreSQL or SMTP monitor) are not part of `settings`: they are stored encrypted
   in `secrets` (`Sentinelix.EncryptedMap`, string keys) and redacted when
   the monitor is inspected. They are cast from the `"secrets"` param:
 
@@ -67,9 +67,9 @@ defmodule Sentinelix.Monitoring.Monitor do
     Warning
   }
 
-  @types [:http, :tcp, :ping, :dns, :cert, :push, :postgres, :group]
+  @types [:http, :tcp, :ping, :dns, :cert, :smtp, :push, :postgres, :group]
 
-  @secret_fields %{postgres: ["password"]}
+  @secret_fields %{postgres: ["password"], smtp: ["password"]}
 
   @min_interval_seconds 20
   @max_interval_seconds 86_400
@@ -105,7 +105,8 @@ defmodule Sentinelix.Monitoring.Monitor do
   end
 
   @type t :: %__MODULE__{}
-  @type type :: :http | :tcp | :ping | :dns | :cert | :push | :postgres | :group
+  @type type ::
+          :http | :tcp | :ping | :dns | :cert | :smtp | :push | :postgres | :group
 
   @doc "All monitor types."
   @spec types() :: [type()]

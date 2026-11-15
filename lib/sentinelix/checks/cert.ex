@@ -28,6 +28,7 @@ defmodule Sentinelix.Checks.Cert do
 
   @behaviour Sentinelix.Checks.Check
 
+  alias Sentinelix.Checks.TCP
   alias Sentinelix.Monitoring.{Monitor, Settings}
 
   @seconds_per_day 86_400
@@ -65,21 +66,27 @@ defmodule Sentinelix.Checks.Cert do
   end
 
   defp ssl_options(host) do
-    sni =
-      case :inet.parse_address(host) do
-        # SNI must not be sent for IP addresses.
-        {:ok, _ip} -> :disable
-        {:error, _} -> host
-      end
-
     [
       verify: :verify_none,
-      server_name_indication: sni,
+      server_name_indication: server_name_indication(host),
       versions: [:"tlsv1.3", :"tlsv1.2"],
       active: false,
       # Failures are reported in the result, don't log every TLS alert.
       log_level: :error
     ]
+  end
+
+  @doc """
+  The `:server_name_indication` TLS option for `host` (a charlist): the
+  host itself, or `:disable` for IP addresses, which must not be sent as
+  SNI.
+  """
+  @spec server_name_indication(charlist()) :: charlist() | :disable
+  def server_name_indication(host) do
+    case :inet.parse_address(host) do
+      {:ok, _ip} -> :disable
+      {:error, _} -> host
+    end
   end
 
   @doc """
@@ -197,11 +204,9 @@ defmodule Sentinelix.Checks.Cert do
 
   defp parse_general_time(value), do: {:error, {:invalid_time, value}}
 
-  defp format_error({:tls_alert, {_alert, description}}),
+  @doc false
+  def format_error({:tls_alert, {_alert, description}}),
     do: description |> to_string() |> String.trim()
 
-  defp format_error(:nxdomain), do: "host not found"
-  defp format_error(:econnrefused), do: "connection refused"
-  defp format_error(:timeout), do: "timed out"
-  defp format_error(reason), do: inspect(reason)
+  def format_error(reason), do: TCP.format_error(reason)
 end

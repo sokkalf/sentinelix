@@ -14,8 +14,8 @@ defmodule Sentinelix.Monitoring.AutoLabelsTest do
                %{"type" => "http", "host" => "2001:db8::1"}
     end
 
-    test "the host of tcp, ping, dns, cert and postgres monitors" do
-      for type <- [:tcp, :ping, :dns, :cert, :postgres] do
+    test "the host of tcp, ping, dns, cert, smtp and postgres monitors" do
+      for type <- [:tcp, :ping, :dns, :cert, :smtp, :postgres] do
         assert AutoLabels.derive(type, %Settings{host: "DB1.example.com.", port: 5432}) ==
                  %{"type" => Atom.to_string(type), "host" => "db1.example.com"}
       end

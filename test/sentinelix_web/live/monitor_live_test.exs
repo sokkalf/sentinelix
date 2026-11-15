@@ -997,6 +997,64 @@ defmodule SentinelixWeb.MonitorLiveTest do
                monitor.settings
     end
 
+    test "creates an smtp monitor with a write-only AUTH password", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/monitors/new")
+      view |> form("#monitor-form", monitor: %{type: :smtp}) |> render_change()
+
+      assert has_element?(
+               view,
+               "#settings-group-connection [name='monitor[settings][smtp_security]']"
+             )
+
+      assert has_element?(view, "[name='monitor[settings][port]'][value='587']")
+
+      assert has_element?(
+               view,
+               "#settings-group-authentication [name='monitor[secrets][password]']"
+             )
+
+      assert has_element?(
+               view,
+               "#settings-group-certificate [name='monitor[settings][cert_warn_days]']"
+             )
+
+      assert has_element?(view, "[name='monitor[settings][verify_tls]']")
+
+      # Without TLS there is no certificate to verify or check.
+      view
+      |> form("#monitor-form", monitor: %{settings: %{smtp_security: "none"}})
+      |> render_change()
+
+      refute has_element?(view, "[name='monitor[settings][verify_tls]']")
+      refute has_element?(view, "[name='monitor[settings][cert_warn_days]']")
+
+      {:ok, _view, html} =
+        view
+        |> form("#monitor-form",
+          monitor: %{
+            name: "Mail",
+            secrets: %{password: "mail-s3cret"},
+            settings: %{
+              host: "mail.example.com",
+              smtp_security: "starttls",
+              username: "monitor@example.com"
+            }
+          }
+        )
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      assert html =~ "mail.example.com:587"
+      refute html =~ "mail-s3cret"
+
+      assert [monitor] = Monitoring.list_monitors()
+      assert monitor.type == :smtp
+      assert monitor.secrets == %{"password" => "mail-s3cret"}
+
+      assert %{smtp_security: "starttls", username: "monitor@example.com", verify_tls: true} =
+               monitor.settings
+    end
+
     test "the settings groups contain every field of the type" do
       for type <- Monitor.types() do
         grouped =

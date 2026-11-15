@@ -259,6 +259,59 @@ defmodule Sentinelix.Monitoring.SettingsTest do
     end
   end
 
+  describe "smtp" do
+    test "defaults to STARTTLS on port 587 with verification and certificate thresholds" do
+      settings = apply_settings(:smtp, %{host: "mail.example.com"})
+
+      assert %Settings{
+               port: 587,
+               smtp_security: "starttls",
+               verify_tls: true,
+               smtp_ehlo_name: nil,
+               username: nil,
+               cert_warn_days: 30,
+               cert_critical_days: 7
+             } = settings
+    end
+
+    test "keeps the security mode, EHLO name and username" do
+      settings =
+        apply_settings(:smtp, %{
+          host: "mail.example.com",
+          port: 465,
+          smtp_security: "tls",
+          verify_tls: false,
+          smtp_ehlo_name: " monitor.example.com ",
+          username: "monitor@example.com"
+        })
+
+      assert %Settings{
+               port: 465,
+               smtp_security: "tls",
+               verify_tls: false,
+               smtp_ehlo_name: "monitor.example.com",
+               username: "monitor@example.com"
+             } = settings
+    end
+
+    test "validates the security mode, EHLO name and thresholds" do
+      assert %{smtp_security: ["is invalid"]} =
+               settings_errors(:smtp, %{host: "mail.example.com", smtp_security: "ssl"})
+
+      assert %{smtp_ehlo_name: ["must be a valid hostname or IP address"]} =
+               settings_errors(:smtp, %{host: "mail.example.com", smtp_ehlo_name: "not a name"})
+
+      assert %{cert_critical_days: [_]} =
+               settings_errors(:smtp, %{
+                 host: "mail.example.com",
+                 cert_warn_days: 5,
+                 cert_critical_days: 10
+               })
+
+      assert %{host: ["can't be blank"]} = settings_errors(:smtp, %{})
+    end
+  end
+
   describe "push" do
     test "generates a token when none is given and keeps it on update" do
       monitor = monitor_fixture(:push)

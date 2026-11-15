@@ -13,7 +13,8 @@ public status pages.
   [response assertions](#http-monitors) on the body, JSON values and
   headers), TCP port,
   ping (ICMP), DNS records (A, AAAA, CNAME, MX, TXT, NS), TLS certificate
-  expiry, PostgreSQL (login, query with expected result, replication status
+  expiry, [SMTP](#smtp-monitors) (STARTTLS / implicit TLS, AUTH and the
+  mail server's certificate), PostgreSQL (login, query with expected result, replication status
   and lag) and push (heartbeat) monitors for cron jobs and backups.
 * **Group monitors:** one monitor for an application made of several
   checks (its ports, its database): down when a member is, one alert
@@ -330,9 +331,10 @@ use. The dashboard and the monitor list filter by labels with
 Every monitor also has read-only automatic labels, derived from its
 settings whenever it is saved:
 
-* `type`: the monitor type (`http`, `tcp`, `ping`, `dns`, `cert`, `push`,
-  `postgres` or `group`).
-* `host`: the host it checks: the host of the URL (HTTP monitors) or the hostname or IP address (TCP, ping, DNS, certificate and
+* `type`: the monitor type (`http`, `tcp`, `ping`, `dns`, `cert`, `smtp`,
+  `push`, `postgres` or `group`).
+* `host`: the host it checks: the host of the URL (HTTP monitors) or the
+  hostname or IP address (TCP, ping, DNS, certificate, SMTP and
   PostgreSQL monitors), lowercased, without port or trailing dot
   (`https://WWW.Example.com:8443/` gives `host=www.example.com`). Push
   and group monitors have none.
@@ -632,6 +634,34 @@ from `type=keyword` to `type=http`: update selectors that use
 Exported files with `type: keyword` can still be imported and are
 converted the same way.
 
+## SMTP monitors
+
+An SMTP monitor talks SMTP to a mail server instead of only checking that its
+port is open. No mail is sent:
+
+1. Connect and expect the `220` greeting.
+2. `EHLO` (with the *EHLO name*, by default the host of Sentinelix' public
+   URL, `PHX_HOST`), expect `250`.
+3. With *STARTTLS* (the default, port 587): the server must advertise
+   `STARTTLS` – a stripped or misconfigured STARTTLS is down – then the
+   connection is upgraded and `EHLO` sent again. *Implicit TLS* (port 465)
+   starts with the TLS handshake; *None* stays in plain text.
+4. With a username: `AUTH PLAIN` (or `LOGIN` if the server doesn't offer
+   `PLAIN`) with the password, expect `235`. The password is encrypted in
+   the database and never shown again, like the PostgreSQL password.
+5. `QUIT`.
+
+The monitor is up with the greeting banner in its message, and down with the
+failing step and the server's reply, e.g. `STARTTLS: 454 4.7.0 TLS not
+available` or `AUTH: 535 5.7.8 Authentication credentials invalid`.
+
+With TLS, the certificate is verified against the system CAs and the hostname
+(turn off *Verify TLS certificate* for self-signed certificates), and its
+expiry is checked like a TLS certificate monitor does: a warning
+within *warn* days, down within *down* days. One SMTP monitor therefore covers
+both the mail service and its certificate, including the
+`sentinelix_monitor_cert_days_remaining` metric.
+
 ## PostgreSQL monitors
 
 A PostgreSQL monitor logs in to a server, runs a query and optionally checks
@@ -811,7 +841,7 @@ a monitor is deleted:
 | `sentinelix_monitor_warning` | 1 while a check reports a warning (e.g. certificate close to expiry) |
 | `sentinelix_monitor_response_time_ms` | response time of the latest check |
 | `sentinelix_monitor_last_check_timestamp_seconds` | Unix time of the latest check |
-| `sentinelix_monitor_cert_days_remaining` | days until the certificate expires (certificate checks) |
+| `sentinelix_monitor_cert_days_remaining` | days until the certificate expires (certificate and SMTP checks with TLS) |
 | `sentinelix_monitor_labels` | always 1; the monitor's [labels](#labels), automatic ones included, as `label_<key>="<value>"` |
 
 Monitor labels are only on `sentinelix_monitor_labels`, not on every gauge:
