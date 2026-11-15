@@ -35,34 +35,40 @@ defmodule Sentinelix.Checks.TCP do
   """
   @spec connect(String.t(), :inet.port_number(), timeout()) :: :ok | {:error, term()}
   def connect(host, port, timeout) do
+    with {:ok, socket} <- open(host, port, timeout) do
+      :gen_tcp.close(socket)
+      :ok
+    end
+  end
+
+  @doc """
+  Opens a TCP connection to `host:port` and returns the socket.
+
+  Hostnames are resolved over IPv4 and retried over IPv6 when they have no
+  IPv4 address, within `timeout` in total. `opts` are passed on to
+  `:gen_tcp.connect/4` (the socket is always binary and passive).
+  """
+  @spec open(String.t(), :inet.port_number(), timeout(), [:gen_tcp.connect_option()]) ::
+          {:ok, :gen_tcp.socket()} | {:error, term()}
+  def open(host, port, timeout, opts \\ []) do
     deadline = System.monotonic_time(:millisecond) + timeout
+    opts = [:binary, active: false] ++ opts
 
     case address(host) do
       {:ok, ip} ->
-        do_connect(ip, port, [family(ip)], timeout)
+        :gen_tcp.connect(ip, port, [family(ip)] ++ opts, timeout)
 
       :hostname ->
         name = String.to_charlist(host)
 
-        case do_connect(name, port, [:inet], timeout) do
+        case :gen_tcp.connect(name, port, [:inet] ++ opts, timeout) do
           {:error, :nxdomain} ->
             remaining = max(deadline - System.monotonic_time(:millisecond), 0)
-            do_connect(name, port, [:inet6], remaining)
+            :gen_tcp.connect(name, port, [:inet6] ++ opts, remaining)
 
           result ->
             result
         end
-    end
-  end
-
-  defp do_connect(address, port, opts, timeout) do
-    case :gen_tcp.connect(address, port, [:binary, active: false] ++ opts, timeout) do
-      {:ok, socket} ->
-        :gen_tcp.close(socket)
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
