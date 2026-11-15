@@ -31,7 +31,8 @@ defmodule Sentinelix.Metrics do
     * `sentinelix_monitor_last_check_timestamp_seconds` – Unix time of the
       latest check.
     * `sentinelix_monitor_cert_days_remaining` – days until the certificate
-      expires, for monitors whose last check reported it (cert monitors).
+      expires, for monitors whose last check reported it (cert monitors, smtp
+      monitors with TLS).
     * `sentinelix_monitor_labels` – always 1; carries the monitor's labels
       (see `Sentinelix.Monitoring.Labels`), automatic ones included
       (`label_type`, `label_host`), as `label_<key>="<value>"`, in
