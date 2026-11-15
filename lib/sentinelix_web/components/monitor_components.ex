@@ -17,6 +17,7 @@ defmodule SentinelixWeb.MonitorComponents do
     ping: "Ping",
     dns: "DNS",
     cert: "TLS certificate",
+    smtp: "SMTP",
     push: "Push",
     postgres: "PostgreSQL",
     group: "Group"

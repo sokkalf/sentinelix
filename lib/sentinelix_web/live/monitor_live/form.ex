@@ -23,6 +23,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
   import SentinelixWeb.SelectorComponents, only: [selector_input: 1, suggestions: 2]
 
   alias Sentinelix.Checks.Postgres.Expectation
+  alias Sentinelix.Checks.SMTP
   alias Sentinelix.Monitoring
   alias Sentinelix.Monitoring.{Labels, Monitor, Settings}
   alias Sentinelix.Monitoring.Settings.Assertion
@@ -325,6 +326,11 @@ defmodule SentinelixWeb.MonitorLive.Form do
       {nil, Settings.fields_for(:http) -- [:assertions]},
       {"Response assertions", [:assertions]}
     ],
+    smtp: [
+      {"Connection", [:host, :port, :smtp_security, :verify_tls, :smtp_ehlo_name]},
+      {"Authentication", [:username, :password]},
+      {"Certificate", [:cert_warn_days, :cert_critical_days]}
+    ],
     postgres: [
       {"Connection", [:host, :port, :database, :username, :password, :ssl_mode, :ssl_ca_cert]},
       {"Query", [:query, :expected_value, :comparison, :expected_rows, :rows_comparison]},
@@ -362,6 +368,11 @@ defmodule SentinelixWeb.MonitorLive.Form do
               :lag_critical_bytes
             ],
        do: settings[:replication_check].value in ["primary", "standby"]
+
+  # SMTP without TLS has no certificate.
+  defp visible?(name, settings)
+       when name in [:verify_tls, :cert_warn_days, :cert_critical_days],
+       do: settings[:smtp_security].value != "none"
 
   defp visible?(_name, _settings), do: true
 
@@ -736,8 +747,8 @@ defmodule SentinelixWeb.MonitorLive.Form do
     <.input
       field={@field}
       type="text"
-      label="Username"
-      placeholder="sentinelix_monitor"
+      label={if @type == :smtp, do: "Username (optional, tests AUTH)", else: "Username"}
+      placeholder={if @type == :smtp, do: "monitor@example.com", else: "sentinelix_monitor"}
       autocomplete="off"
       phx-debounce="300"
     />
@@ -755,6 +766,35 @@ defmodule SentinelixWeb.MonitorLive.Form do
         {"Verify certificate and hostname", "verify-full"},
         {"Disable", "disable"}
       ]}
+    />
+    """
+  end
+
+  defp settings_field(%{name: :smtp_security} = assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      type="select"
+      label="Security"
+      options={[
+        {"STARTTLS (required)", "starttls"},
+        {"Implicit TLS (e.g. port 465)", "tls"},
+        {"None (plain text)", "none"}
+      ]}
+    />
+    """
+  end
+
+  defp settings_field(%{name: :smtp_ehlo_name} = assigns) do
+    assigns = assign(assigns, :default_name, SMTP.default_ehlo_name())
+
+    ~H"""
+    <.input
+      field={@field}
+      type="text"
+      label="EHLO name (optional)"
+      placeholder={@default_name}
+      phx-debounce="300"
     />
     """
   end
@@ -941,6 +981,11 @@ defmodule SentinelixWeb.MonitorLive.Form do
   defp type_help(:ping), do: "Checks that a host answers ICMP echo requests."
   defp type_help(:dns), do: "Resolves a hostname and optionally compares the answer."
   defp type_help(:cert), do: "Warns before a TLS certificate expires."
+
+  defp type_help(:smtp),
+    do:
+      "Talks SMTP to a mail server (greeting, EHLO, STARTTLS and optionally AUTH) " <>
+        "and warns before its TLS certificate expires. No mail is sent."
 
   defp type_help(:postgres),
     do: "Logs in to a PostgreSQL server, runs a query and optionally checks replication."
