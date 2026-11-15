@@ -201,6 +201,34 @@ defmodule Sentinelix.Notifications.ProvidersTest do
       assert request.body["message"] =~ "Unexpected status 503"
     end
 
+    test "connects related notifications with a sequence id" do
+      capture_requests()
+
+      for kind <- [:down, :up, :warning, :warning_cleared] do
+        assert :ok = Providers.Ntfy.send(channel(:ntfy), event(kind))
+      end
+
+      ids =
+        for _ <- 1..4 do
+          assert_received {:notification_request, request}
+          request.body["sequence_id"]
+        end
+
+      assert ids == [
+               "sentinelix-monitor-42",
+               "sentinelix-monitor-42",
+               "sentinelix-monitor-42-warning",
+               "sentinelix-monitor-42-warning"
+             ]
+    end
+
+    test "sends no sequence id for test notifications" do
+      capture_requests()
+      assert :ok = Providers.Ntfy.send(channel(:ntfy), Event.test())
+      assert_received {:notification_request, request}
+      refute Map.has_key?(request.body, "sequence_id")
+    end
+
     test "sends no authorization header without a token" do
       capture_requests()
       assert :ok = Providers.Ntfy.send(channel(:ntfy), event(:up))

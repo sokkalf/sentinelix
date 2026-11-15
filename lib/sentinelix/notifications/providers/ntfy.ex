@@ -2,6 +2,12 @@ defmodule Sentinelix.Notifications.Providers.Ntfy do
   @moduledoc """
   [ntfy](https://ntfy.sh) push notification, published as JSON to the
   server's root URL. An access token (optional) is sent as bearer token.
+
+  Monitor events carry a `sequence_id`, so ntfy clients replace the
+  notification instead of stacking a new one: the recovery replaces the
+  outage alert, and a cleared warning replaces the warning. Outages and
+  warnings use separate sequences, so one doesn't overwrite the other.
+  Test notifications have no sequence.
   """
 
   use Sentinelix.Notifications.Provider
@@ -68,6 +74,7 @@ defmodule Sentinelix.Notifications.Providers.Ntfy do
         tags: [tag(event.kind)]
       }
       |> then(&if(event.url, do: Map.put(&1, :click, event.url), else: &1))
+      |> then(&if(seq = sequence_id(event), do: Map.put(&1, :sequence_id, seq), else: &1))
 
     HTTP.request(
       url: String.trim_trailing(channel.config["server_url"], "/") <> "/",
@@ -75,6 +82,17 @@ defmodule Sentinelix.Notifications.Providers.Ntfy do
       json: body
     )
   end
+
+  @doc false
+  def sequence_id(%Event{monitor_id: nil}), do: nil
+
+  def sequence_id(%Event{kind: kind, monitor_id: id}) when kind in [:down, :up],
+    do: "sentinelix-monitor-#{id}"
+
+  def sequence_id(%Event{kind: kind, monitor_id: id}) when kind in [:warning, :warning_cleared],
+    do: "sentinelix-monitor-#{id}-warning"
+
+  def sequence_id(%Event{}), do: nil
 
   defp priority(:down), do: 5
   defp priority(:warning), do: 4
