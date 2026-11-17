@@ -20,36 +20,23 @@ defmodule Sentinelix.Checks.SMTP do
 
   ## TLS
 
-  TLS connections send SNI and, with `verify_tls` (the default), verify the
-  certificate chain against the system CAs and the hostname (IP addresses
-  are not checked against the certificate). The peer certificate's expiry
-  is then evaluated like `Sentinelix.Checks.Cert` does, with the monitor's
-  `cert_warn_days` and `cert_critical_days`, so one monitor covers both the
-  service and its certificate: a certificate close to expiry raises a
-  warning, one within `cert_critical_days` (or expired) is `:down`. The
-  remaining days are passed on as `meta: %{days_remaining: n, expires_at:
-  datetime}`.
+  TLS connections are verified (unless `verify_tls` is off) and their
+  certificate's expiry is evaluated with the monitor's `cert_warn_days` and
+  `cert_critical_days`, see `Sentinelix.Checks.MailSession`.
   """
 
   @behaviour Sentinelix.Checks.Check
 
-  alias Sentinelix.Checks.{Cert, TCP}
+  alias Sentinelix.Checks.MailSession
   alias Sentinelix.Monitoring.{Monitor, Settings}
 
   # A multiline reply with more lines than this is treated as an error.
   @max_reply_lines 100
 
   @impl true
-  def run(%Monitor{settings: %Settings{} = settings, timeout_ms: timeout} = monitor) do
-    started = System.monotonic_time()
-    deadline = System.monotonic_time(:millisecond) + timeout
-    result = probe(settings, Monitor.secret(monitor, "password"), deadline)
-
-    elapsed_ms =
-      System.convert_time_unit(System.monotonic_time() - started, :native, :millisecond)
-
-    {status, details} = evaluate(result, settings, DateTime.utc_now())
-    {status, Map.put(details, :response_time_ms, elapsed_ms)}
+  def run(%Monitor{settings: %Settings{} = settings} = monitor) do
+    password = Monitor.secret(monitor, "password")
+    MailSession.run(monitor, &probe(settings, password, &1))
   end
 
   @doc """
@@ -70,61 +57,20 @@ defmodule Sentinelix.Checks.SMTP do
     end
   end
 
-  ## Evaluation
-
-  defp evaluate({:ok, conn}, settings, now) do
-    case conn.cert do
-      nil ->
-        {:up, %{message: conn.banner}}
-
-      der ->
-        case Cert.evaluate_der(der, settings, now) do
-          {:up, details} -> {:up, %{details | message: "#{conn.banner} – #{details.message}"}}
-          {:down, details} -> {:down, details}
-        end
-    end
-  end
-
-  defp evaluate({:error, conn, message}, settings, now) do
-    details = %{message: message}
-
-    with %{cert: der} when is_binary(der) <- conn,
-         {_status, %{meta: meta}} <- Cert.evaluate_der(der, settings, now) do
-      {:down, Map.put(details, :meta, meta)}
-    else
-      _ -> {:down, details}
-    end
-  end
-
   ## Session
 
   defp probe(settings, password, deadline) do
-    case TCP.open(settings.host, settings.port, remaining(deadline), packet: :line) do
-      {:ok, socket} ->
-        conn = %{
-          mod: :gen_tcp,
-          socket: socket,
-          host: settings.host,
-          settings: settings,
-          password: password,
-          deadline: deadline,
-          banner: nil,
-          extensions: %{},
-          cert: nil
-        }
+    state = %{password: password, banner: nil, extensions: %{}}
 
-        result = run_steps(steps(settings), conn)
-        close(elem(result, 1))
-        result
-
-      {:error, reason} ->
-        {:error, nil, "Connect: #{format_error(reason)}"}
+    with {:ok, conn} <- MailSession.open(settings, deadline, state),
+         {:ok, conn} <- MailSession.run_steps(steps(settings), conn) do
+      {:ok, conn, %{message: conn.banner}}
     end
   end
 
   defp steps(%Settings{smtp_security: security, username: username}) do
     [
-      if(security == "tls", do: &upgrade/1),
+      if(security == "tls", do: &MailSession.upgrade/1),
       &greeting/1,
       &ehlo/1,
       if(security == "starttls", do: &starttls/1),
@@ -132,15 +78,6 @@ defmodule Sentinelix.Checks.SMTP do
       &quit/1
     ]
     |> Enum.reject(&is_nil/1)
-  end
-
-  defp run_steps([], conn), do: {:ok, conn}
-
-  defp run_steps([step | steps], conn) do
-    case step.(conn) do
-      {:ok, conn} -> run_steps(steps, conn)
-      {:error, _conn, _message} = error -> error
-    end
   end
 
   defp greeting(conn) do
@@ -166,58 +103,12 @@ defmodule Sentinelix.Checks.SMTP do
   defp starttls(conn) do
     if Map.has_key?(conn.extensions, "STARTTLS") do
       with {:ok, _lines} <- command(conn, "STARTTLS", "STARTTLS", 220),
-           {:ok, conn} <- upgrade(conn) do
+           {:ok, conn} <- MailSession.upgrade(conn) do
         ehlo(conn)
       end
     else
       {:error, conn, "STARTTLS: not advertised by the server"}
     end
-  end
-
-  defp upgrade(%{mod: :gen_tcp, socket: socket} = conn) do
-    host = String.to_charlist(conn.host)
-    # TLS records aren't lines.
-    :ok = :inet.setopts(socket, packet: :raw)
-
-    case :ssl.connect(socket, tls_options(host, conn.settings), remaining(conn.deadline)) do
-      {:ok, ssl} ->
-        cert =
-          case :ssl.peercert(ssl) do
-            {:ok, der} -> der
-            {:error, _} -> nil
-          end
-
-        {:ok, %{conn | mod: :ssl, socket: ssl, cert: cert}}
-
-      {:error, reason} ->
-        {:error, conn, "TLS handshake: #{format_error(reason)}"}
-    end
-  end
-
-  defp tls_options(host, %Settings{verify_tls: verify?}) do
-    sni = Cert.server_name_indication(host)
-
-    verify =
-      if verify? == false do
-        [verify: :verify_none]
-      else
-        [
-          verify: :verify_peer,
-          cacerts: :public_key.cacerts_get(),
-          customize_hostname_check: [
-            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-          ]
-        ]
-      end
-
-    [
-      server_name_indication: sni,
-      mode: :binary,
-      active: false,
-      packet: :line,
-      # Failures are reported in the result, don't log every TLS alert.
-      log_level: :error
-    ] ++ verify
   end
 
   defp auth(conn) do
@@ -253,14 +144,11 @@ defmodule Sentinelix.Checks.SMTP do
     {:ok, conn}
   end
 
-  defp close(nil), do: :ok
-  defp close(%{mod: mod, socket: socket}), do: mod.close(socket)
-
   ## Protocol
 
   # Sends `line` and reads the reply, which must have the `expected` code.
   defp command(conn, line, step, expected) do
-    with :ok <- send_line(conn, line),
+    with :ok <- MailSession.send_line(conn, line),
          {:ok, ^expected, lines} <- read_reply(conn) do
       {:ok, lines}
     else
@@ -269,12 +157,9 @@ defmodule Sentinelix.Checks.SMTP do
     end
   end
 
-  defp send_line(%{mod: mod, socket: socket}, line), do: mod.send(socket, [line, "\r\n"])
-
   # Reads a (multiline) reply: `250-first`, `250-second`, `250 last`.
   defp read_reply(conn, lines \\ []) do
-    with {:ok, data} <- conn.mod.recv(conn.socket, 0, remaining(conn.deadline)) do
-      line = String.trim_trailing(data)
+    with {:ok, line} <- MailSession.recv_line(conn) do
       lines = [line | lines]
 
       case parse_reply_line(line) do
@@ -330,9 +215,5 @@ defmodule Sentinelix.Checks.SMTP do
     end
   end
 
-  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
-
-  defp format_error(:closed), do: "connection closed"
-  defp format_error({:bad_reply, line}), do: "invalid reply #{inspect(line)}"
-  defp format_error(reason), do: Cert.format_error(reason)
+  defp format_error(reason), do: MailSession.format_error(reason)
 end
