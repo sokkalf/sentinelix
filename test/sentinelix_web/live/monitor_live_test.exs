@@ -1055,6 +1055,67 @@ defmodule SentinelixWeb.MonitorLiveTest do
                monitor.settings
     end
 
+    test "creates an imap monitor with a write-only login password", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/monitors/new")
+      view |> form("#monitor-form", monitor: %{type: :imap}) |> render_change()
+
+      assert has_element?(
+               view,
+               "#settings-group-connection [name='monitor[settings][imap_security]']"
+             )
+
+      assert has_element?(view, "[name='monitor[settings][port]'][value='993']")
+      assert has_element?(view, "#settings-group-login [name='monitor[secrets][password]']")
+
+      assert has_element?(
+               view,
+               "#settings-group-login [name='monitor[settings][imap_mailbox]'][value='INBOX']"
+             )
+
+      assert has_element?(view, "[name='monitor[settings][cert_warn_days]']")
+      assert has_element?(view, "[name='monitor[settings][verify_tls]']")
+
+      # Without TLS there is no certificate to verify or check.
+      view
+      |> form("#monitor-form", monitor: %{settings: %{imap_security: "none"}})
+      |> render_change()
+
+      refute has_element?(view, "[name='monitor[settings][verify_tls]']")
+      refute has_element?(view, "[name='monitor[settings][cert_warn_days]']")
+
+      {:ok, _view, html} =
+        view
+        |> form("#monitor-form",
+          monitor: %{
+            name: "IMAP",
+            secrets: %{password: "imap-s3cret"},
+            settings: %{
+              host: "imap.example.com",
+              port: 143,
+              imap_security: "starttls",
+              username: "monitor@example.com",
+              imap_mailbox: "Archive"
+            }
+          }
+        )
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      assert html =~ "imap.example.com:143"
+      refute html =~ "imap-s3cret"
+
+      assert [monitor] = Monitoring.list_monitors()
+      assert monitor.type == :imap
+      assert monitor.secrets == %{"password" => "imap-s3cret"}
+
+      assert %{
+               imap_security: "starttls",
+               username: "monitor@example.com",
+               imap_mailbox: "Archive",
+               verify_tls: true
+             } = monitor.settings
+    end
+
     test "the settings groups contain every field of the type" do
       for type <- Monitor.types() do
         grouped =

@@ -331,6 +331,11 @@ defmodule SentinelixWeb.MonitorLive.Form do
       {"Authentication", [:username, :password]},
       {"Certificate", [:cert_warn_days, :cert_critical_days]}
     ],
+    imap: [
+      {"Connection", [:host, :port, :imap_security, :verify_tls]},
+      {"Login", [:username, :password, :imap_mailbox]},
+      {"Certificate", [:cert_warn_days, :cert_critical_days]}
+    ],
     postgres: [
       {"Connection", [:host, :port, :database, :username, :password, :ssl_mode, :ssl_ca_cert]},
       {"Query", [:query, :expected_value, :comparison, :expected_rows, :rows_comparison]},
@@ -369,10 +374,10 @@ defmodule SentinelixWeb.MonitorLive.Form do
             ],
        do: settings[:replication_check].value in ["primary", "standby"]
 
-  # SMTP without TLS has no certificate.
+  # SMTP and IMAP without TLS have no certificate.
   defp visible?(name, settings)
        when name in [:verify_tls, :cert_warn_days, :cert_critical_days],
-       do: settings[:smtp_security].value != "none"
+       do: "none" not in [settings[:smtp_security].value, settings[:imap_security].value]
 
   defp visible?(_name, _settings), do: true
 
@@ -747,8 +752,8 @@ defmodule SentinelixWeb.MonitorLive.Form do
     <.input
       field={@field}
       type="text"
-      label={if @type == :smtp, do: "Username (optional, tests AUTH)", else: "Username"}
-      placeholder={if @type == :smtp, do: "monitor@example.com", else: "sentinelix_monitor"}
+      label={username_label(@type)}
+      placeholder={if @type in [:smtp, :imap], do: "monitor@example.com", else: "sentinelix_monitor"}
       autocomplete="off"
       phx-debounce="300"
     />
@@ -781,6 +786,33 @@ defmodule SentinelixWeb.MonitorLive.Form do
         {"Implicit TLS (e.g. port 465)", "tls"},
         {"None (plain text)", "none"}
       ]}
+    />
+    """
+  end
+
+  defp settings_field(%{name: :imap_security} = assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      type="select"
+      label="Security"
+      options={[
+        {"Implicit TLS (port 993)", "tls"},
+        {"STARTTLS (required, port 143)", "starttls"},
+        {"None (plain text)", "none"}
+      ]}
+    />
+    """
+  end
+
+  defp settings_field(%{name: :imap_mailbox} = assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      type="text"
+      label="Mailbox (examined after login)"
+      placeholder="INBOX"
+      phx-debounce="300"
     />
     """
   end
@@ -972,6 +1004,10 @@ defmodule SentinelixWeb.MonitorLive.Form do
   defp checkbox_label(:follow_redirects), do: "Follow redirects"
   defp checkbox_label(:verify_tls), do: "Verify TLS certificate"
 
+  defp username_label(:smtp), do: "Username (optional, tests AUTH)"
+  defp username_label(:imap), do: "Username (optional, tests login)"
+  defp username_label(_type), do: "Username"
+
   defp type_help(:http),
     do:
       "Checks that a URL responds with an accepted HTTP status code " <>
@@ -986,6 +1022,11 @@ defmodule SentinelixWeb.MonitorLive.Form do
     do:
       "Talks SMTP to a mail server (greeting, EHLO, STARTTLS and optionally AUTH) " <>
         "and warns before its TLS certificate expires. No mail is sent."
+
+  defp type_help(:imap),
+    do:
+      "Talks IMAP to a mail server (greeting, STARTTLS and optionally login and a mailbox) " <>
+        "and warns before its TLS certificate expires. Read-only: no flags are changed."
 
   defp type_help(:postgres),
     do: "Logs in to a PostgreSQL server, runs a query and optionally checks replication."
