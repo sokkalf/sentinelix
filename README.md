@@ -14,7 +14,8 @@ public status pages.
   headers), TCP port,
   ping (ICMP), DNS records (A, AAAA, CNAME, MX, TXT, NS), TLS certificate
   expiry, [SMTP](#smtp-monitors) (STARTTLS / implicit TLS, AUTH and the
-  mail server's certificate), PostgreSQL (login, query with expected result, replication status
+  mail server's certificate), [IMAP](#imap-monitors) (implicit TLS /
+  STARTTLS, login, a mailbox and the certificate), PostgreSQL (login, query with expected result, replication status
   and lag) and push (heartbeat) monitors for cron jobs and backups.
 * **Group monitors:** one monitor for an application made of several
   checks (its ports, its database): down when a member is, one alert
@@ -332,9 +333,9 @@ Every monitor also has read-only automatic labels, derived from its
 settings whenever it is saved:
 
 * `type`: the monitor type (`http`, `tcp`, `ping`, `dns`, `cert`, `smtp`,
-  `push`, `postgres` or `group`).
+  `imap`, `push`, `postgres` or `group`).
 * `host`: the host it checks: the host of the URL (HTTP monitors) or the
-  hostname or IP address (TCP, ping, DNS, certificate, SMTP and
+  hostname or IP address (TCP, ping, DNS, certificate, SMTP, IMAP and
   PostgreSQL monitors), lowercased, without port or trailing dot
   (`https://WWW.Example.com:8443/` gives `host=www.example.com`). Push
   and group monitors have none.
@@ -662,6 +663,32 @@ within *warn* days, down within *down* days. One SMTP monitor therefore covers
 both the mail service and its certificate, including the
 `sentinelix_monitor_cert_days_remaining` metric.
 
+## IMAP monitors
+
+An IMAP monitor talks IMAP to a mail server instead of only checking that its
+port is open. It is read-only – no flags or messages change:
+
+1. Connect and expect the `* OK` greeting (`* PREAUTH` is fine too; a
+   `* BYE` greeting is down). With *Implicit TLS* (the default, port 993)
+   the TLS handshake comes first.
+2. With *STARTTLS* (port 143): `CAPABILITY` must list `STARTTLS` – a
+   stripped or misconfigured STARTTLS is down – then the connection is
+   upgraded. *None* stays in plain text.
+3. With a username: `LOGIN` with the password (or `AUTHENTICATE PLAIN` if
+   the server disables `LOGIN`), expect `OK`, then `EXAMINE` the *mailbox*
+   (default `INBOX`), expect `OK`. The password is encrypted in the
+   database and never shown again, like the PostgreSQL password.
+4. `LOGOUT`.
+
+The monitor is up with the greeting in its message and, after a login, the
+mailbox's message count (`Dovecot ready. – INBOX: 42 messages`). It is down
+with the failing step and the server's response, e.g. `STARTTLS: not
+advertised by the server`, `LOGIN: NO [AUTHENTICATIONFAILED] Authentication
+failed.` or `EXAMINE Archive: NO Mailbox doesn't exist: Archive`.
+
+With TLS, the certificate is verified and its expiry checked as for
+[SMTP monitors](#smtp-monitors).
+
 ## PostgreSQL monitors
 
 A PostgreSQL monitor logs in to a server, runs a query and optionally checks
@@ -841,7 +868,7 @@ a monitor is deleted:
 | `sentinelix_monitor_warning` | 1 while a check reports a warning (e.g. certificate close to expiry) |
 | `sentinelix_monitor_response_time_ms` | response time of the latest check |
 | `sentinelix_monitor_last_check_timestamp_seconds` | Unix time of the latest check |
-| `sentinelix_monitor_cert_days_remaining` | days until the certificate expires (certificate and SMTP checks with TLS) |
+| `sentinelix_monitor_cert_days_remaining` | days until the certificate expires (certificate, SMTP and IMAP checks with TLS) |
 | `sentinelix_monitor_labels` | always 1; the monitor's [labels](#labels), automatic ones included, as `label_<key>="<value>"` |
 
 Monitor labels are only on `sentinelix_monitor_labels`, not on every gauge:

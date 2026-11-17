@@ -258,7 +258,7 @@ defmodule Sentinelix.Checks.SMTPTest do
       port = start_server(tls: tls_config(200))
 
       assert {:up, details} = SMTP.run(monitor(port, %{}))
-      assert details.message =~ ~r/^mx\.test ESMTP Fake – Certificate valid for 19\d days/
+      assert details.message =~ ~r/^mx\.test ESMTP Fake – Certificate valid for (199|200) days/
       assert details.meta.days_remaining in 199..200
       refute details[:warning]
 

@@ -18,6 +18,7 @@ defmodule SentinelixWeb.MonitorComponents do
     dns: "DNS",
     cert: "TLS certificate",
     smtp: "SMTP",
+    imap: "IMAP",
     push: "Push",
     postgres: "PostgreSQL",
     group: "Group"

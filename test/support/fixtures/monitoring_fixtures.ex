@@ -22,6 +22,7 @@ defmodule Sentinelix.MonitoringFixtures do
   def valid_settings(:dns), do: %{host: "example.com"}
   def valid_settings(:cert), do: %{host: "example.com"}
   def valid_settings(:smtp), do: %{host: "mail.example.com"}
+  def valid_settings(:imap), do: %{host: "imap.example.com"}
   def valid_settings(:push), do: %{}
   def valid_settings(:group), do: %{members: "app=demo"}
 
