@@ -16,6 +16,7 @@ defmodule Sentinelix.Checks do
     dns: Checks.DNS,
     cert: Checks.Cert,
     smtp: Checks.SMTP,
+    imap: Checks.IMAP,
     push: Checks.Push,
     postgres: Checks.Postgres,
     group: Checks.Group
