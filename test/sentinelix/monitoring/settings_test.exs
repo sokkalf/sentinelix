@@ -312,6 +312,75 @@ defmodule Sentinelix.Monitoring.SettingsTest do
     end
   end
 
+  describe "imap" do
+    test "defaults to implicit TLS on port 993 with verification and INBOX" do
+      settings = apply_settings(:imap, %{host: "imap.example.com"})
+
+      assert %Settings{
+               port: 993,
+               imap_security: "tls",
+               verify_tls: true,
+               username: nil,
+               imap_mailbox: "INBOX",
+               cert_warn_days: 30,
+               cert_critical_days: 7
+             } = settings
+    end
+
+    test "keeps the security mode, username and mailbox" do
+      settings =
+        apply_settings(:imap, %{
+          host: "imap.example.com",
+          port: 143,
+          imap_security: "starttls",
+          verify_tls: false,
+          username: "monitor@example.com",
+          imap_mailbox: " Archive/2026 "
+        })
+
+      assert %Settings{
+               port: 143,
+               imap_security: "starttls",
+               verify_tls: false,
+               username: "monitor@example.com",
+               imap_mailbox: "Archive/2026"
+             } = settings
+    end
+
+    test "falls back to INBOX when the mailbox is cleared" do
+      assert %Settings{imap_mailbox: "INBOX"} =
+               apply_settings(:imap, %{host: "imap.example.com", imap_mailbox: " "})
+    end
+
+    test "validates the security mode, mailbox and thresholds" do
+      assert %{imap_security: ["is invalid"]} =
+               settings_errors(:imap, %{host: "imap.example.com", imap_security: "ssl"})
+
+      assert %{imap_mailbox: ["must not contain control characters"]} =
+               settings_errors(:imap, %{host: "imap.example.com", imap_mailbox: "a\r\nb"})
+
+      assert %{cert_critical_days: [_]} =
+               settings_errors(:imap, %{
+                 host: "imap.example.com",
+                 cert_warn_days: 5,
+                 cert_critical_days: 10
+               })
+
+      assert %{host: ["can't be blank"]} = settings_errors(:imap, %{})
+    end
+
+    test "resets the IMAP fields for other types" do
+      settings =
+        apply_settings(:smtp, %{
+          host: "mail.example.com",
+          imap_security: "starttls",
+          imap_mailbox: "INBOX"
+        })
+
+      assert %Settings{imap_security: nil, imap_mailbox: nil} = settings
+    end
+  end
+
   describe "push" do
     test "generates a token when none is given and keeps it on update" do
       monitor = monitor_fixture(:push)

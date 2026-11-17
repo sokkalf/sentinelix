@@ -35,6 +35,7 @@ defmodule Sentinelix.Monitoring.Settings do
   @max_push_grace_seconds 86_400
   @ssl_modes ~w(disable require verify-full)
   @smtp_security_modes ~w(starttls tls none)
+  @imap_security_modes ~w(tls starttls none)
   @max_query_length 10_000
   @max_assertions 20
   # Group members are chosen by label and name, never by status: a group
@@ -71,6 +72,16 @@ defmodule Sentinelix.Monitoring.Settings do
       cert_warn_days: 30,
       cert_critical_days: 7
     ],
+    imap: [
+      host: nil,
+      port: 993,
+      imap_security: "tls",
+      verify_tls: true,
+      username: nil,
+      imap_mailbox: "INBOX",
+      cert_warn_days: 30,
+      cert_critical_days: 7
+    ],
     push: [push_token: nil, push_grace_seconds: 30],
     postgres: [
       host: nil,
@@ -104,12 +115,12 @@ defmodule Sentinelix.Monitoring.Settings do
     field :accepted_status_codes, {:array, :string}
     field :follow_redirects, :boolean
     field :max_redirects, :integer
-    # http / smtp
+    # http / smtp / imap
     field :verify_tls, :boolean
     # http: checks on the response, see Settings.Assertion.
     embeds_many :assertions, Assertion, on_replace: :delete
 
-    # tcp / ping / dns / cert / smtp / postgres
+    # tcp / ping / dns / cert / smtp / imap / postgres
     field :host, :string
     field :port, :integer
 
@@ -119,16 +130,22 @@ defmodule Sentinelix.Monitoring.Settings do
     # dns / postgres
     field :expected_value, :string
 
-    # cert / smtp
+    # cert / smtp / imap
     field :cert_warn_days, :integer
     field :cert_critical_days, :integer
 
     # smtp: "starttls", "tls" (implicit TLS) or "none". The password of the
     # optional AUTH test is a secret, see Monitor.secret_fields/1.
-    # (`username` is shared with postgres.)
+    # (`username` is shared with postgres and imap.)
     field :smtp_security, :string
     # The name sent in EHLO, default: Sentinelix.Checks.SMTP.default_ehlo_name/0.
     field :smtp_ehlo_name, :string
+
+    # imap: "tls" (implicit TLS), "starttls" or "none". The password of the
+    # optional login test is a secret, see Monitor.secret_fields/1.
+    field :imap_security, :string
+    # The mailbox EXAMINEd after logging in.
+    field :imap_mailbox, :string
 
     # push
     field :push_token, :string
@@ -182,6 +199,9 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @doc "Allowed SMTP security modes."
   def smtp_security_modes, do: @smtp_security_modes
+
+  @doc "Allowed IMAP security modes."
+  def imap_security_modes, do: @imap_security_modes
 
   @doc """
   The options of `Sentinelix.Monitoring.Selector.parse/2` for the `members`
@@ -269,6 +289,7 @@ defmodule Sentinelix.Monitoring.Settings do
     :ssl_mode,
     :ssl_ca_cert,
     :smtp_ehlo_name,
+    :imap_mailbox,
     :query,
     :members
   ]
@@ -356,6 +377,29 @@ defmodule Sentinelix.Monitoring.Settings do
     |> validate_inclusion(:smtp_security, @smtp_security_modes)
     |> validate_host(:smtp_ehlo_name)
     |> validate_length(:username, max: 255)
+    |> validate_number(:cert_warn_days, greater_than: 0)
+    |> validate_number(:cert_critical_days, greater_than: 0)
+    |> validate_cert_days()
+  end
+
+  defp validate_type(changeset, :imap) do
+    changeset
+    |> validate_required([
+      :host,
+      :port,
+      :imap_security,
+      :imap_mailbox,
+      :cert_warn_days,
+      :cert_critical_days
+    ])
+    |> validate_host(:host)
+    |> validate_port()
+    |> validate_inclusion(:imap_security, @imap_security_modes)
+    |> validate_length(:username, max: 255)
+    |> validate_length(:imap_mailbox, max: 255)
+    |> validate_format(:imap_mailbox, ~r/\A[^\x00-\x1f\x7f]*\z/u,
+      message: "must not contain control characters"
+    )
     |> validate_number(:cert_warn_days, greater_than: 0)
     |> validate_number(:cert_critical_days, greater_than: 0)
     |> validate_cert_days()

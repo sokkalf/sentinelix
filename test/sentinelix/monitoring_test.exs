@@ -352,6 +352,12 @@ defmodule Sentinelix.MonitoringTest do
       refute inspect(monitor) =~ "mail pw"
     end
 
+    test "imap monitors keep the login password" do
+      monitor = monitor_fixture(:imap, %{secrets: %{password: "imap pw"}})
+      assert Monitor.secret(monitor, "password") == "imap pw"
+      refute inspect(monitor) =~ "imap pw"
+    end
+
     test "are dropped when they don't apply to the type" do
       assert monitor_fixture(:http, %{secrets: %{password: "x"}}).secrets == %{}
 
