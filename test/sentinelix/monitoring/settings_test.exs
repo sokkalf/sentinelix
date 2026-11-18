@@ -244,6 +244,21 @@ defmodule Sentinelix.Monitoring.SettingsTest do
     test "defaults port and expiry thresholds" do
       settings = apply_settings(:cert, %{host: "example.com"})
       assert %Settings{port: 443, cert_warn_days: 30, cert_critical_days: 7} = settings
+      assert settings.cert_starttls == "none"
+    end
+
+    test "validates the STARTTLS protocol" do
+      for protocol <- ~w(none smtp imap pop3) do
+        assert valid?(:cert, %{host: "example.com", port: 587, cert_starttls: protocol})
+      end
+
+      assert %{cert_starttls: ["is invalid"]} =
+               settings_errors(:cert, %{host: "example.com", cert_starttls: "ldap"})
+    end
+
+    test "cert_starttls is reset for other types" do
+      assert %Settings{cert_starttls: nil} =
+               apply_settings(:tcp, %{host: "example.com", port: 25, cert_starttls: "smtp"})
     end
 
     test "validates thresholds" do
