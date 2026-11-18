@@ -1,7 +1,8 @@
 defmodule Sentinelix.Checks.MailSession do
   @moduledoc """
   Connection helpers shared by the line based mail protocol checks
-  (`Sentinelix.Checks.SMTP`, `Sentinelix.Checks.IMAP`): connecting over TCP,
+  (`Sentinelix.Checks.SMTP`, `Sentinelix.Checks.IMAP`, and
+  `Sentinelix.Checks.StartTLS` for certificate monitors): connecting over TCP,
   upgrading to TLS (implicit TLS or STARTTLS), sending and receiving lines
   within the monitor's timeout, running the protocol steps and evaluating
   the peer certificate's expiry with `Sentinelix.Checks.Cert`.
@@ -102,14 +103,20 @@ defmodule Sentinelix.Checks.MailSession do
   @doc """
   Upgrades a plain connection to TLS (for implicit TLS, or after the
   server accepted STARTTLS) and remembers the peer certificate.
+
+  ## Options
+
+    * `:verify` – whether to verify the certificate chain and hostname
+      (default: the settings' `verify_tls`, `true` unless it is `false`)
   """
-  @spec upgrade(conn()) :: step_result()
-  def upgrade(%{mod: :gen_tcp, socket: socket} = conn) do
+  @spec upgrade(conn(), keyword()) :: step_result()
+  def upgrade(%{mod: :gen_tcp, socket: socket} = conn, opts \\ []) do
     host = String.to_charlist(conn.host)
+    verify? = Keyword.get_lazy(opts, :verify, fn -> conn.settings.verify_tls != false end)
     # TLS records aren't lines.
     :ok = :inet.setopts(socket, packet: :raw)
 
-    case :ssl.connect(socket, tls_options(host, conn.settings), remaining(conn.deadline)) do
+    case :ssl.connect(socket, tls_options(host, verify?), remaining(conn.deadline)) do
       {:ok, ssl} ->
         cert =
           case :ssl.peercert(ssl) do
@@ -124,11 +131,9 @@ defmodule Sentinelix.Checks.MailSession do
     end
   end
 
-  defp tls_options(host, %Settings{verify_tls: verify?}) do
+  defp tls_options(host, verify?) do
     verify =
-      if verify? == false do
-        [verify: :verify_none]
-      else
+      if verify? do
         [
           verify: :verify_peer,
           cacerts: :public_key.cacerts_get(),
@@ -136,6 +141,8 @@ defmodule Sentinelix.Checks.MailSession do
             match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
           ]
         ]
+      else
+        [verify: :verify_none]
       end
 
     [
