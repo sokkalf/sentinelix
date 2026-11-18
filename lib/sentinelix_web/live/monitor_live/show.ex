@@ -315,6 +315,12 @@ defmodule SentinelixWeb.MonitorLive.Show do
         </p>
         <p class="mt-1 text-xs text-base-content/60">
           Warning below {@monitor.settings.cert_warn_days} days, down below {@monitor.settings.cert_critical_days} days.
+          <span
+            :if={@monitor.settings.cert_starttls in ~w(smtp imap pop3)}
+            id="cert-starttls"
+          >
+            Upgraded with {String.upcase(@monitor.settings.cert_starttls)} STARTTLS.
+          </span>
         </p>
       </div>
 
