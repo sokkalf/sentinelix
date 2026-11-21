@@ -192,6 +192,15 @@ Pushing needs a `PUSH_TOKEN` repository secret (an access token with
 Dockerfile, `mix.exs`/`mix.lock`, `config/` or `rel/` only build the image, to
 check that it still builds.
 
+Every night at 03:17 UTC
+([`.forgejo/workflows/nightly-deps.yml`](.forgejo/workflows/nightly-deps.yml))
+CI updates the dependencies within the constraints in `mix.exs` and runs the
+same checks as on a push. If anything changed and the checks pass, it commits
+the new `mix.lock` to master, tags the next patch version and pushes both,
+which releases a new image. It can also be run by hand from the Actions tab.
+For this `PUSH_TOKEN` needs repository write scope as well, since a push made
+with the automatic token would not start `docker.yml`.
+
 ### Release without Docker
 
 ```sh
