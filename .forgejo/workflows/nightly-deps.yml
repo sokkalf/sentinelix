@@ -1,0 +1,101 @@
+name: Nightly dependency update
+
+# Updates the deps within the constraints in mix.exs, runs the same checks as
+# ci.yml, and if they pass, commits, tags the next patch version and pushes.
+# The tag push then builds and publishes the image through docker.yml.
+
+on:
+  schedule:
+    - cron: '17 1 * * *' # 01:17 UTC
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    container:
+      # Keep in step with ci.yml.
+      image: hexpm/elixir:1.19.4-erlang-28.3-alpine-3.23.4
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: sentinelix
+          POSTGRES_PASSWORD: sentinelix
+    env:
+      MIX_ENV: test
+      # Read by config/test.exs.
+      PGHOST: postgres
+      PGUSER: sentinelix
+      PGPASSWORD: sentinelix
+    steps:
+      # See ci.yml for why each of these is needed.
+      - name: Install system dependencies
+        run: apk add --no-cache git nodejs build-base cmake
+      # A personal token rather than the automatic one: pushes made with the
+      # automatic token do not trigger other workflows, so the tag would never
+      # reach docker.yml. PUSH_TOKEN needs repository write scope for this, on
+      # top of the write:package scope docker.yml needs.
+      # The whole history, so that git describe finds the last tag.
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.PUSH_TOKEN }}
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+      - name: Update dependencies
+        id: update
+        run: |
+          mix deps.update --all
+          if git diff --quiet mix.lock; then
+            echo "Nothing to update."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff mix.lock
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      # No dependency cache: every package that changed would miss it anyway.
+      - name: Check for unused dependencies
+        if: steps.update.outputs.changed == 'true'
+        run: mix deps.unlock --check-unused
+      - name: Audit dependencies
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          mix hex.audit
+          mix deps.audit
+      - name: Compile
+        if: steps.update.outputs.changed == 'true'
+        run: mix compile --warnings-as-errors --force
+      - name: Check formatting
+        if: steps.update.outputs.changed == 'true'
+        run: mix format --check-formatted
+      - name: Credo
+        if: steps.update.outputs.changed == 'true'
+        run: mix credo --strict
+      - name: Wait for Postgres
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          for i in $(seq 1 30); do
+            nc -z "$PGHOST" 5432 && exit 0
+            sleep 1
+          done
+          echo "Postgres did not come up" >&2
+          exit 1
+      - name: Run tests
+        if: steps.update.outputs.changed == 'true'
+        run: mix test
+      # Updates within the mix.exs constraints are fixes, so a patch bump.
+      # --atomic so that the commit and the tag land together or not at all.
+      - name: Commit, tag and push
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "Forgejo Actions"
+          git config user.email "actions@noreply.invalid"
+          LAST=$(git describe --tags --abbrev=0 --match 'v*')
+          NEXT=$(echo "$LAST" | awk -F. '{printf "%s.%s.%d", $1, $2, $3 + 1}')
+          git commit -am "Update dependencies"
+          git tag -a "$NEXT" -m "Dependency update"
+          git push --atomic origin HEAD:master "refs/tags/$NEXT"
+          echo "Released $NEXT."
