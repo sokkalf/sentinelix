@@ -356,6 +356,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
       assert has_element?(view, "#stat-uptime-24h", "100%")
       assert has_element?(view, "#stat-p95-response", "10 ms")
       assert has_element?(view, "#cert-info", "valid")
+      refute has_element?(view, "#cert-starttls")
       assert has_element?(view, "#incidents", "handshake failed")
       assert has_element?(view, "#incidents", "Ongoing")
       refute has_element?(view, "#chart-empty")
@@ -915,7 +916,7 @@ defmodule SentinelixWeb.MonitorLiveTest do
             tcp: ~w(host port),
             ping: ~w(host),
             dns: ~w(host dns_record_type dns_resolver expected_value),
-            cert: ~w(host port cert_warn_days cert_critical_days),
+            cert: ~w(host port cert_starttls cert_warn_days cert_critical_days),
             push: ~w(push_token push_grace_seconds),
             postgres:
               ~w(host port database username ssl_mode query expected_value comparison expected_rows rows_comparison replication_check),
@@ -1053,6 +1054,45 @@ defmodule SentinelixWeb.MonitorLiveTest do
 
       assert %{smtp_security: "starttls", username: "monitor@example.com", verify_tls: true} =
                monitor.settings
+    end
+
+    test "cert monitors pick the port of the STARTTLS protocol", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/monitors/new")
+      view |> form("#monitor-form", monitor: %{type: :cert}) |> render_change()
+      assert has_element?(view, "[name='monitor[settings][port]'][value='443']")
+
+      for {protocol, port} <- [smtp: 587, imap: 143, pop3: 110, none: 443] do
+        view
+        |> form("#monitor-form", monitor: %{settings: %{cert_starttls: protocol}})
+        |> render_change()
+
+        assert has_element?(view, "[name='monitor[settings][port]'][value='#{port}']")
+      end
+
+      # A port that was entered is kept.
+      view
+      |> form("#monitor-form", monitor: %{settings: %{port: 2525}})
+      |> render_change()
+
+      view
+      |> form("#monitor-form", monitor: %{settings: %{cert_starttls: "smtp"}})
+      |> render_change()
+
+      assert has_element?(view, "[name='monitor[settings][port]'][value='2525']")
+
+      {:ok, _view, _html} =
+        view
+        |> form("#monitor-form",
+          monitor: %{name: "Mail cert", settings: %{host: "mail.example.com"}}
+        )
+        |> render_submit()
+        |> follow_redirect(conn)
+
+      assert [%{settings: %{cert_starttls: "smtp", port: 2525}} = monitor] =
+               Monitoring.list_monitors()
+
+      {:ok, view, _html} = live(conn, ~p"/monitors/#{monitor}")
+      assert has_element?(view, "#cert-starttls", "Upgraded with SMTP STARTTLS.")
     end
 
     test "creates an imap monitor with a write-only login password", %{conn: conn} do

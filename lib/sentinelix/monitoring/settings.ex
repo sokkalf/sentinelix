@@ -36,6 +36,7 @@ defmodule Sentinelix.Monitoring.Settings do
   @ssl_modes ~w(disable require verify-full)
   @smtp_security_modes ~w(starttls tls none)
   @imap_security_modes ~w(tls starttls none)
+  @cert_starttls_modes ~w(none smtp imap pop3)
   @max_query_length 10_000
   @max_assertions 20
   # Group members are chosen by label and name, never by status: a group
@@ -61,7 +62,7 @@ defmodule Sentinelix.Monitoring.Settings do
     tcp: [host: nil, port: nil],
     ping: [host: nil],
     dns: [host: nil, dns_record_type: "A", dns_resolver: nil, expected_value: nil],
-    cert: [host: nil, port: 443, cert_warn_days: 30, cert_critical_days: 7],
+    cert: [host: nil, port: 443, cert_starttls: "none", cert_warn_days: 30, cert_critical_days: 7],
     smtp: [
       host: nil,
       port: 587,
@@ -134,6 +135,10 @@ defmodule Sentinelix.Monitoring.Settings do
     field :cert_warn_days, :integer
     field :cert_critical_days, :integer
 
+    # cert: "none" (TLS from the start) or the protocol whose STARTTLS
+    # upgrades a plain connection first: "smtp", "imap" or "pop3".
+    field :cert_starttls, :string
+
     # smtp: "starttls", "tls" (implicit TLS) or "none". The password of the
     # optional AUTH test is a secret, see Monitor.secret_fields/1.
     # (`username` is shared with postgres and imap.)
@@ -202,6 +207,9 @@ defmodule Sentinelix.Monitoring.Settings do
 
   @doc "Allowed IMAP security modes."
   def imap_security_modes, do: @imap_security_modes
+
+  @doc ~s{Allowed STARTTLS protocols of certificate monitors ("none": TLS from the start).}
+  def cert_starttls_modes, do: @cert_starttls_modes
 
   @doc """
   The options of `Sentinelix.Monitoring.Selector.parse/2` for the `members`
@@ -361,9 +369,10 @@ defmodule Sentinelix.Monitoring.Settings do
 
   defp validate_type(changeset, :cert) do
     changeset
-    |> validate_required([:host, :port, :cert_warn_days, :cert_critical_days])
+    |> validate_required([:host, :port, :cert_starttls, :cert_warn_days, :cert_critical_days])
     |> validate_host(:host)
     |> validate_port()
+    |> validate_inclusion(:cert_starttls, @cert_starttls_modes)
     |> validate_number(:cert_warn_days, greater_than: 0)
     |> validate_number(:cert_critical_days, greater_than: 0)
     |> validate_cert_days()

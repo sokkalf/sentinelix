@@ -12,8 +12,8 @@ public status pages.
 * **Check types:** HTTP(S) (status codes, redirects, TLS verification and
   [response assertions](#http-monitors) on the body, JSON values and
   headers), TCP port,
-  ping (ICMP), DNS records (A, AAAA, CNAME, MX, TXT, NS), TLS certificate
-  expiry, [SMTP](#smtp-monitors) (STARTTLS / implicit TLS, AUTH and the
+  ping (ICMP), DNS records (A, AAAA, CNAME, MX, TXT, NS), TLS
+  [certificate](#certificate-monitors) expiry (also behind STARTTLS), [SMTP](#smtp-monitors) (STARTTLS / implicit TLS, AUTH and the
   mail server's certificate), [IMAP](#imap-monitors) (implicit TLS /
   STARTTLS, login, a mailbox and the certificate), PostgreSQL (login, query with expected result, replication status
   and lag) and push (heartbeat) monitors for cron jobs and backups.
@@ -634,6 +634,33 @@ from `type=keyword` to `type=http`: update selectors that use
 `type=keyword` (notification routing, status page groups, saved views).
 Exported files with `type: keyword` can still be imported and are
 converted the same way.
+
+## Certificate monitors
+
+A certificate monitor connects to a TLS port, reads the server's
+certificate (sending the hostname as SNI) and checks its expiry: up while it
+is valid for more than *warn* days, a warning within *warn* days, down within
+*down* days, when expired or not valid yet, and when the connection fails.
+The chain is deliberately not verified, so self-signed and privately issued
+certificates can be monitored too (an HTTP monitor with *Verify TLS
+certificate* checks the chain).
+
+Ports that start in plain text and upgrade with STARTTLS need the protocol
+in the *STARTTLS* setting:
+
+| STARTTLS | Usual port | Exchange before the TLS handshake |
+| -------- | ---------- | --------------------------------- |
+| None (the default) | 443 | – (TLS from the start) |
+| SMTP | 587 (or 25) | `220` greeting, `EHLO`, `STARTTLS`, expect `220` |
+| IMAP | 143 | `* OK` greeting, `A1 STARTTLS`, expect `A1 OK` |
+| POP3 | 110 | `+OK` greeting, `STLS`, expect `+OK` |
+
+Choosing a protocol switches the port to its usual one unless you entered a
+different port. A failure before the handshake is down with the step and the
+server's reply, e.g. `STARTTLS: 454 4.7.0 TLS not available`.
+
+To check the mail service itself along with its certificate, use an
+[SMTP](#smtp-monitors) or [IMAP](#imap-monitors) monitor instead.
 
 ## SMTP monitors
 

@@ -200,12 +200,21 @@ defmodule Sentinelix.Checks.IMAP do
 
   ## Protocol
 
-  # Sends a tagged command and reads the response up to the tagged status,
-  # which must be OK. `parts` are strings, `{:literal, binary}` (sent as a
-  # synchronizing literal) and `{:continue, line}` (a line sent after the
-  # server's continuation request, e.g. an AUTHENTICATE response). Returns
-  # the untagged response lines.
-  defp command(conn, step, parts) do
+  @doc """
+  Sends a tagged command and reads the response up to the tagged status,
+  which must be OK. The session keeps the last tag number in `:tag`.
+
+  `parts` are strings, `{:literal, binary}` (sent as a synchronizing
+  literal) and `{:continue, line}` (a line sent after the server's
+  continuation request, e.g. an AUTHENTICATE response). Returns the
+  untagged response lines, or an error naming `step` and the server's
+  response.
+  """
+  @spec command(MailSession.conn(), String.t(), [
+          iodata() | {:literal, binary()} | {:continue, iodata()}
+        ]) ::
+          {:ok, MailSession.conn(), [String.t()]} | {:error, MailSession.conn(), String.t()}
+  def command(conn, step, parts) do
     tag = "A#{conn.tag + 1}"
     conn = %{conn | tag: conn.tag + 1}
     [first | rest] = chunks(parts)

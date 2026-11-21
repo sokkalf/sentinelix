@@ -2,6 +2,7 @@ defmodule Sentinelix.Checks.CertTest do
   use ExUnit.Case, async: true
 
   alias Sentinelix.Checks.Cert
+  alias Sentinelix.FakeStartTLSServer
   alias Sentinelix.Monitoring.{Monitor, Settings}
 
   @settings %Settings{host: "localhost", port: 443, cert_warn_days: 30, cert_critical_days: 7}
@@ -164,6 +165,84 @@ defmodule Sentinelix.Checks.CertTest do
 
       monitor = %Monitor{type: :cert, timeout_ms: 1_000, settings: %{@settings | port: port}}
       assert {:down, %{message: "TLS connection failed: connection refused"}} = Cert.run(monitor)
+    end
+  end
+
+  describe "run/1 with STARTTLS" do
+    defp starttls_monitor(port, protocol) do
+      %Monitor{
+        type: :cert,
+        timeout_ms: 5_000,
+        settings: %{@settings | port: port, cert_starttls: protocol}
+      }
+    end
+
+    test "checks the certificate after SMTP STARTTLS" do
+      port =
+        FakeStartTLSServer.start(
+          [
+            {:send, "220 mail.test ESMTP"},
+            {:expect, ~r/^EHLO /},
+            {:send, "250-mail.test"},
+            {:send, "250 STARTTLS"},
+            {:expect, "STARTTLS"},
+            {:send, "220 Ready to start TLS"},
+            :tls
+          ],
+          FakeStartTLSServer.tls_config(10)
+        )
+
+      assert {:up, %{warning: true, message: message} = details} =
+               Cert.run(starttls_monitor(port, "smtp"))
+
+      assert message =~ "expires in"
+      assert details.meta.days_remaining in 9..10
+      assert is_integer(details.response_time_ms)
+    end
+
+    test "checks the certificate after IMAP and POP3 STARTTLS" do
+      tls = FakeStartTLSServer.tls_config(100)
+
+      imap =
+        FakeStartTLSServer.start(
+          [{:send, "* OK ready"}, {:expect, "A1 STARTTLS"}, {:send, "A1 OK go"}, :tls],
+          tls
+        )
+
+      pop3 =
+        FakeStartTLSServer.start(
+          [{:send, "+OK ready"}, {:expect, "STLS"}, {:send, "+OK go"}, :tls],
+          tls
+        )
+
+      assert {:up, %{message: "Certificate valid for " <> _}} =
+               Cert.run(starttls_monitor(imap, "imap"))
+
+      assert {:up, %{message: "Certificate valid for " <> _}} =
+               Cert.run(starttls_monitor(pop3, "pop3"))
+    end
+
+    test "failures before the handshake are down with the step and the reply" do
+      port =
+        FakeStartTLSServer.start([
+          {:send, "220 mail.test ESMTP"},
+          {:expect, ~r/^EHLO /},
+          {:send, "250 mail.test"},
+          {:expect, "STARTTLS"},
+          {:send, "454 4.7.0 TLS not available"}
+        ])
+
+      assert {:down, %{message: "STARTTLS: 454 4.7.0 TLS not available"}} =
+               Cert.run(starttls_monitor(port, "smtp"))
+    end
+
+    test "connection errors are down" do
+      {:ok, socket} = :gen_tcp.listen(0, [])
+      {:ok, port} = :inet.port(socket)
+      :gen_tcp.close(socket)
+
+      assert {:down, %{message: "Connect: connection refused"}} =
+               Cert.run(starttls_monitor(port, "pop3"))
     end
   end
 end

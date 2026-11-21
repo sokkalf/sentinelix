@@ -24,11 +24,20 @@ defmodule Sentinelix.Checks.Cert do
   The chain is deliberately not verified: this check is about expiry, and a
   self-signed or privately issued certificate should be checkable too (use an
   HTTP check with `verify_tls` for chain validation).
+
+  ## STARTTLS
+
+  With `cert_starttls` set to `"smtp"`, `"imap"` or `"pop3"`, the connection
+  starts in plain text and is upgraded with that protocol's STARTTLS (see
+  `Sentinelix.Checks.StartTLS`) before the certificate is read, e.g. for
+  SMTP on port 587, IMAP on 143 or POP3 on 110. A failure before the
+  handshake is `:down` with the step and the server's reply, e.g.
+  `STARTTLS: 454 4.7.0 TLS not available`.
   """
 
   @behaviour Sentinelix.Checks.Check
 
-  alias Sentinelix.Checks.TCP
+  alias Sentinelix.Checks.{MailSession, StartTLS, TCP}
   alias Sentinelix.Monitoring.{Monitor, Settings}
 
   @seconds_per_day 86_400
@@ -36,7 +45,12 @@ defmodule Sentinelix.Checks.Cert do
   @impl true
   def run(%Monitor{settings: %Settings{} = settings, timeout_ms: timeout}) do
     started = System.monotonic_time()
-    result = fetch_certificate(settings.host, settings.port || 443, timeout)
+
+    result =
+      case StartTLS.protocol(settings.cert_starttls) do
+        nil -> direct_certificate(settings, timeout)
+        protocol -> fetch_certificate_starttls(settings, protocol, timeout)
+      end
 
     elapsed_ms =
       System.convert_time_unit(System.monotonic_time() - started, :native, :millisecond)
@@ -44,10 +58,38 @@ defmodule Sentinelix.Checks.Cert do
     {status, details} =
       case result do
         {:ok, der} -> evaluate_der(der, settings, DateTime.utc_now())
-        {:error, reason} -> {:down, %{message: "TLS connection failed: #{format_error(reason)}"}}
+        {:error, message} -> {:down, %{message: message}}
       end
 
     {status, Map.put(details, :response_time_ms, elapsed_ms)}
+  end
+
+  defp direct_certificate(settings, timeout) do
+    case fetch_certificate(settings.host, settings.port || 443, timeout) do
+      {:ok, der} -> {:ok, der}
+      {:error, reason} -> {:error, "TLS connection failed: #{format_error(reason)}"}
+    end
+  end
+
+  @doc """
+  Connects to the settings' `host:port` in plain text, negotiates STARTTLS
+  for `protocol`, upgrades the connection (with SNI, the chain not
+  verified) and returns the DER encoded peer certificate, or an error
+  message naming the failing step.
+  """
+  @spec fetch_certificate_starttls(Settings.t(), StartTLS.protocol(), timeout()) ::
+          {:ok, binary()} | {:error, String.t()}
+  def fetch_certificate_starttls(%Settings{} = settings, protocol, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    steps = [&StartTLS.negotiate(&1, protocol), &MailSession.upgrade(&1, verify: false)]
+
+    with {:ok, conn} <- MailSession.open(settings, deadline),
+         {:ok, %{cert: der}} when is_binary(der) <- MailSession.run_steps(steps, conn) do
+      {:ok, der}
+    else
+      {:ok, _conn} -> {:error, "TLS handshake: no peer certificate"}
+      {:error, _conn, message} -> {:error, message}
+    end
   end
 
   @doc """

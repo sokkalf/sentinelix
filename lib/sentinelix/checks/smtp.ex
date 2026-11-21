@@ -146,8 +146,14 @@ defmodule Sentinelix.Checks.SMTP do
 
   ## Protocol
 
-  # Sends `line` and reads the reply, which must have the `expected` code.
-  defp command(conn, line, step, expected) do
+  @doc """
+  Sends `line` and reads the reply, which must have the `expected` code.
+  Returns the reply lines, or an error naming `step` and the server's
+  reply.
+  """
+  @spec command(MailSession.conn(), iodata(), String.t(), 100..599) ::
+          {:ok, [String.t()]} | {:error, MailSession.conn(), String.t()}
+  def command(conn, line, step, expected) do
     with :ok <- MailSession.send_line(conn, line),
          {:ok, ^expected, lines} <- read_reply(conn) do
       {:ok, lines}
@@ -157,8 +163,14 @@ defmodule Sentinelix.Checks.SMTP do
     end
   end
 
-  # Reads a (multiline) reply: `250-first`, `250-second`, `250 last`.
-  defp read_reply(conn, lines \\ []) do
+  @doc """
+  Reads a (multiline) reply: `250-first`, `250-second`, `250 last`.
+  Returns its code and lines.
+  """
+  @spec read_reply(MailSession.conn()) :: {:ok, 100..599, [String.t()]} | {:error, term()}
+  def read_reply(conn), do: read_reply(conn, [])
+
+  defp read_reply(conn, lines) do
     with {:ok, line} <- MailSession.recv_line(conn) do
       lines = [line | lines]
 
@@ -204,7 +216,12 @@ defmodule Sentinelix.Checks.SMTP do
 
   defp extensions([]), do: %{}
 
-  defp ehlo_name(%Settings{smtp_ehlo_name: name}) do
+  @doc """
+  The name sent in `EHLO`: the settings' `smtp_ehlo_name` or
+  `default_ehlo_name/0`, IP addresses as address literals.
+  """
+  @spec ehlo_name(Settings.t()) :: String.t()
+  def ehlo_name(%Settings{smtp_ehlo_name: name}) do
     name = name || default_ehlo_name()
 
     # IP addresses are sent as address literals (RFC 5321, 4.1.3).

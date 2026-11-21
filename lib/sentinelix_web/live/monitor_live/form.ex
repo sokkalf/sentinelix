@@ -805,6 +805,22 @@ defmodule SentinelixWeb.MonitorLive.Form do
     """
   end
 
+  defp settings_field(%{name: :cert_starttls} = assigns) do
+    ~H"""
+    <.input
+      field={@field}
+      type="select"
+      label="STARTTLS"
+      options={[
+        {"None (TLS from the start)", "none"},
+        {"SMTP (port 587)", "smtp"},
+        {"IMAP (port 143)", "imap"},
+        {"POP3 (port 110)", "pop3"}
+      ]}
+    />
+    """
+  end
+
   defp settings_field(%{name: :imap_mailbox} = assigns) do
     ~H"""
     <.input
@@ -1114,7 +1130,7 @@ defmodule SentinelixWeb.MonitorLive.Form do
 
   @impl true
   def handle_event("validate", %{"monitor" => params} = all_params, socket) do
-    params = normalize_params(params)
+    params = params |> normalize_params() |> default_cert_port(socket.assigns.form)
     changeset = Monitoring.change_monitor(socket.assigns.monitor, params)
 
     {:noreply,
@@ -1426,6 +1442,30 @@ defmodule SentinelixWeb.MonitorLive.Form do
   defp blank?(value), do: value in [nil, ""]
 
   ## Params
+
+  @cert_ports %{"none" => "443", "smtp" => "587", "imap" => "143", "pop3" => "110"}
+  @replaceable_cert_ports [nil, "" | Map.values(@cert_ports)]
+
+  # When the STARTTLS protocol of a cert monitor changes and the port is
+  # still blank or the usual port of a protocol, use the new protocol's.
+  defp default_cert_port(%{"type" => "cert", "settings" => %{} = settings} = params, form) do
+    # Monitors saved before the setting existed have none (nil).
+    previous =
+      case Ecto.Changeset.apply_changes(form.source) do
+        %Monitor{type: :cert, settings: %Settings{cert_starttls: protocol}} -> protocol || "none"
+        _ -> nil
+      end
+
+    with protocol when protocol != previous and is_binary(previous) <- settings["cert_starttls"],
+         {:ok, port} <- Map.fetch(@cert_ports, protocol),
+         true <- settings["port"] in @replaceable_cert_ports do
+      put_in(params, ["settings", "port"], port)
+    else
+      _ -> params
+    end
+  end
+
+  defp default_cert_port(params, _form), do: params
 
   # The form uses plain text inputs for list and map fields; turn them into
   # the shapes the changeset casts. The label editor's rows arrive as an
